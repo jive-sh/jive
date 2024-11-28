@@ -1,0 +1,3 @@
+{
+  "postAttachCommand": "source ./libraries/dev/bootstrap-workspace.sh"
+}

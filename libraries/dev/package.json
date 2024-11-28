@@ -1,0 +1,6 @@
+{
+  "name": "@chaine/dev",
+  "devDependencies": {
+    "@types/bun": "^1.1.14"
+  }
+}
