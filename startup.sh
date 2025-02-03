@@ -1,2 +1,2 @@
 #!/bin/bash
-source ./commands/chaine/bootstrap-workspace.sh
+source ./packages/cmds/chaine/bootstrap-workspace.sh
