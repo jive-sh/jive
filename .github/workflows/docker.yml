@@ -1,0 +1,47 @@
+name: Docker Build
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker/**'
+      - '.github/workflows/docker.yml'
+
+jobs:
+  create-build-schedule:
+    runs-on: ubuntu-latest
+    outputs:
+      build-matrix: ${{ steps.create-build-schedule.outputs.build-matrix }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 2
+
+      - name: Install ci CLI dependencies
+        run: cd ./packages/cmds/chaine && npx --quiet pnpm install
+
+      - name: Setup ci
+        id: create-build-schedule
+        run: npx --quiet tsx ./packages/cmds/chaine/src/index.tsx cicd docker
+
+  build-images:
+    needs: create-build-schedule
+    runs-on: ubuntu-latest
+    strategy:
+      # fail fast should be false to a failure in one DAG from blocking another
+      fail-fast: false
+      matrix: ${{ fromJson(needs.create-build-schedule.outputs.build-matrix) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Build and push Docker image
+        # TODO: get some auto versioning going rather than always using the "latest" tag
+        # image org, username, and password set via these instructions
+        # https://docs.github.com/en/actions/use-cases-and-examples/publishing-packages/publishing-docker-images#publishing-images-to-github-packages
+        run: |
+          docker build -t ghcr.io/${{ matrix.image_name }}:latest -f docker/Dockerfile.${{ matrix.image_name }} docker/
+          echo ${{ secrets.GITHUB_TOKEN }} | docker login -u ${{ github.actor }} --password-stdin
+          docker push ghcr.io/${{ matrix.image_name }}:latest

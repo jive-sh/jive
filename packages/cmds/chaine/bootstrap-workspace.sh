@@ -1,10 +1,10 @@
 #!/bin/bash
-if ! command -v bun; then
-  npm install -g bun
+if ! command -v tsx; then
+  npm install -g tsx
 fi
 cur_dir=$(pwd)
 cli_dir="${cur_dir}/packages/cmds/chaine"
 cd $cli_dir
-bun install
+pnpm install
 cd $cur_dir
-alias chaine="bun ${cli_dir}/src/index.tsx"
+alias chaine="tsx ${cli_dir}/src/index.tsx"

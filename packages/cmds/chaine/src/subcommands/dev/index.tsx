@@ -2,8 +2,10 @@ import { Options } from '../../common/options';
 import { Text } from 'ink';
 import * as React from 'react';
 import { Exit } from '../../common/exit';
-import { ProjectType, getPrefix, getProjectType, getProjects, TEMPLATE_PACKAGE_NAME } from '../../common/projects';
+import { ProjectType, getPrefix, getProjectType, getProjects } from '../../common/projects';
+import { TEMPLATE_PACKAGE_NAME } from '../../common/consts';
 import { NewPackage } from './commands/new';
+import { SubcommandSelector } from '../../common/subcommand-selector';
 
 /**
  * dev [package name]
@@ -31,19 +33,6 @@ enum Subcommands {
   template = 'template',
 }
 
-// terminal meaning no args collected after
-export const IS_COMMAND_TERMINAL: {[subcommand in Subcommands]: boolean} = {
-  [Subcommands.bun]: false,
-  [Subcommands.new]: true,
-  [Subcommands.test]: false,
-  [Subcommands.run]: false,
-  [Subcommands.publish]: true,
-  [Subcommands.link]: true,
-  [Subcommands.unlink]: true,
-  [Subcommands.infra]: false,
-  [Subcommands.template]: false
-}
-
 const projects = await getProjects();
 const projectsList: string[] = [];
 for (const projectType in projects) {
@@ -62,16 +51,6 @@ export const DevCommand: React.FC<DevCommandProps> = ({args, argCollected}) => {
   const [packageName, setPackageName] = React.useState<string | undefined>(initialPackage);
   const [subcommand, setSubcommand] = React.useState<string | undefined>(initialSubcommand);
   const isNew = !projectsList.includes(packageName ?? "");
-  React.useEffect(() => {
-    if (initialPackage === undefined || initialSubcommand === undefined) {
-      argCollected(false);
-    }
-  }, []);
-  React.useEffect(() => {
-    if (IS_COMMAND_TERMINAL[subcommand as Subcommands]) {
-      argCollected(true);
-    }
-  }, [subcommand]);
   const possibleSubcommands: string[] = [];
   if (isNew) {
     possibleSubcommands.push(Subcommands.new);
@@ -140,47 +119,63 @@ export const DevCommand: React.FC<DevCommandProps> = ({args, argCollected}) => {
         </>;
       }
       const projectType = maybePackageValid.projectType;
+      function defaultHandler({subcommand}: {subcommand: string}) {
+        return <>
+          <Text>Running {subcommand} on package {packageName}</Text>
+          <Text>Not yet implemented!</Text>
+          <Exit />
+        </>;
+      }
       return <>
-        {initialSubcommand === undefined &&
-          <Options
-            options={possibleSubcommands}
-            onChosen={selection => {
-              setSubcommand(selection);
-              argCollected(false, selection);
-            }}
-            prompt="'dev' subcommand"
-          />
-        }
-        {subcommand && (() => {
-          // validate subcommand
-          if (!possibleSubcommands.includes(subcommand)) {
-            const validOptions = possibleSubcommands.map(subcommand => `'${subcommand}'`).join(', ');
-            return <>
-              <Text>Invalid subcommand '{subcommand}' for {isNew ? 'new' : 'existing'} package '{packageName}'.</Text>
-              <Text>Valid options are {validOptions}</Text>
-              <Exit />
-            </>
-          }
-          function defaultHandler() {
-            return <>
-              <Text>Running {subcommand} on package {packageName}</Text>
-              <Text>Not yet implemented!</Text>
-              <Exit />
-            </>;
-          }
-          // execute subcommand
-          const subcommandHandlers: {[subcommand in Subcommands]: React.FC} = {
-            [Subcommands.new]: () => <NewPackage packageName={packageName} projectType={projectType} />,
-            [Subcommands.bun]: defaultHandler,
-            [Subcommands.test]: defaultHandler,
-            [Subcommands.run]: defaultHandler,
-            [Subcommands.publish]: defaultHandler,
-            [Subcommands.link]: defaultHandler,
-            [Subcommands.unlink]: defaultHandler,
-            [Subcommands.infra]: defaultHandler
-          }
-          return subcommandHandlers[subcommand as Subcommands]({});
-        })()}
+        <SubcommandSelector 
+          subcommands={Subcommands}
+          subcommandProperties={{
+            [Subcommands.bun]: {
+              isTerminal: false,
+              handler: () => <NewPackage packageName={packageName} projectType={projectType} />
+            },
+            [Subcommands.new]: {
+              isTerminal: true,
+              handler: defaultHandler
+            },
+            [Subcommands.test]: {
+              isTerminal: false,
+              handler: defaultHandler
+            },
+            [Subcommands.run]: {
+              isTerminal: false,
+              handler: defaultHandler
+            },
+            [Subcommands.publish]: {
+              isTerminal: true,
+              handler: defaultHandler
+            },
+            [Subcommands.link]: {
+              isTerminal: true,
+              handler: defaultHandler
+            },
+            [Subcommands.unlink]: {
+              isTerminal: true,
+              handler: defaultHandler
+            },
+            [Subcommands.infra]: {
+              isTerminal: false,
+              handler: defaultHandler
+            },
+            [Subcommands.template]: {
+              isTerminal: false,
+              handler: defaultHandler
+            }
+          }}
+          subcommandArg={initialSubcommand}
+          parentCommand={`dev ${packageName}`}
+          argCollected={(all, latest) => { 
+            if (latest && !subcommand) {
+              setSubcommand(subcommand);
+            }
+            argCollected(all, latest);
+          }}
+        />
       </>;
     })()}
   </>

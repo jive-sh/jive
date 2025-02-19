@@ -1,0 +1,11 @@
+FROM chaine/gcc:latest as gcc
+FROM chaine/python:latest as python
+FROM node:alpine3.21
+RUN corepack prepare pnpm@10.4.1 --activate
+RUN corepack enable
+COPY --from=gcc / /
+COPY --from=python / /
+RUN mkdir -p /service && cd /service
+# TODO: replace with bun once we figure out how to get Expo and bun working properly
+#       i.e. this guide doesn't currently work https://docs.expo.dev/guides/using-bun/
+ENTRYPOINT [ "pnpm", "dlx" ]

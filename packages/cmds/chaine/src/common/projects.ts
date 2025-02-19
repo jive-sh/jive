@@ -1,12 +1,10 @@
-import { readdir, exists, readFile } from "node:fs/promises";
-import { PACKAGES_ROOT } from './paths';
+import { readdir, readFile } from "node:fs/promises";
+import { existsSync } from 'node:fs';
 import * as path from "node:path";
 import { type Result, Ok, Err } from './result';
 import { log } from "./log";
-
-export const COMPANY_NAME = 'chaine'
-export const ORG_NAME = `@${COMPANY_NAME}`;
-export const TEMPLATE_PACKAGE_NAME = 'TEMPLATE';
+import { PACKAGES_ROOT } from './paths';
+import { ORG_NAME } from './consts';
 
 export enum ProjectType {
   Application = 'app',
@@ -60,7 +58,7 @@ async function getPackageName(dir: string): Promise<Result<{name: string, type: 
   function shortenPath(longPath: string) {
     return longPath.substring(PACKAGES_ROOT.length).replaceAll("\\", "/");
   }
-  if (!(await exists(packageJsonPath))) {
+  if (!(existsSync(packageJsonPath))) {
     return Err({error: PackageNameErrors.NoPackageJson, reason: `No such file ${shortenPath(packageJsonPath)}`});
   }
   const contents = (await readFile(packageJsonPath)).toString();
