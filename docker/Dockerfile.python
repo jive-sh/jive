@@ -1,5 +1,6 @@
 FROM python:3.10-alpine as python
 FROM scratch
+# Testing
 COPY --from=python /usr/local/lib /usr/local/lib
 COPY --from=python /usr/local/bin /usr/local/bin
 COPY --from=python /lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1

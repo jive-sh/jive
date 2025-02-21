@@ -1,5 +1,5 @@
 - All services are NPM registry published (on github) CLIs which run on the "service" docker image.
 - All docker images are published to a private github image registry
-- Only the changed docker images are rebuilt plus the images which depend on them
+- Only the changed docker images are rebuilt plus the images which transitively depend on them
 - All docker images MUST have an Alpine base (because of the size optimized properties)
 - A docker image that is meant to be a dependency should copy in only the bare minimum executables and binaries needed for those executables above a `scratch` base such that the consumer can copy in everything from that dependency via a `COPY --from=<dependency> / /` Docker command

@@ -1,6 +1,7 @@
 FROM alpine:3.21 as gcc
 RUN apk add build-base
 FROM scratch
+# Testing
 COPY --from=gcc /usr/bin /usr/bin
 COPY --from=gcc /usr/lib /usr/lib
 COPY --from=gcc /usr/libexec /usr/libexec

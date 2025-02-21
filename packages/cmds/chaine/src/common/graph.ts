@@ -21,10 +21,16 @@ class GraphNode {
   public getDependenciesOf() {
     return Array.from(this.dependencyOf.keys());
   }
+  public print(): string {
+    const deps = this.getDependencies().join(", ");
+    const depsOf = this.getDependenciesOf().join(", ");
+    return `{ ${deps} } -> ${ this.id } -> { ${ depsOf } }`;
+  }
 }
 
 export class Graph {
   private nodes: Record<string, GraphNode>;
+  private allowCycles: boolean;
   /**
    * @param edgeMap map from node to list of nodes that have edges which go to the key node
    */
@@ -41,7 +47,8 @@ export class Graph {
     }
     return graph;
   }
-  public constructor() {
+  public constructor(allowCycles = false) {
+    this.allowCycles = allowCycles;
     this.nodes = {};
   }
   public addNode(id: string) {
@@ -63,6 +70,26 @@ export class Graph {
     const fromNode = this.getById(from);
     const toNode = this.getById(to);
     toNode.addDependency(fromNode);
+    if (!this.allowCycles) {
+      if (this.cycleExists(from)) {
+        throw new Error(`Adding an edge from '${from}' to '${to}' creates a cycle`);
+      }
+    }
+  }
+  private cycleExists(start: string): boolean {
+    const dfsFindCycle = (visited: string[], cur: string) => {
+      if (visited.includes(cur)) {
+        return true;
+      }
+      const updatedVisited = [...visited, cur];
+      for (const next of this.getNodesDependentOn(cur)) {
+        if (dfsFindCycle(updatedVisited, next)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    return dfsFindCycle([], start);
   }
   public removeEdge(from: string, to: string) {
     const fromNode = this.getById(from);
@@ -91,5 +118,11 @@ export class Graph {
       }
     }
     return newGraph;
+  }
+  public print() {
+    return this.getNodes()
+      .map(this.getById.bind(this))
+      .map(node => node.print())
+      .join("\n");
   }
 }

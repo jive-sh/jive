@@ -9,9 +9,7 @@
   },
   "dependencies": {
     "event-iterator": "^2.0.0",
-    "graph-data-structure": "^4.3.1",
     "ink": "^5.1.0",
-    "ink-autocomplete": "^0.0.0",
     "ink-select-input": "^6.0.0",
     "ink-text-input": "^6.0.0",
     "react": "^18"
