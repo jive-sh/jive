@@ -3,12 +3,15 @@ import { Options } from './options';
 import { Text } from 'ink';
 import { Exit } from './exit';
 
+export type SubcommandProperties<HandlerProps> = {
+  isTerminal: boolean;
+  handler: React.FC<HandlerProps>;
+}
+
 export type SubcommandSelectorProps<Subcommands extends Record<string, string>> = {
   subcommands: Subcommands,
-  subcommandProperties: {[subcommand in keyof Subcommands]: {
-    isTerminal: boolean;
-    handler: React.FC<{subcommand: subcommand}>;
-  }};
+  subcommandProperties: {[subcommand in keyof Subcommands]:
+    SubcommandProperties<{subcommand: subcommand}>};
   subcommandArg: string | undefined;
   parentCommand: string;
   argCollected: (all: boolean, latest?: string) => void;

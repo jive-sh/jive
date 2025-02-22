@@ -30,3 +30,6 @@ jobs:
 
       - name: Build Images
         run: npx --quiet tsx ./packages/cmds/chaine/src/index.tsx cicd docker
+
+  # TODO: implement. If the underlying dockerfile changes, the services must redeploy
+  # redeploy-all-services

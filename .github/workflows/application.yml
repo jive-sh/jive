@@ -1,0 +1,17 @@
+name: App Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'packages/apps/**'
+
+jobs:
+  build-and-push-packages:
+
+
+  deploy-app-server-to-k8s:
+
+
+  deploy-app-to-app-store:

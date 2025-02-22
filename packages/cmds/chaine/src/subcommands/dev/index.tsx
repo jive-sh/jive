@@ -22,7 +22,7 @@ import { SubcommandSelector } from '../../common/subcommand-selector';
 // ?❯…·✖✔
 
 enum Subcommands {
-  bun = 'bun',
+  dep = 'dep',
   new = 'new',
   test = 'test',
   run = 'run',
@@ -66,11 +66,11 @@ export const DevCommand: React.FC<DevCommandProps> = ({args, argCollected}) => {
     const prefix = getPrefix(projectType);
     // TODO: probably want a type safe confirmation that package name is present
     const isTemplate = packageName!.substring(prefix.length) === 'TEMPLATE';
-    if (packageName)
-    possibleSubcommands.push(
-      Subcommands.bun, Subcommands.test, Subcommands.run, Subcommands.publish
-    );
-    packageName 
+    if (packageName) {
+      possibleSubcommands.push(
+        Subcommands.test, Subcommands.run, Subcommands.publish
+      );
+    }
     
     switch (projectType) {
       case ProjectType.Command:
@@ -129,14 +129,14 @@ export const DevCommand: React.FC<DevCommandProps> = ({args, argCollected}) => {
       return <>
         <SubcommandSelector 
           subcommands={Subcommands}
-          subcommandProperties={{
-            [Subcommands.bun]: {
-              isTerminal: false,
-              handler: () => <NewPackage packageName={packageName} projectType={projectType} />
+          subcommandProperties={{ /* switch to possible subcommands */
+            [Subcommands.dep]: {
+              isTerminal: true,
+              handler: defaultHandler
             },
             [Subcommands.new]: {
               isTerminal: true,
-              handler: defaultHandler
+              handler: () => <NewPackage packageName={packageName} projectType={projectType} />
             },
             [Subcommands.test]: {
               isTerminal: false,

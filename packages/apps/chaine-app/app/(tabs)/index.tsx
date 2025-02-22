@@ -4,50 +4,77 @@ import { HelloWave } from '@/components/HelloWave';
 import ParallaxScrollView from '@/components/ParallaxScrollView';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
+import { ExternalLink } from '@/components/ExternalLink';
+import { Colors } from '@/constants/Colors';
 
 export default function HomeScreen() {
   return (
     <ParallaxScrollView
       headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
+      headerImage={<></>}>
       <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Hi?</ThemedText>
+        <ThemedText type="title">Slide in, the dance floor's open!</ThemedText>
         <HelloWave />
       </ThemedView>
       <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
+        <ThemedText type="subtitle">This is Chaîné</ThemedText>
         <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12'
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
+          The superapp made to unleash the inner dancer that lives within us all. Deep down, everyone is a dancer.
         </ThemedText>
       </ThemedView>
       <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 2: Explore</ThemedText>
+        <ThemedText type="subtitle">Chaîné enables you to discover dance events and venues</ThemedText>
         <ThemedText>
-          Tap the Explore tab to learn more about what's included in this starter app.
+          Use Chaîné to find past and upcoming classes and social dances near you, whether that's where you live or when you travel somewhere new
         </ThemedText>
       </ThemedView>
       <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
+        <ThemedText type="subtitle">Chaîné improves your dance skills</ThemedText>
         <ThemedText>
-          When you're ready, run{' '}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
+          From a community-curated move and technique catalogue, to AI assisted feedback, to booking instructor time and studio space, Chaîné can be your partner in leveling up or trying something new
+        </ThemedText>
+      </ThemedView>
+      <ThemedView style={styles.stepContainer}>
+        <ThemedText type="subtitle">Chaîné connects you to the broader dance community</ThemedText>
+        <ThemedText>
+          Forgot the name of the person you shared your favorite dance of the night with?
+          Connect to others in your class or at the social or competition you attended, search for compatible dance partners and local instructors
+        </ThemedText>
+      </ThemedView>
+      <ThemedView style={styles.stepContainer}>
+        <ThemedText type="subtitle">Chaîné supercharges dance entrepreneurs</ThemedText>
+        <ThemedText>
+          Whether you're teaching dance, creating entertainment or educational content, organizing an event, running a studio, or DJ'ing for the night, Chaîné helps you at every step of the way, from payments, to marketing, to standing up a web presence, to scouting an ideal time and place.
+        </ThemedText>
+      </ThemedView>
+      <ThemedView style={styles.stepContainer}>
+        <ThemedText type="subtitle">Chaîné &gt; Shazam</ThemedText>
+        <ThemedText>
+          Get instant access to the set list played at every class, social, or comp. But don't forget to tip the DJ!
+        </ThemedText>
+      </ThemedView>
+      <ThemedView style={styles.stepContainer}>
+        <ThemedText type="subtitle">Video privacy and attribution</ThemedText>
+        <ThemedText>
+          Class recaps are only visible to those who took the class. All videos properly attribute the dancers, venues, and DJs/musicians. With enough resources, Chaîné will go after the social media posters who profit off of misattributed content from others.
+        </ThemedText>
+      </ThemedView>
+      <ThemedView style={styles.stepContainer}>
+        <ThemedText type="subtitle">Your Competition Buddy</ThemedText>
+        <ThemedText>
+          Use Chaîné to track your competitor stats real-time, register for upcoming competitions, and access discounts for local businesses made available to competitors.
+        </ThemedText>
+      </ThemedView>
+      <ThemedView style={styles.stepContainer}>
+        <ThemedText type="subtitle">Join the Conversation</ThemedText>
+        <ThemedText>
+          Join the Chaîné Discord&nbsp;
+          <ThemedText lightColor='#5555FF' darkColor='#5555FF'>
+            <ExternalLink href="https://discord.gg/rNxafvZUCx">
+              https://discord.gg/rNxafvZUCx
+            </ExternalLink>
+          </ThemedText>
+          &nbsp;to suggest/discuss features and improvements
         </ThemedText>
       </ThemedView>
     </ParallaxScrollView>

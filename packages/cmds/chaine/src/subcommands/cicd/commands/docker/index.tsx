@@ -162,19 +162,3 @@ export const Docker: React.FC<DockerProps> = () => {
     {done && <Exit />}
   </>
 }
-
-// 
-
-// // Topological sort dockerfile dependencies to achieve accurate build order
-// const buildOrder = topologicalSort(dockerFileDependencies);
-
-
-
-// const finalBuildOrder = [];
-// for (const cur of buildOrder) {
-//   if (changedDockerfiles.has(cur)) {
-//     finalBuildOrder.push(cur);
-//   }
-// }
-// const output = {image_name: finalBuildOrder}
-// console.log(`::set-output name=build-matrix::${JSON.stringify(output)}`);
