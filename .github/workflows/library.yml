@@ -1,0 +1,15 @@
+name: Publish Libraries
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'packages/libs/**'
+
+jobs:
+  publish-library:
+    runs-on: ubuntu-latest
+    steps:
+      - name: no-op
+        run: echo 'hello world'

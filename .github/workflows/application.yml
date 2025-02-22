@@ -1,4 +1,4 @@
-name: App Deploy
+name: Build & Deploy Apps
 
 on:
   push:
@@ -8,10 +8,20 @@ on:
       - 'packages/apps/**'
 
 jobs:
-  build-and-push-packages:
+  build-apps:
+    runs-on: ubuntu-latest
+    steps:
+      - name: no-op
+        run: echo 'hello world'
 
+  deploy-websites:
+    runs-on: ubuntu-latest
+    steps:
+      - name: no-op
+        run: echo 'hello world'
 
-  deploy-app-server-to-k8s:
-
-
-  deploy-app-to-app-store:
+  deploy-mobile-apps:
+    runs-on: ubuntu-latest
+    steps:
+      - name: no-op
+        run: echo 'hello world'

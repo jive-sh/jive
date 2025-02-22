@@ -26,6 +26,7 @@ enum Subcommands {
   new = 'new',
   test = 'test',
   run = 'run',
+  precommit = 'precommit',
   publish = 'publish',
   link = 'link',
   unlink = 'unlink',
@@ -144,6 +145,10 @@ export const DevCommand: React.FC<DevCommandProps> = ({args, argCollected}) => {
             },
             [Subcommands.run]: {
               isTerminal: false,
+              handler: defaultHandler
+            },
+            [Subcommands.precommit]: {
+              isTerminal: true,
               handler: defaultHandler
             },
             [Subcommands.publish]: {
