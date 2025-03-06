@@ -1,9 +1,11 @@
 import * as React from 'react';
 import { SubcommandSelector } from '../../common/subcommand-selector';
 import { Docker } from './commands/docker';
+import { Package } from './commands/package';
 
 enum Subcommands {
   docker = 'docker',
+  packages = 'packages',
 }
 
 export type CICDCommandProps = {
@@ -20,6 +22,10 @@ export const CICDCommand: React.FC<CICDCommandProps> = ({args, argCollected}) =>
       [Subcommands.docker]: {
         isTerminal: true,
         handler: () => <Docker />
+      },
+      [Subcommands.packages]: {
+        isTerminal: false,
+        handler: () => <Package args={remainingArgs} argCollected={argCollected} />
       }
     }}
     subcommandArg={initialSubcommand}

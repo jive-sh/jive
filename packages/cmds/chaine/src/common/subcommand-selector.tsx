@@ -8,6 +8,18 @@ export type SubcommandProperties<HandlerProps> = {
   handler: React.FC<HandlerProps>;
 }
 
+export function subcommandsFromList(list: string[]): Record<string, string> {
+  return Object.fromEntries(list.map(entry => [entry, entry]));
+}
+
+export function subcommandPropMap<Subcommands extends Record<string, string>>(
+  subcommands: Subcommands,
+  map: (subcommand: string) => SubcommandProperties<{subcommand: keyof Subcommands}>
+): SubcommandSelectorProps<Subcommands>['subcommandProperties'] {
+  const result = Object.fromEntries(Object.entries(subcommands).map(([k, v]) => [k, map(v)]));
+  return result as unknown as SubcommandSelectorProps<Subcommands>['subcommandProperties'];
+}
+
 export type SubcommandSelectorProps<Subcommands extends Record<string, string>> = {
   subcommands: Subcommands,
   subcommandProperties: {[subcommand in keyof Subcommands]:

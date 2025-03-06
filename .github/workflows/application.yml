@@ -8,7 +8,7 @@ on:
       - 'packages/apps/**'
 
 jobs:
-  build-apps:
+  compute-apps-to-rebuild:
     runs-on: ubuntu-latest
     steps:
       - name: no-op
@@ -16,12 +16,14 @@ jobs:
 
   deploy-websites:
     runs-on: ubuntu-latest
+    needs: compute-apps-to-rebuild
     steps:
       - name: no-op
         run: echo 'hello world'
 
   deploy-mobile-apps:
     runs-on: ubuntu-latest
+    needs: compute-apps-to-rebuild
     steps:
       - name: no-op
         run: echo 'hello world'

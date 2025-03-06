@@ -20,6 +20,15 @@ export const ProjectTypeToFolder: {[projectType in ProjectType]: string} = {
   [ProjectType.Service]: 'svcs'
 }
 
+export function projectTypeFromFolder(folder: string): ProjectType {
+  for (const [projectType, curFolder] of Object.entries(ProjectTypeToFolder)) {
+    if (folder === curFolder) {
+      return projectType as ProjectType;
+    }
+  }
+  throw new Error(`No project type maps to folder '${folder}'`);
+}
+
 export function getPrefix(projectType: ProjectType): string {
   return `${ORG_NAME}-${projectType}/`;
 }
