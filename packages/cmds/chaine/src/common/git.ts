@@ -1,4 +1,5 @@
 import * as child_process from 'node:child_process';
+import * as fs from 'fs';
 
 export function inGitRepository(): boolean {
   try {
@@ -30,4 +31,11 @@ export function gitChangedFiles(): string[] {
   ).toString();
   const changedFiles = gitDiffOutput.split("\n");
   return changedFiles;
+}
+
+export function setGHAOutput(k: string, v: string) {
+  const ghaOutputFile = process.env['GITHUB_OUTPUT'] ?? "/dev/null";
+  console.log('gha-output file is', ghaOutputFile)
+  fs.writeFileSync(ghaOutputFile, `${k}=${v}`);
+  //console.log(`::set-output name=${k}::${v}`)
 }

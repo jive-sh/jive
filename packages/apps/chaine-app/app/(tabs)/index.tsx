@@ -7,6 +7,8 @@ import { ThemedView } from '@/components/ThemedView';
 import { ExternalLink } from '@/components/ExternalLink';
 import { Colors } from '@/constants/Colors';
 
+// whoa
+
 export default function HomeScreen() {
   return (
     <ParallaxScrollView

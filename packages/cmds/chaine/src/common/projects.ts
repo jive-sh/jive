@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import * as path from "node:path";
 import { type Result, Ok, Err } from './result';
 import { log } from "./log";
-import { PACKAGES_ROOT } from './paths';
+import { MONOREPO_ROOT, PACKAGES_ROOT } from './paths';
 import { ORG_NAME } from './consts';
 
 export enum ProjectType {
@@ -18,6 +18,13 @@ export const ProjectTypeToFolder: {[projectType in ProjectType]: string} = {
   [ProjectType.Command]: 'cmds',
   [ProjectType.Library]: 'libs',
   [ProjectType.Service]: 'svcs'
+}
+
+export function projectTypePathFromRoot(projectType: ProjectType): string {
+  const folder = ProjectTypeToFolder[projectType];
+  const absPath = path.resolve(PACKAGES_ROOT, folder);
+  const fromRoot = absPath.substring(MONOREPO_ROOT.length + path.sep.length);
+  return fromRoot;
 }
 
 export function projectTypeFromFolder(folder: string): ProjectType {
