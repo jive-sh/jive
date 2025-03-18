@@ -35,7 +35,7 @@ export function gitChangedFiles(): string[] {
 
 export function setGHAOutput(k: string, v: string) {
   const ghaOutputFile = process.env['GITHUB_OUTPUT'] ?? "/dev/null";
-  console.log('gha-output file is', ghaOutputFile)
-  fs.writeFileSync(ghaOutputFile, `${k}=${v}`);
-  //console.log(`::set-output name=${k}::${v}`)
+  const outputLine = `${k}=${v}`;
+  console.log(`Writing '${outputLine}' to '${ghaOutputFile}'`)
+  fs.appendFileSync(ghaOutputFile, outputLine);
 }

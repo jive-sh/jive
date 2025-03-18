@@ -1,3 +1,4 @@
+import { DEFAULT_COLOR_SCHEME } from '@/constants/Colors';
 import { useEffect, useState } from 'react';
 import { useColorScheme as useRNColorScheme } from 'react-native';
 
@@ -11,11 +12,13 @@ export function useColorScheme() {
     setHasHydrated(true);
   }, []);
 
+  return DEFAULT_COLOR_SCHEME;
+
   const colorScheme = useRNColorScheme();
 
   if (hasHydrated) {
     return colorScheme;
   }
 
-  return 'light';
+  return DEFAULT_COLOR_SCHEME;
 }

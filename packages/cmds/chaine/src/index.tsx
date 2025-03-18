@@ -1,5 +1,5 @@
 import { DevCommand } from './subcommands/dev/index';
-import { render, Text } from 'ink';
+import { render, Text, Newline } from 'ink';
 import * as React from 'react';
 import { COMPANY_NAME } from './common/consts';
 import { CICDCommand } from './subcommands/cicd';
@@ -14,18 +14,18 @@ enum Subcommands {
 }
 
 export const COMMAND_NAME = COMPANY_NAME;
+const FULL_COMMAND = `${COMMAND_NAME}` + 
+  (initialSubcommand ? ` ${initialSubcommand}` : '') +
+  (args.length ? ` ${args.join(' ')}` : '');
 
 const ChaineCommand: React.FC<{}> = ({}) => {
-  const noInitialSubcommand = initialSubcommand === undefined;
-  const INITIAL_NEXT_TIME = COMMAND_NAME;
-  const [nextTime, setNextTime] = React.useState<string | undefined>(noInitialSubcommand ? INITIAL_NEXT_TIME : undefined);
+  const [nextTime, setNextTime] = React.useState(COMMAND_NAME);
   const [collectedAllArgs, setCollectedAllArgs] = React.useState(false);
+  const [isInitialized, setIsInitizlized] = React.useState(false);
   function argCollected(all: boolean, latest?: string) {
     setCollectedAllArgs(all);
+    // console.log(`here!! all=${all} latest=${latest} nextTime=${nextTime}`);
     let curNextTime = nextTime;
-    if (!all && curNextTime === undefined) {
-      curNextTime = INITIAL_NEXT_TIME
-    }
     if (latest) {
       curNextTime += ` ${latest}`;
     }
@@ -33,9 +33,17 @@ const ChaineCommand: React.FC<{}> = ({}) => {
       setNextTime(curNextTime);
     }
   }
+  React.useEffect(() => {
+    setIsInitizlized(true);
+  }, []);
+  // TODO: don't show next time when invalid subcommand is entered
+  const showNextTime = isInitialized && 
+    (nextTime !== FULL_COMMAND || !collectedAllArgs);
   return <>
-    {nextTime && 
-      <Text>next time run <Text color='blueBright'>{nextTime}</Text>{collectedAllArgs ? '' : ' …'}</Text>
+    {showNextTime && 
+      <Text><Newline />
+        next time run <Text color='blueBright'>{nextTime}</Text>{collectedAllArgs ? '' : ' …'}
+      </Text>
     }
     <SubcommandSelector
       subcommandArg={initialSubcommand}

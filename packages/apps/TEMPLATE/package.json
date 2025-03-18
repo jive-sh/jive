@@ -1,3 +1,5 @@
 {
-  "name": "@chaine-app/TEMPLATE"
+  "name": "@chaine-app/TEMPLATE",
+  "dependencies": {
+  }
 }

@@ -20,14 +20,14 @@ jobs:
           # Needed to get analyze the latest commit (if any images changed)
           fetch-depth: 2
 
-      - name: Install CI CLI Dependencies
-        run: cd ./packages/cmds/chaine && npx --quiet pnpm install
-
       - name: Get Changed Apps
         id: get-changed-apps
-        run: npx --quiet tsx ./packages/cmds/chaine/src/index.tsx cicd packages apps
+        run: |
+          shopt -s expand_aliases
+          source ./startup.sh
+          chaine cicd packages apps
 
-  deploy-websites:
+  build-and-deploy-apps:
     needs: compute-apps-to-rebuild
     runs-on: ubuntu-latest
     strategy:
@@ -37,18 +37,11 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v2
 
-      - name: Test CICD
-        run: echo "About to run the deploy to cloudflare pages for app '${{ matrix.app }}'"
-
-  deploy-mobile-apps:
-    needs: compute-apps-to-rebuild
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.compute-apps-to-rebuild.outputs.changed-apps) }}
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v2
-
-      - name: Test CICD
-        run: echo "hello world ${{ matrix.app }}"
+      - name: Build & Deploy Website
+        run: |
+          shopt -s expand_aliases
+          source ./startup.sh
+          chaine dev @chaine-app/${{ matrix.app }} deps install
+          chaine dev @chaine-app/${{ matrix.app }} build
+          chaine dev @chaine-app/${{ matrix.app }} publish
+          chaine dev @chaine-app/${{ matrix.app }} deploy

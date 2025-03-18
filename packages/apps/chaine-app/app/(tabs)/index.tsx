@@ -12,8 +12,11 @@ import { Colors } from '@/constants/Colors';
 export default function HomeScreen() {
   return (
     <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={<></>}>
+      headerBackgroundColor={{ light: Colors.dark.secondary, dark: Colors.dark.secondary }}
+      headerImage={<Image
+        source={require('@/assets/images/chaine-logo.png')}
+        style={{ }}
+      />}>
       <ThemedView style={styles.titleContainer}>
         <ThemedText type="title">Slide in, the dance floor's open!</ThemedText>
         <HelloWave />

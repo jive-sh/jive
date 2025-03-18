@@ -27,6 +27,19 @@ export function projectTypePathFromRoot(projectType: ProjectType): string {
   return fromRoot;
 }
 
+export function getProjectPath(packageName: string): Result<{path: string, type: ProjectType}, null> {
+  const maybeProjectType = getProjectType(packageName);
+  if (!maybeProjectType.success) {
+    return Err({error: null, reason: maybeProjectType.reason});
+  }
+  const projectType = maybeProjectType.value;
+  const prefix = getPrefix(projectType);
+  const projectTypeDir = projectTypePathFromRoot(projectType);
+  const subdir = packageName.substring(prefix.length);
+  const projectPath = path.resolve(projectTypeDir, subdir);
+  return Ok({value: {path: projectPath, type: projectType}});
+}
+
 export function projectTypeFromFolder(folder: string): ProjectType {
   for (const [projectType, curFolder] of Object.entries(ProjectTypeToFolder)) {
     if (folder === curFolder) {
@@ -146,4 +159,15 @@ export async function getProjects(invalidateCache = false): Promise<Projects> {
   }
   cacheInitialized = true;
   return cache;
+}
+
+export async function getProjectList(): Promise<string[]> {
+  const projects = await getProjects();
+  const projectsList: string[] = [];
+  for (const projectType in projects) {
+    const curProjects = projects[projectType as ProjectType];
+    projectsList.push(...curProjects);
+  }
+  projectsList.sort();
+  return projectsList;
 }

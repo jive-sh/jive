@@ -21,7 +21,8 @@ export function subcommandPropMap<Subcommands extends Record<string, string>>(
 }
 
 export type SubcommandSelectorProps<Subcommands extends Record<string, string>> = {
-  subcommands: Subcommands,
+  subcommands: Subcommands;
+  subcommandSubset?: (keyof Subcommands)[];
   subcommandProperties: {[subcommand in keyof Subcommands]:
     SubcommandProperties<{subcommand: subcommand}>};
   subcommandArg: string | undefined;
@@ -30,12 +31,16 @@ export type SubcommandSelectorProps<Subcommands extends Record<string, string>> 
 }
 
 export const SubcommandSelector = <Subcommands extends Record<string, string>,> (props: SubcommandSelectorProps<Subcommands>) => {
-  const {subcommands, subcommandProperties, subcommandArg, parentCommand, argCollected} = props;
+  const {subcommands, subcommandProperties, subcommandArg, parentCommand, argCollected, subcommandSubset} = props;
   const [subcommand, setSubcommand] = React.useState<string | undefined>(subcommandArg);
+  const [isInitialized, setIsInitialized] = React.useState(false);
   React.useEffect(() => {
     if (subcommandArg === undefined) {
       argCollected(false);
+    } else {
+      argCollected(false, subcommandArg);
     }
+    setIsInitialized(true);
   }, []);
   React.useEffect(() => {
     const cur = subcommandProperties[subcommand as keyof Subcommands];
@@ -43,29 +48,31 @@ export const SubcommandSelector = <Subcommands extends Record<string, string>,> 
       argCollected(true);
     }
   }, [subcommand]);
-  const possibleSubcommands = Object.values(subcommands);
+  const possibleSubcommands = subcommandSubset ?? Object.values(subcommands);
   return <>
-    {subcommandArg === undefined &&
-      <Options
-        options={possibleSubcommands}
-        onChosen={selection => {
-          setSubcommand(selection);
-          argCollected(false, selection);
-        }}
-        prompt={`'${parentCommand}' subcommand`}
-      />
-    }
-    {subcommand && (() => {
-      // validate subcommand
-      if (!possibleSubcommands.includes(subcommand)) {
-        const validOptions = possibleSubcommands.map(subcommand => `'${subcommand as string}'`).join(', ');
-        return <>
-          <Text>Invalid subcommand '{subcommand}' for '{parentCommand}'.</Text>
-          <Text>Valid options are {validOptions}</Text>
-          <Exit />
-        </>
+    {isInitialized && <>
+      {subcommandArg === undefined &&
+        <Options
+          options={possibleSubcommands as string[]}
+          onChosen={selection => {
+            setSubcommand(selection);
+            argCollected(false, selection);
+          }}
+          prompt={`'${parentCommand}' subcommand`}
+        />
       }
-      return subcommandProperties[subcommand].handler({subcommand});
-    })()}
+      {subcommand && (() => {
+        // validate subcommand
+        if (!possibleSubcommands.includes(subcommand)) {
+          const validOptions = possibleSubcommands.map(subcommand => `'${subcommand as string}'`).join(', ');
+          return <>
+            <Text>Invalid subcommand '{subcommand}' for '{parentCommand}'.</Text>
+            <Text>Valid options are {validOptions}</Text>
+            <Exit />
+          </>
+        }
+        return subcommandProperties[subcommand].handler({subcommand});
+      })()}
+    </>}
   </>
 }
