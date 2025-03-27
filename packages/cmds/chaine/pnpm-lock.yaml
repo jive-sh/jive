@@ -23,6 +23,9 @@ importers:
       react:
         specifier: ^18
         version: 18.3.1
+      yaml:
+        specifier: ^2.7.0
+        version: 2.7.0
     devDependencies:
       '@types/node':
         specifier: ^22.13.4
@@ -256,6 +259,11 @@ packages:
       utf-8-validate:
         optional: true
 
+  yaml@2.7.0:
+    resolution: {integrity: sha512-+hSoy/QHluxmC9kCIJyL/uyFmLmc+e5CFR5Wa+bpIhIj85LVb9ZH2nVnqrHoSvKogwODv0ClqZkmiSSaIH5LTA==}
+    engines: {node: '>= 14'}
+    hasBin: true
+
   yoga-wasm-web@0.3.3:
     resolution: {integrity: sha512-N+d4UJSJbt/R3wqY7Coqs5pcV0aUj2j9IaQ3rNj9bVCLld8tTGKRa2USARjnvZJWVx1NDmQev8EknoczaOQDOA==}
 
@@ -462,5 +470,7 @@ snapshots:
       strip-ansi: 7.1.0
 
   ws@8.18.0: {}
+
+  yaml@2.7.0: {}
 
   yoga-wasm-web@0.3.3: {}

@@ -5,7 +5,7 @@ import { Exit } from '../../../../common/exit';
 import { gitChangedFiles, setGHAOutput } from '../../../../common/git';
 import * as path from 'path';
 
-export type PackageProps = {
+export type PackagesProps = {
   args: string[];
   argCollected: (all: boolean, latest?: string) => void;
 }
@@ -42,12 +42,12 @@ const subcommandProperties = subcommandPropMap(possibleSubcommands, () => ({
   }
 }));
 
-export const Package: React.FC<PackageProps> = ({args, argCollected}) => {
+export const Packages: React.FC<PackagesProps> = ({args, argCollected}) => {
   const [initialPackageType, ...remainingArgs] = args;
   return <SubcommandSelector
     subcommands={possibleSubcommands}
     subcommandProperties={subcommandProperties}
-    parentCommand='package'
+    parentCommand='packages'
     subcommandArg={initialPackageType}
     argCollected={argCollected}
   />

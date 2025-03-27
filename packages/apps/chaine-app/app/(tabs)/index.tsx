@@ -61,7 +61,7 @@ export default function HomeScreen() {
       <ThemedView style={styles.stepContainer}>
         <ThemedText type="subtitle">Video privacy and attribution</ThemedText>
         <ThemedText>
-          Class recaps are only visible to those who took the class. All videos properly attribute the dancers, venues, and DJs/musicians. With enough resources, Chaîné will go after the social media posters who profit off of misattributed content from others.
+          Class recaps are only visible to those who took the class. All videos properly attribute the dancers, venues, and DJs/musicians. With enough resources, Chaîné will go after the social media posters who profit off of stolen content.
         </ThemedText>
       </ThemedView>
       <ThemedView style={styles.stepContainer}>

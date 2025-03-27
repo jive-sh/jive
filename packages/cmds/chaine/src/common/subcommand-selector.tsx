@@ -38,16 +38,11 @@ export const SubcommandSelector = <Subcommands extends Record<string, string>,> 
     if (subcommandArg === undefined) {
       argCollected(false);
     } else {
-      argCollected(false, subcommandArg);
+      const isTerminal = !!subcommandProperties[subcommandArg]?.isTerminal;
+      argCollected(isTerminal, subcommandArg);
     }
     setIsInitialized(true);
   }, []);
-  React.useEffect(() => {
-    const cur = subcommandProperties[subcommand as keyof Subcommands];
-    if (cur && cur.isTerminal) {
-      argCollected(true);
-    }
-  }, [subcommand]);
   const possibleSubcommands = subcommandSubset ?? Object.values(subcommands);
   return <>
     {isInitialized && <>
@@ -56,7 +51,8 @@ export const SubcommandSelector = <Subcommands extends Record<string, string>,> 
           options={possibleSubcommands as string[]}
           onChosen={selection => {
             setSubcommand(selection);
-            argCollected(false, selection);
+            const isTerminal = !!subcommandProperties[selection]?.isTerminal;
+            argCollected(isTerminal, selection);
           }}
           prompt={`'${parentCommand}' subcommand`}
         />

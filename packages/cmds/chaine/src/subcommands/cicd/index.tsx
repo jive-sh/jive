@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { SubcommandSelector } from '../../common/subcommand-selector';
 import { Docker } from './commands/docker';
-import { Package } from './commands/package';
+import { Packages } from './commands/packages';
 
 enum Subcommands {
   docker = 'docker',
@@ -25,7 +25,7 @@ export const CICDCommand: React.FC<CICDCommandProps> = ({args, argCollected}) =>
       },
       [Subcommands.packages]: {
         isTerminal: false,
-        handler: () => <Package args={remainingArgs} argCollected={argCollected} />
+        handler: () => <Packages args={remainingArgs} argCollected={argCollected} />
       }
     }}
     subcommandArg={initialSubcommand}
