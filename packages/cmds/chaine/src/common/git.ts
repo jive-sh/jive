@@ -33,6 +33,10 @@ export function gitChangedFiles(): string[] {
   return changedFiles;
 }
 
+export function getCommitSHA() {
+  return child_process.execSync(`git rev-parse HEAD`).toString().trim();
+}
+
 export function setGHAOutput(k: string, v: string) {
   const ghaOutputFile = process.env['GITHUB_OUTPUT'] ?? "/dev/null";
   const outputLine = `${k}=${v}`;

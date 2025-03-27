@@ -38,6 +38,8 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Build & Deploy Website
+        env:
+          PUBLISH_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           shopt -s expand_aliases
           source ./startup.sh

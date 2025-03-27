@@ -6,7 +6,7 @@ import { buildApp } from './app';
 
 const BuildImpls: {
   [projectType in ProjectType]: 
-    (props: {projectPath: string; packageName: string;}) => void
+    (props: {projectPath: string; packageName: string;}) => Promise<void>
 } = {
   [ProjectType.Application]: buildApp,
   // TODO: implement
@@ -21,8 +21,10 @@ export const Build: React.FC<{packageName: string, projectType: ProjectType}> = 
   React.useEffect(() => {
     if (!maybeProjectPath.success) return;
     const {path, type} = maybeProjectPath.value;
-    BuildImpls[type]({projectPath: path, packageName});
-    setDone(true);
+    (async () => {
+      await BuildImpls[type]({projectPath: path, packageName});
+      setDone(true);
+    })();
   }, []);
   if (!maybeProjectPath.success) {
     return <Text>

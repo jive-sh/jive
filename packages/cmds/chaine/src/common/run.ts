@@ -5,5 +5,5 @@ import * as path from 'path';
 export function run(cmd: string, cwd: string) {
   const pathInRepo = cwd.substring(MONOREPO_ROOT.length + path.sep.length);
   console.log(`Running '${cmd}' in ${pathInRepo}`);
-  execSync(cmd, {cwd});
+  execSync(cmd, {cwd, stdio: 'inherit', env: process.env});
 }
