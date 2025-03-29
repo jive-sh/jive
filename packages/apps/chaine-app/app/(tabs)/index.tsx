@@ -55,7 +55,7 @@ export default function HomeScreen() {
       <ThemedView style={styles.stepContainer}>
         <ThemedText type="subtitle">Chaîné &gt; Shazam</ThemedText>
         <ThemedText>
-          Get instant access to the set list played at every class, social, or comp. But don't forget to tip the DJ!
+          Get instant access to the set list played at every class, social, or comp. See the most popular songs per dance per DJ per event, per bmp range. Let DJs know how you liked their set by sending a tip!
         </ThemedText>
       </ThemedView>
       <ThemedView style={styles.stepContainer}>

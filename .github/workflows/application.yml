@@ -43,7 +43,7 @@ jobs:
         run: |
           shopt -s expand_aliases
           source ./startup.sh
-          chaine dev @chaine-app/${{ matrix.app }} deps install
-          chaine dev @chaine-app/${{ matrix.app }} build
-          chaine dev @chaine-app/${{ matrix.app }} publish
-          chaine dev @chaine-app/${{ matrix.app }} deploy
+          chaine dev @chaine-dance/apps.${{ matrix.app }} deps install
+          chaine dev @chaine-dance/apps.${{ matrix.app }} build
+          chaine dev @chaine-dance/apps.${{ matrix.app }} publish
+          chaine dev @chaine-dance/apps.${{ matrix.app }} deploy

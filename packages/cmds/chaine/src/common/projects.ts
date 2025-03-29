@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { type Result, Ok, Err } from './result';
 import { log } from "./log";
 import { MONOREPO_ROOT, PACKAGES_ROOT } from './paths';
-import { ORG_NAME } from './consts';
+import { PACKAGE_SCOPE } from './consts';
 
 export enum ProjectType {
   Application = 'app',
@@ -50,7 +50,8 @@ export function projectTypeFromFolder(folder: string): ProjectType {
 }
 
 export function getPrefix(projectType: ProjectType): string {
-  return `${ORG_NAME}-${projectType}/`;
+  const folderName = ProjectTypeToFolder[projectType];
+  return `${PACKAGE_SCOPE}/${folderName}.`;
 }
 
 export function getProjectType(packageName: string): Result<ProjectType, null> {
@@ -61,7 +62,7 @@ export function getProjectType(packageName: string): Result<ProjectType, null> {
       return Ok({value: projectType});
     }
   }
-  return Err({error: null, reason: `'${packageName}' does not conform to the package naming convention`});
+  return Err({error: null, reason: `'${packageName}' does not conform to the package naming convention.`});
 }
 
 export type Projects = {
