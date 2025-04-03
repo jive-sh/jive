@@ -21,11 +21,13 @@ export const CICDCommand: React.FC<CICDCommandProps> = ({args, argCollected}) =>
     subcommandProperties={{
       [Subcommands.docker]: {
         isTerminal: true,
-        handler: () => <Docker />
+        handler: () => <Docker />,
+        description: 'all dockerfile which must be rebuilt/pushed'
       },
       [Subcommands.packages]: {
         isTerminal: false,
-        handler: () => <Packages args={remainingArgs} argCollected={argCollected} />
+        handler: () => <Packages args={remainingArgs} argCollected={argCollected} />,
+        description: 'all packages which must be rebuilt/published'
       }
     }}
     subcommandArg={initialSubcommand}

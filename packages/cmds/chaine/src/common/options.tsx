@@ -2,21 +2,22 @@ import * as React from 'react';
 import SelectInput from 'ink-select-input';
 import TextInput from 'ink-text-input';
 import { Text } from 'ink';
-import { log } from '../common/log';
 
 export type OptionsProps = {
-  options: string[];
+  options: Record<string, string>;
   prompt: string;
   onChosen: (selection: string) => void;
   isValid?: (text: string) => Promise<boolean>;
 }
 
 export const Options: React.FC<OptionsProps> = ({options, prompt, onChosen, isValid}) => {
-  const [text, setText] = React.useState(options[0] ?? "");
+  const optionKeys = Object.keys(options);
+  const longestOptionLen = Math.max(...optionKeys.map(opt => opt.length));
+  const [text, setText] = React.useState(optionKeys[0] ?? "");
   const [validEval, setValidEval] = React.useState(true);
   const [highlighted, setHighlighted] = React.useState<string | undefined>();
   const [choice, setChoice] = React.useState<string | undefined>();
-  const filteredOptions = options.filter(option => option.includes(text));
+  const filteredOptions = optionKeys.filter(option => option.includes(text));
   const validationFn = (async (textToValidate: string) => {
     if (filteredOptions.includes(textToValidate)) return true;
     if (isValid && (await isValid(textToValidate))) return true;
@@ -49,11 +50,11 @@ export const Options: React.FC<OptionsProps> = ({options, prompt, onChosen, isVa
     <Text>
       {icon} {prompt}: {textToDisplay}
     </Text>
-    {!choice && options.length > 0 &&
+    {!choice && optionKeys.length > 0 &&
       <>
         <Text>{filteredOptions.length} matches</Text>
         <SelectInput
-          items={options.map(option => ({label: option, value: option}))}
+          items={optionKeys.map(option => ({label: option, value: option}))}
           onSelect={({value}) => { }}
           onHighlight={({value}) => { setText(value); setHighlighted(value); }}
           itemComponent={({isSelected, label}) => {
@@ -62,8 +63,12 @@ export const Options: React.FC<OptionsProps> = ({options, prompt, onChosen, isVa
             const mid = idx === -1 ? "" : text;
             const end = idx === -1 ? "" : label.substring(idx + text.length);
             const isMatch = idx !== -1;
+            const spaceToAdd = (longestOptionLen - label.length) + 4;
+            const spaces = "".padStart(spaceToAdd, ' ');
+            const description = options[label];
+            const exactMatch = text === label;
             return <>
-              {(text === label) ?
+              {(exactMatch) ?
                 <Text color="green">  ❯ </Text> :
               (mid.length > 0) ?
                 <Text>{(filteredOptions.indexOf(label) + 1).toString().padStart(3)} </Text> :
@@ -72,6 +77,10 @@ export const Options: React.FC<OptionsProps> = ({options, prompt, onChosen, isVa
               <Text color={isMatch ? "gray" : "gray"}>{start}</Text>
               <Text color="green">{mid}</Text>
               <Text color={isMatch ? "gray" : "gray"}>{end}</Text>
+              {description && <>
+                <Text color={'grey'}>{spaces} | </Text>
+                <Text color={exactMatch ? 'white' : 'gray'}>{description}</Text>
+              </>}
             </>
           }}
           indicatorComponent={({isSelected}) => {

@@ -27,7 +27,7 @@ export function projectTypePathFromRoot(projectType: ProjectType): string {
   return fromRoot;
 }
 
-export function getProjectPath(packageName: string): Result<{path: string, type: ProjectType}, null> {
+export function getProjectPath(packageName: string): Result<{projectPath: string, projectType: ProjectType}, null> {
   const maybeProjectType = getProjectType(packageName);
   if (!maybeProjectType.success) {
     return Err({error: null, reason: maybeProjectType.reason});
@@ -37,7 +37,7 @@ export function getProjectPath(packageName: string): Result<{path: string, type:
   const projectTypeDir = projectTypePathFromRoot(projectType);
   const subdir = packageName.substring(prefix.length);
   const projectPath = path.resolve(projectTypeDir, subdir);
-  return Ok({value: {path: projectPath, type: projectType}});
+  return Ok({value: {projectPath, projectType}});
 }
 
 export function projectTypeFromFolder(folder: string): ProjectType {

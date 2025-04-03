@@ -124,6 +124,7 @@ const subcommandEligibility: SubcommandsProjectTypeEligibility = {
 
 subcommandEligibility;
 
+// TODO: map project name to description from package.json
 const projectsList = await getProjectList();
 
 export type DevCommandProps = {
@@ -180,7 +181,7 @@ export const DevCommand: React.FC<DevCommandProps> = ({args, argCollected}) => {
     {isInitialized && <>
       {initialPackage === undefined && 
         <Options
-          options={projectsList}
+          options={Object.fromEntries(projectsList.map(proj => [proj, ""]))}
           isValid={async packageName => validatePackageName(packageName).valid}
           onChosen={selection => {
             setPackageName(selection);
@@ -212,11 +213,13 @@ export const DevCommand: React.FC<DevCommandProps> = ({args, argCollected}) => {
             subcommandProperties={{
               [Subcommands.build]: {
                 isTerminal: true,
-                handler: () => <Build packageName={packageName} projectType={projectType} />
+                handler: () => <Build packageName={packageName} projectType={projectType} />,
+                description: 'build package'
               },
               [Subcommands.deploy]: {
                 isTerminal: true,
-                handler: () => <Deploy packageName={packageName} projectType={projectType} />
+                handler: () => <Deploy packageName={packageName} projectType={projectType} />,
+                description: 'deploy package'
               },
               [Subcommands.deps]: {
                 isTerminal: false,
@@ -224,43 +227,55 @@ export const DevCommand: React.FC<DevCommandProps> = ({args, argCollected}) => {
                   packageName={packageName}
                   argCollected={argCollected}
                   args={remainingArgs}
-                />
+                />,
+                description: "manage package's dependencies"
               },
               [Subcommands.new]: {
                 isTerminal: true,
-                handler: () => <NewPackage packageName={packageName} projectType={projectType} />
+                handler: () => <NewPackage packageName={packageName} projectType={projectType} />,
+                description: "create new package"
               },
               [Subcommands.test]: {
                 isTerminal: false,
-                handler: defaultHandler
+                handler: defaultHandler,
+                description: "run tests for package"
               },
               [Subcommands.run]: {
                 isTerminal: false,
-                handler: defaultHandler
+                handler: defaultHandler,
+                description: "run custom script in package"
               },
               [Subcommands.precommit]: {
                 isTerminal: true,
-                handler: defaultHandler
+                handler: defaultHandler,
+                description: "run precommit hooks on package"
               },
               [Subcommands.publish]: {
                 isTerminal: true,
-                handler: () => <Publish packageName={packageName} projectType={projectType} />
+                handler: () => <Publish packageName={packageName} projectType={projectType} />,
+                description: "publish package to registry"
               },
               [Subcommands.link]: {
                 isTerminal: true,
-                handler: defaultHandler
+                handler: defaultHandler,
+                description: "link package to all other packages which depend on it for local dev"
               },
               [Subcommands.unlink]: {
                 isTerminal: true,
-                handler: defaultHandler
+                handler: defaultHandler,
+                description: "unlink package, resetting all dependents back to given version"
               },
+              // TODO: I'm debating even having this. For example
+              //       perhaps I prefer IaC in the service startup code
               [Subcommands.infra]: {
                 isTerminal: false,
-                handler: defaultHandler
+                handler: defaultHandler,
+                description: "apply infra as code for the package"
               },
               [Subcommands.template]: {
                 isTerminal: false,
-                handler: defaultHandler
+                handler: defaultHandler,
+                description: "regenerate the template code from the template package source"
               }
             }}
             subcommandArg={initialSubcommand}

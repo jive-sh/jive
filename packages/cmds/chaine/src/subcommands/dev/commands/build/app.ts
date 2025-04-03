@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { run } from '../../../../common/run';
 import { exec } from 'child_process';
 import { pipeProcOutput, StreamType } from '../../../../common/pipe-proc-output';
+import { getCommitSHA } from '../../../../common/git';
 
 export async function buildApp({projectPath, packageName}: {projectPath: string; packageName: string;}) {
     run('npx pnpm expo export --platform web', projectPath);
@@ -62,5 +63,6 @@ export async function buildApp({projectPath, packageName}: {projectPath: string;
     const updatedPackageJson = JSON.parse(
       fs.readFileSync(buildPackageJson).toString());
     updatedPackageJson.tarball = lastLine;
+    updatedPackageJson.tag = getCommitSHA();
     fs.writeFileSync(buildPackageJson, JSON.stringify(updatedPackageJson, null, 2));
 }

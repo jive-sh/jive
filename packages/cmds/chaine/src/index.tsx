@@ -51,11 +51,13 @@ const ChaineCommand: React.FC<{}> = ({}) => {
       subcommandProperties={{
         [Subcommands.dev]: {
           isTerminal: false,
-          handler: () => <DevCommand args={args} argCollected={argCollected} />
+          handler: () => <DevCommand args={args} argCollected={argCollected} />,
+          description: ''
         },
         [Subcommands.cicd]: {
           isTerminal: false,
-          handler: () => <CICDCommand args={args} argCollected={argCollected} />
+          handler: () => <CICDCommand args={args} argCollected={argCollected} />,
+          description: ''
         }
       }}
       parentCommand={COMMAND_NAME}

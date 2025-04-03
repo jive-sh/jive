@@ -20,9 +20,9 @@ export const Build: React.FC<{packageName: string, projectType: ProjectType}> = 
   const maybeProjectPath = getProjectPath(packageName);
   React.useEffect(() => {
     if (!maybeProjectPath.success) return;
-    const {path, type} = maybeProjectPath.value;
+    const {projectPath, projectType} = maybeProjectPath.value;
     (async () => {
-      await BuildImpls[type]({projectPath: path, packageName});
+      await BuildImpls[projectType]({projectPath, packageName});
       setDone(true);
     })();
   }, []);

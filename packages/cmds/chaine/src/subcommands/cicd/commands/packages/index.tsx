@@ -39,7 +39,8 @@ const subcommandProperties = subcommandPropMap(possibleSubcommands, () => ({
   handler: ({subcommand}) => {
     const projectType = projectTypeFromFolder(subcommand);
     return <ProjectTypeHandler projectType={projectType} />
-  }
+  },
+  description: ''
 }));
 
 export const Packages: React.FC<PackagesProps> = ({args, argCollected}) => {

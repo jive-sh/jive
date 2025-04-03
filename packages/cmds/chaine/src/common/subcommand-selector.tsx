@@ -6,6 +6,7 @@ import { Exit } from './exit';
 export type SubcommandProperties<HandlerProps> = {
   isTerminal: boolean;
   handler: React.FC<HandlerProps>;
+  description: string;
 }
 
 export function subcommandsFromList(list: string[]): Record<string, string> {
@@ -44,11 +45,16 @@ export const SubcommandSelector = <Subcommands extends Record<string, string>,> 
     setIsInitialized(true);
   }, []);
   const possibleSubcommands = subcommandSubset ?? Object.values(subcommands);
+  const possibleSubcommandsWithDescs = {} as Record<keyof Subcommands, string>;
+  possibleSubcommands.forEach(subcommand => {
+    possibleSubcommandsWithDescs[subcommand]
+      = subcommandProperties[subcommand].description;
+  })
   return <>
     {isInitialized && <>
       {subcommandArg === undefined &&
         <Options
-          options={possibleSubcommands as string[]}
+          options={possibleSubcommandsWithDescs}
           onChosen={selection => {
             setSubcommand(selection);
             const isTerminal = !!subcommandProperties[selection]?.isTerminal;
