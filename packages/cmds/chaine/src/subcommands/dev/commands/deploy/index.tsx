@@ -4,10 +4,7 @@ import { getProjectPath, ProjectType } from '../../../../common/projects';
 import { Exit } from '../../../../common/exit';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as k8s from '@kubernetes/client-node';
-import { getSecret } from '../../../../common/secrets-fetcher';
-import { getSecretsNamespaceFromPackageName, Secrets } from '../../../../common/secrets';
-import { name as cliPackageName } from '../../../../../package.json';
+import { getAPIClient } from '../../../../common/kubernetes';
 
 export const Deploy: React.FC<{packageName: string, projectType: ProjectType}> = ({packageName, projectType}) => {
   const [done, setDone] = React.useState(false);
@@ -21,16 +18,14 @@ export const Deploy: React.FC<{packageName: string, projectType: ProjectType}> =
       const packageJSON = JSON.parse(fs.readFileSync(packageJSONPath).toString());
       const {name, tag} = packageJSON;
       console.log(`deploying '${name}' with tag '${tag}'`);
-      const secretsNamespace = getSecretsNamespaceFromPackageName(cliPackageName);
-      const maybeKubeConfig = await getSecret(secretsNamespace, Secrets.KUBECONFIG);
-      if (!maybeKubeConfig.success) {
-        console.log(`Failed to get ${Secrets.KUBECONFIG}: ${maybeKubeConfig.error}; ${maybeKubeConfig.reason}`);
+      const maybeK8sApi = await getAPIClient();
+      if (!maybeK8sApi.success) {
+        console.log(`Failed to init k8s API due to ${maybeK8sApi.error}: ${maybeK8sApi.reason}`);
         setDone(true);
         return;
       }
-      const kubeconfig = maybeKubeConfig.value;
-      console.log('kubeconfig:');
-      console.log(kubeconfig);
+      const k8sApi = maybeK8sApi.value;
+      k8sApi.createNamespaceDeplo
       setDone(true);
     })();
   }, []);

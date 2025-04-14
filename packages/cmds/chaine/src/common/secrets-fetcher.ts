@@ -1,4 +1,5 @@
 import { Ok, Err, type Result } from './result';
+import { z } from 'zod';
 
 const SECRET_CACHE: Map<string, string> = new Map();
 
@@ -9,6 +10,29 @@ export enum GetSecretError {
   NoSuchSecret = 'NoSuchSecret'
 }
 
+const HCPSecretSchema = z.object({
+  name: z.string(),
+  type: z.literal('kv'),
+  latest_version: z.number(),
+  created_at: z.string(), // i.e. 2025-02-13T08:47:46.580218Z
+  created_by_id: z.string(),
+  sync_status: z.object({}),
+  static_version: z.object({
+    version: z.number(),
+    value: z.string(),
+    created_at: z.string(),
+    created_by_id: z.string()
+  }).strict()
+}).strict();
+
+const HCPSecretsResponseSchema = z.object({
+  secrets: z.array(HCPSecretSchema),
+  pagination: z.object({
+    next_page_token: z.string(),
+    previous_page_token: z.string()
+  })
+});
+
 type AccessTokenResponse = {
   access_token: string;
   token_type: string;
@@ -17,15 +41,22 @@ type AccessTokenResponse = {
 
 export async function getSecret(namespace: string, secret: string): Promise<Result<string, GetSecretError>> {
   // This works since neither Apps nor Secrets in Hashicorp Vault may contain period chars
-  const cacheKey = `${namespace}.${secret}`;
+  function getCacheKey(secret: string) {
+    return `${namespace}.${secret}`;
+  }
+  const cacheKey = getCacheKey(secret);
   if (SECRET_CACHE.has(cacheKey)) {
     console.log(`cache hit for ${cacheKey}`);
     return Ok({value: SECRET_CACHE.get(cacheKey)!});
   }
   const CLIENT_ID_ENV_VAR = 'HCP_CLIENT_ID';
   const CLIENT_SECRET_ENV_VAR = 'HCP_CLIENT_SECRET';
+  const ORG_ID_ENV_VAR = 'HCP_ORG_ID';
+  const PROJECT_ID_ENV_VAR = 'HCP_PROJECT_ID';
   const maybeClientId = getEnvVar(CLIENT_ID_ENV_VAR);
   const maybeClientSecret = getEnvVar(CLIENT_SECRET_ENV_VAR);
+  const maybeOrgId = getEnvVar(ORG_ID_ENV_VAR);
+  const maybeProjectId = getEnvVar(PROJECT_ID_ENV_VAR);
   if (!maybeClientId.success) {
     return Err({
       error: GetSecretError.MissingHCPEnvVars,
@@ -38,8 +69,22 @@ export async function getSecret(namespace: string, secret: string): Promise<Resu
       reason: `Missing ${CLIENT_SECRET_ENV_VAR} env var: ${maybeClientSecret.reason}`
     });
   }
+  if (!maybeOrgId.success) {
+    return Err({
+      error: GetSecretError.MissingHCPEnvVars,
+      reason: `Missing ${ORG_ID_ENV_VAR} env var: ${maybeOrgId.reason}`
+    });
+  }
+  if (!maybeProjectId.success) {
+    return Err({
+      error: GetSecretError.MissingHCPEnvVars,
+      reason: `Missing ${PROJECT_ID_ENV_VAR} env var: ${maybeProjectId.reason}`
+    });
+  }
   const clientId = maybeClientId.value;
   const clientSecret = maybeClientSecret.value;
+  const orgId = maybeOrgId.value;
+  const projectId = maybeProjectId.value;
   let hcpAPIToken: AccessTokenResponse;
   try {
     hcpAPIToken = (await (await fetch(
@@ -64,8 +109,28 @@ export async function getSecret(namespace: string, secret: string): Promise<Resu
       reason: error.message
     });
   }
-  console.log('api token');
-  //console.log(hcpAPIToken);
+  // TODO: handle pagination
+  const secretsResponse = (await (await fetch(
+    `https://api.cloud.hashicorp.com/secrets/2023-11-28/organizations/${orgId}/projects/${projectId}/apps/${namespace}/secrets:open`, {
+    headers: {
+      'Authorization': `Bearer ${hcpAPIToken.access_token}`,
+    }
+  })).json());
+  const { secrets } = HCPSecretsResponseSchema.parse(secretsResponse);
+  const secretsInResponse: string[] = [];
+  for (const secret of secrets) {
+    // TODO: handle other than static values.
+    const value = secret.static_version.value;
+    SECRET_CACHE.set(getCacheKey(secret.name), value);
+    secretsInResponse.push(secret.name)
+  }
+  if (!SECRET_CACHE.has(cacheKey)) {
+    return Err({
+      error: GetSecretError.NoSuchSecret,
+      reason: `HCP has secrets ${secretsInResponse.join(', ')}. ${secret} is not present`
+    });
+  }
+  return Ok({value: SECRET_CACHE.get(cacheKey)!});
 }
 
 export enum GetEnvVarError {
