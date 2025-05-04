@@ -10,6 +10,8 @@ import { Deps } from './commands/deps';
 import { Build } from './commands/build';
 import { Publish } from './commands/publish';
 import { Deploy } from './commands/deploy';
+import { GetSecret } from './commands/get-secret';
+
 
 /**
  * dev [package name]
@@ -29,6 +31,7 @@ enum Subcommands {
   build = 'build',
   deploy = 'deploy',
   deps = 'deps',
+  'get-secret' = 'get-secret',
   infra = 'infra',
   link = 'link',
   new = 'new',
@@ -63,6 +66,12 @@ const subcommandEligibility: SubcommandsProjectTypeEligibility = {
     [ProjectType.Application]: true,
     [ProjectType.Command]: true,
     [ProjectType.Library]: true,
+    [ProjectType.Service]: true
+  },
+  [Subcommands['get-secret']]: {
+    [ProjectType.Application]: true,
+    [ProjectType.Command]: true,
+    [ProjectType.Library]: false,
     [ProjectType.Service]: true
   },
   [Subcommands.infra]: {
@@ -229,6 +238,11 @@ export const DevCommand: React.FC<DevCommandProps> = ({args, argCollected}) => {
                   args={remainingArgs}
                 />,
                 description: "manage package's dependencies"
+              },
+              [Subcommands['get-secret']]: {
+                isTerminal: false,
+                handler: () => <GetSecret args={remainingArgs} argCollected={argCollected} packageName={packageName}  />,
+                description: "each package has it's own set of secrets"
               },
               [Subcommands.new]: {
                 isTerminal: true,

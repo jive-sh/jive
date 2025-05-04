@@ -5,7 +5,7 @@ import { Packages } from './commands/packages';
 
 enum Subcommands {
   docker = 'docker',
-  packages = 'packages',
+  packages = 'packages'
 }
 
 export type CICDCommandProps = {
@@ -22,7 +22,7 @@ export const CICDCommand: React.FC<CICDCommandProps> = ({args, argCollected}) =>
       [Subcommands.docker]: {
         isTerminal: true,
         handler: () => <Docker />,
-        description: 'all dockerfile which must be rebuilt/pushed'
+        description: 'all Dockerfiles which must be rebuilt/pushed'
       },
       [Subcommands.packages]: {
         isTerminal: false,

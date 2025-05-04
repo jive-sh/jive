@@ -37,7 +37,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v2
 
-      - name: Build & Deploy Website
+      - name: Build & Publish & Deploy Website
         env:
           PUBLISH_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -47,3 +47,6 @@ jobs:
           chaine dev @chaine-dance/apps.${{ matrix.app }} build
           chaine dev @chaine-dance/apps.${{ matrix.app }} publish
           chaine dev @chaine-dance/apps.${{ matrix.app }} deploy
+      # - name: Dev Env Deployment and Tests
+      # - name: Preview Env Deployment and Tests
+      # - name: Prod Env Deployment and Tests

@@ -4,7 +4,7 @@ import { getProjectPath, ProjectType } from '../../../../common/projects';
 import { Exit } from '../../../../common/exit';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getAPIClient } from '../../../../common/kubernetes';
+import { KubernetesClient } from '../../../../common/kubernetes';
 
 export const Deploy: React.FC<{packageName: string, projectType: ProjectType}> = ({packageName, projectType}) => {
   const [done, setDone] = React.useState(false);
@@ -18,14 +18,15 @@ export const Deploy: React.FC<{packageName: string, projectType: ProjectType}> =
       const packageJSON = JSON.parse(fs.readFileSync(packageJSONPath).toString());
       const {name, tag} = packageJSON;
       console.log(`deploying '${name}' with tag '${tag}'`);
-      const maybeK8sApi = await getAPIClient();
-      if (!maybeK8sApi.success) {
-        console.log(`Failed to init k8s API due to ${maybeK8sApi.error}: ${maybeK8sApi.reason}`);
+      const k8sResult = await KubernetesClient.getInstance();
+      if (!k8sResult.success) {
+        console.log(`Failed to init k8s API due to ${k8sResult.error}: ${k8sResult.reason}`);
         setDone(true);
         return;
       }
-      const k8sApi = maybeK8sApi.value;
-      k8sApi.createNamespaceDeplo
+      const k8s = k8sResult.value;
+      //k8s.provisionService();
+      //k8s.provisionIngress();
       setDone(true);
     })();
   }, []);

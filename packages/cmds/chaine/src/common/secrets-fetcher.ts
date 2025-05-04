@@ -3,6 +3,11 @@ import { z } from 'zod';
 
 const SECRET_CACHE: Map<string, string> = new Map();
 
+// This works since neither Apps nor Secrets in Hashicorp Vault may contain period chars
+function getCacheKey(namespace: string, secret: string) {
+  return `${namespace}.${secret}`;
+}
+
 export enum GetSecretError {
   MissingHCPEnvVars = 'MissingHCPEnvVars',
   FailedToAuthenticate = 'FailedToAuthenticate',
@@ -39,16 +44,37 @@ type AccessTokenResponse = {
   expires_in: number;
 }
 
+export function getSecretsNamespaceFromPackageName(packageName: string): string {
+  const [scope, name] = packageName.split('/');
+  // const safeScope = scope.replaceAll('@', '').replaceAll('.', '-') + '-';
+  // Technically this could cause conflict between non scoped and scoped packages.
+  // Long term we want to move to K8s External Secrets Operator and using the K8s API to fetch secrets.
+  // I'm leaning towards allowing the conflict and having the service / secret namespace based on the package/repo name only.
+  // This way I can have a clean dir structure and my apps folder and libs folder can contain some repos from other orgs easily.
+  // The scope just impacts the owning org / package regitry it's published to. If someone wants to change that, they just change
+  // the git org / package scope.
+  return name.replaceAll('.', '-').toLocaleLowerCase();
+}
+
 export async function getSecret(namespace: string, secret: string): Promise<Result<string, GetSecretError>> {
-  // This works since neither Apps nor Secrets in Hashicorp Vault may contain period chars
-  function getCacheKey(secret: string) {
-    return `${namespace}.${secret}`;
-  }
-  const cacheKey = getCacheKey(secret);
+  const cacheKey = getCacheKey(namespace, secret);
   if (SECRET_CACHE.has(cacheKey)) {
     console.log(`cache hit for ${cacheKey}`);
     return Ok({value: SECRET_CACHE.get(cacheKey)!});
   }
+  const secretsResult = await listSecrets(namespace);
+  if (!secretsResult.success) return secretsResult;
+  const secrets = secretsResult.value;
+  if (!SECRET_CACHE.has(cacheKey)) {
+    return Err({
+      error: GetSecretError.NoSuchSecret,
+      reason: `HCP has secrets ${secrets.join(', ')}. ${secret} is not present`
+    });
+  }
+  return Ok({value: SECRET_CACHE.get(cacheKey)!});
+}
+
+export async function listSecrets(namespace: string): Promise<Result<string[], GetSecretError>> {
   const CLIENT_ID_ENV_VAR = 'HCP_CLIENT_ID';
   const CLIENT_SECRET_ENV_VAR = 'HCP_CLIENT_SECRET';
   const ORG_ID_ENV_VAR = 'HCP_ORG_ID';
@@ -116,21 +142,22 @@ export async function getSecret(namespace: string, secret: string): Promise<Resu
       'Authorization': `Bearer ${hcpAPIToken.access_token}`,
     }
   })).json());
+  const secretsResult = HCPSecretsResponseSchema.safeParse(secretsResponse);
+  if (!secretsResult.success) {
+    return Err({
+      error: GetSecretError.FailedToFetchSecrets,
+      reason: `Got HCP JSON of "${JSON.stringify(secretsResponse)}". Parse error of ${secretsResult.error.toString()}`
+    });
+  }
   const { secrets } = HCPSecretsResponseSchema.parse(secretsResponse);
   const secretsInResponse: string[] = [];
   for (const secret of secrets) {
     // TODO: handle other than static values.
     const value = secret.static_version.value;
-    SECRET_CACHE.set(getCacheKey(secret.name), value);
+    SECRET_CACHE.set(getCacheKey(namespace, secret.name), value);
     secretsInResponse.push(secret.name)
   }
-  if (!SECRET_CACHE.has(cacheKey)) {
-    return Err({
-      error: GetSecretError.NoSuchSecret,
-      reason: `HCP has secrets ${secretsInResponse.join(', ')}. ${secret} is not present`
-    });
-  }
-  return Ok({value: SECRET_CACHE.get(cacheKey)!});
+  return Ok({ value: secretsInResponse });
 }
 
 export enum GetEnvVarError {
