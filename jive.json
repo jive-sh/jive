@@ -1,0 +1,29 @@
+{
+  "oauth2": {
+
+  },
+  "routing": {
+    "chaine.dance": {
+      "/": {
+        "service": "apps.chaine-app",
+        "oauth2": ""
+      }
+    }
+  },
+  "organizations": {
+    "chaine-dance": {
+      "docker": "ghcr.io",
+      "git": "github.com",
+      "npm": "ghcr.io"
+    }
+  },
+  "package-type-defs": {
+    "apps": "@chaine-dance/libs.jive-package-type-def.apps",
+    "cmds": "@chaine-dance/libs.jive-package-type-def.cmds",
+    "exts-chrome": "@chaine-dance/libs.jive-package-type-def.exts-chrome",
+    "exts-vscode": "@chaine-dance/libs.jive-package-type-def.exts-vscode",
+    "imgs": "@chaine-dance/libs.jive-package-type-def.imgs",
+    "libs": "@chaine-dance/libs.jive-package-type-def.libs",
+    "svcs": "@chaine-dance/libs.jive-package-type-def.svcs"
+  }
+}

@@ -4,7 +4,7 @@ import { getProjectPath, ProjectType } from '../../../../common/projects';
 import { Exit } from '../../../../common/exit';
 import * as path from 'path';
 import * as fs from 'fs';
-import { KubernetesClient } from '../../../../common/kubernetes';
+import { KubernetesClient, Namespaces } from '../../../../common/kubernetes';
 
 export const Deploy: React.FC<{packageName: string, projectType: ProjectType}> = ({packageName, projectType}) => {
   const [done, setDone] = React.useState(false);
@@ -25,8 +25,8 @@ export const Deploy: React.FC<{packageName: string, projectType: ProjectType}> =
         return;
       }
       const k8s = k8sResult.value;
-      //k8s.provisionService();
-      //k8s.provisionIngress();
+      k8s.provisionService();
+      k8s.provisionIngress(Namespaces.production, {});
       setDone(true);
     })();
   }, []);

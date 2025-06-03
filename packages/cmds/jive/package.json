@@ -1,5 +1,5 @@
 {
-  "name": "@chaine-dance/cmds.chaine",
+  "name": "@jive-it/cmds.chaine",
   "type": "module",
   "description": "CLI for Chaîné. Dev and CI tools",
   "version": "0.0.1",

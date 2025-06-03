@@ -1,6 +1,6 @@
 #!/bin/bash
 cur_dir=$(pwd)
-cli_dir="${cur_dir}/packages/cmds/chaine"
+cli_dir="${cur_dir}/packages/cmds/jive"
 cd $cli_dir
 npx --quiet pnpm install
 # Load HCP env vars if doing local dev

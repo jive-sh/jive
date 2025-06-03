@@ -1,5 +1,0 @@
-{
-  "gcc": [],
-  "python": [],
-  "service": ["gcc", "python"]
-}
