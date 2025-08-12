@@ -17,5 +17,8 @@
     "react": "^18",
     "yaml": "^2.7.0",
     "zod": "^3.24.2"
+  },
+  "jive": {
+    "package-type-def": "@jive-it/libs.package-type-def.cmds"
   }
 }

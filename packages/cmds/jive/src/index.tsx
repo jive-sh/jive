@@ -1,7 +1,7 @@
-import { DevCommand } from './subcommands/dev/index';
+import { DevCommand } from './subcommands/pkg/index';
 import { render, Text, Newline } from 'ink';
 import * as React from 'react';
-import { COMPANY_NAME } from './common/consts';
+import { TOOL_NAME } from './common/consts';
 import { CICDCommand } from './subcommands/cicd';
 import { SubcommandSelector } from './common/subcommand-selector';
 
@@ -9,17 +9,16 @@ const args = process.argv.slice(2);
 const initialSubcommand = args.splice(0, 1)[0];
 
 enum Subcommands {
-  dev = 'dev',
+  pkg = 'pkg',
   cicd = 'cicd'
 }
 
-export const COMMAND_NAME = COMPANY_NAME;
-const FULL_COMMAND = `${COMMAND_NAME}` + 
+const FULL_COMMAND = `${TOOL_NAME}` + 
   (initialSubcommand ? ` ${initialSubcommand}` : '') +
   (args.length ? ` ${args.join(' ')}` : '');
 
 const ChaineCommand: React.FC<{}> = ({}) => {
-  const [nextTime, setNextTime] = React.useState(COMMAND_NAME);
+  const [nextTime, setNextTime] = React.useState(TOOL_NAME);
   const [collectedAllArgs, setCollectedAllArgs] = React.useState(false);
   const [isInitialized, setIsInitizlized] = React.useState(false);
   function argCollected(all: boolean, latest?: string) {
@@ -49,7 +48,7 @@ const ChaineCommand: React.FC<{}> = ({}) => {
       subcommandArg={initialSubcommand}
       subcommands={Subcommands}
       subcommandProperties={{
-        [Subcommands.dev]: {
+        [Subcommands.pkg]: {
           isTerminal: false,
           handler: () => <DevCommand args={args} argCollected={argCollected} />,
           description: ''
@@ -60,7 +59,7 @@ const ChaineCommand: React.FC<{}> = ({}) => {
           description: ''
         }
       }}
-      parentCommand={COMMAND_NAME}
+      parentCommand={TOOL_NAME}
       argCollected={argCollected}
     />
   </>
