@@ -10,7 +10,7 @@ const initialSubcommand = args.splice(0, 1)[0];
 
 enum Subcommands {
   pkg = 'pkg',
-  cicd = 'cicd'
+  cicd = 'cicd',
 }
 
 const FULL_COMMAND = `${TOOL_NAME}` + 
