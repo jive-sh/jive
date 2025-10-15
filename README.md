@@ -23,11 +23,15 @@ Might as well get everything at runtime when needed
 
 # CLI docs
 
+TODO: https://github.com/Effect-TS/effect/issues/5630
+
+TODO: "postinstall": "jive install"
+
 ```
 jive
   on <repo name>
     git <git command(s)>
-    run <pnpm command(s)>
+    run <bun command(s)>
     // plugins
     expo
     k8s
