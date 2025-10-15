@@ -1,43 +1,18 @@
 import { Command } from "@effect/cli";
 import { NodeContext, NodeRuntime } from "@effect/platform-node";
 import { Console, Effect } from "effect";
-import * as packageJSON from "../package.json";
-import { Schema } from "effect";
 
-const onCommand = Command.make("on")
+import { rootCommands } from "@/commands";
+import { CLI_NAME, CLI_VERSION } from "./common/consts";
 
-const loadCommand = Command.make("load");
-
-const unloadCommand = Command.make("unload");
-
-const templatizeCommand = Command.make("templatize");
-
-const createCommand = Command.make("create");
-
-const initCommand = Command.make("init");
-
-const updateCommand = Command.make("update");
-
-const userCommand = Command.make("user");
-
-const topLevelCommandName = Schema.decodeUnknownSync(Schema.String)(Object.keys(packageJSON.bin).pop());
-
-const topLevelCommand = Command.make(topLevelCommandName, {}, () =>
-  Console.log("Hello World")
-).pipe(Command.withSubcommands([
-  onCommand,
-  loadCommand,
-  unloadCommand,
-  templatizeCommand,
-  createCommand,
-  initCommand,
-  updateCommand,
-  userCommand
-]));
+const topLevelCommand = Command
+  .make(CLI_NAME, {}, () => Console.log(`Use --help to explore ${CLI_NAME} commands.`))
+  .pipe(Command.withDescription(`${CLI_NAME} CLI root command.`))
+  .pipe(Command.withSubcommands(rootCommands));
 
 const cli = Command.run(topLevelCommand, {
-  name: packageJSON.name,
-  version: `v${packageJSON.version}`
+  name: CLI_NAME,
+  version: CLI_VERSION
 });
 
 cli(process.argv)

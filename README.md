@@ -27,32 +27,38 @@ TODO: https://github.com/Effect-TS/effect/issues/5630
 
 TODO: "postinstall": "jive install"
 
+Idea: perhaps have a plugins repo which a jive workspace points to
+
 ```
 jive
-  on <repo name>
+  on <org/repo>
     git <git command(s)>
     run <bun command(s)>
-    // plugins
-    expo
-    k8s
-    tunnel
+    [PLUGIN] expo
+    [PLUGIN] k8s
+    [PLUGIN] tunnel
+  link
+    repo <org/repo>
+  unlink
+    repo <org/repo>
   load
-    repo <org name> <repo name>
+    repo <org/repo>
     plugin <plugin name>
   unload
-    repo <repo name>
-    plugin <plugin name>
-  templatize <repo name> into <template name>
-  create <template name> at <org name> <repo name>
+    repo <org/repo>
+    plugin <plugin>
+  [PLUGIN] templatize <org/repo> <template>
+  [PLUGIN] create <template name> <org/repo>
   init
   update
-    repo
-    plugin
+    everything
+    repo <org/repo>
+    plugin <plugin>
   user
     list
     login <email>
     logout <email>
-    switch
+    switch <email>
 ```
 
 # Package Naming convention
