@@ -1,5 +1,5 @@
 {
-  "name": "@jive-it/jive",
+  "name": "@chaine-dance/jive",
   "module": "src/index.ts",
   "type": "module",
   "description": "The Jive CLI",
@@ -9,10 +9,8 @@
     "jive": "bin/jive"
   },
   "scripts": {
-    "prebuild": "tsc -p tsconfig.json",
-    "build": "bun build ./src/index.ts --compile --outfile ./bin/jive",
-    "prepublish": "bun run build && npm version patch --no-git-tag-version",
-    "publish": "bun publish ./"
+    "build": "",
+    "test": ""
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -20,9 +18,6 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@effect/cli": "^0.72.0",
-    "@effect/platform": "^0.92.1",
-    "@effect/platform-node": "^0.98.3",
     "bun": "^1.3.0",
     "effect": "^3.18.4"
   },
