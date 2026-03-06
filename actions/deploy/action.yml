@@ -1,0 +1,140 @@
+name: deploy
+description: Promote temporary npm package versions, deploy, run integration tests, and clean temp versions.
+
+inputs:
+  environments:
+    description: Environment label(s) for deployment context.
+    required: false
+    default: ""
+  publish:
+    description: When true, promote temporary npm package to stable release version.
+    required: false
+    default: "false"
+  integration-tests:
+    description: Run `bun run test:integration` after deployment when true.
+    required: false
+    default: "false"
+  npm-token:
+    description: npm auth token used for package promotion and cleanup.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: ${{ inputs.bun-version }}
+
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        registry-url: https://registry.npmjs.org
+
+    - name: Configure npm auth
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.npm-token }}" ]; then
+          echo "npm-token input is required." >&2
+          exit 1
+        fi
+        echo "//registry.npmjs.org/:_authToken=${{ inputs.npm-token }}" > "${HOME}/.npmrc"
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: bun install
+
+    - name: Resolve package metadata
+      id: metadata
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        PACKAGE_NAME="$(node -p "require('./package.json').name")"
+        BASE_VERSION="$(node -p "require('./package.json').version")"
+        TEMP_VERSION="${BASE_VERSION}-temp-${GITHUB_SHA}"
+
+        echo "PACKAGE_NAME=${PACKAGE_NAME}" >> "${GITHUB_ENV}"
+        echo "BASE_VERSION=${BASE_VERSION}" >> "${GITHUB_ENV}"
+        echo "TEMP_VERSION=${TEMP_VERSION}" >> "${GITHUB_ENV}"
+
+    - name: Pull temporary npm package
+      id: pull_temp
+      shell: bash
+      run: |
+        npm view "${PACKAGE_NAME}@${TEMP_VERSION}" version >/dev/null
+
+        TMP_DIR="$(mktemp -d)"
+        pushd "${TMP_DIR}" >/dev/null
+        npm pack "${PACKAGE_NAME}@${TEMP_VERSION}" >/dev/null
+        TARBALL="$(ls -1 *.tgz | head -n 1)"
+        if [ -z "${TARBALL}" ]; then
+          echo "Failed to download temporary npm package tarball." >&2
+          exit 1
+        fi
+        tar -xzf "${TARBALL}"
+        popd >/dev/null
+
+        echo "tmp-dir=${TMP_DIR}" >> "${GITHUB_OUTPUT}"
+
+    - name: Promote temporary package to stable version
+      if: ${{ inputs.publish == 'true' }}
+      shell: bash
+      run: |
+        TMP_DIR="${{ steps.pull_temp.outputs.tmp-dir }}"
+        if [ -z "${TMP_DIR}" ]; then
+          echo "Temporary package directory not found." >&2
+          exit 1
+        fi
+
+        export PROMOTION_PACKAGE_JSON="${TMP_DIR}/package/package.json"
+
+        node <<'NODE'
+        const fs = require("node:fs");
+        const pkgPath = process.env.PROMOTION_PACKAGE_JSON;
+        const baseVersion = process.env.BASE_VERSION;
+        if (!pkgPath || !baseVersion) {
+          throw new Error("Promotion metadata is missing.");
+        }
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+        pkg.version = baseVersion;
+        fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+        NODE
+
+        npm publish "${TMP_DIR}/package" --tag latest --access public
+
+    - name: Deploy
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        JIVE_DEPLOY_ENVIRONMENTS: ${{ inputs.environments }}
+      run: bun run deploy
+
+    - name: Integration tests
+      if: ${{ inputs.integration-tests == 'true' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: bun run test:integration
+
+    - name: Unpublish temporary npm version
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        if [ -z "${PACKAGE_NAME:-}" ] || [ -z "${TEMP_VERSION:-}" ]; then
+          exit 0
+        fi
+
+        npm view "${PACKAGE_NAME}@${TEMP_VERSION}" version >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+          npm unpublish "${PACKAGE_NAME}@${TEMP_VERSION}" || true
+        fi
+
+    - name: Cleanup temporary directory
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        TMP_DIR="${{ steps.pull_temp.outputs.tmp-dir }}"
+        if [ -n "${TMP_DIR}" ]; then
+          rm -rf "${TMP_DIR}"
+        fi

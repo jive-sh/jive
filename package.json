@@ -19,8 +19,13 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@effect/platform": "^0.94.5",
+    "@effect/platform-node": "^0.104.1",
+    "@ozyman42/interactive-cli-select": "^0.2.0",
     "bun": "^1.3.0",
+    "cbor-x": "^1.6.0",
     "effect": "^3.18.4",
+    "node-hid": "^3.3.0",
     "omelette": "^0.4.17"
   },
   "workspaces": [

@@ -33,9 +33,23 @@ In general a core philosophy is that manual steps take away attention and focus.
 
 - Jive will automate your tsconfig.json and renovate.json. Some overrides are possible but it's limited.
 - Jive will to some degree automate your gitignore
-- Jive has a simple github workflow action which will
-  - Run the package.json build command then test command then the deploy command
-  - If all the above are successful, trigger version bump PRs for all packages depending on this one
+- Jive provides a reusable GitHub Actions workflow at `.github/workflows/reusable-deploy-pipeline.yml`.
+  - Pipeline order is fixed: checkout, bun setup, install, build, unit tests, deploy staging, integration tests (staging), deploy production, integration tests (production).
+  - Repos can call it from their own workflow:
+
+```yaml
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    uses: chaine-dance/jive/.github/workflows/reusable-deploy-pipeline.yml@main
+    secrets: inherit
+```
 
 # Templates
 
@@ -81,8 +95,19 @@ jive
   create <template name> <org> <repo>
   init
   login
+  whoami
   daemon
 ```
+
+`jive login` uses YubiKey resident FIDO2 keys named `jive:<email>`.
+The same `jive:<email>` name is used for both GitHub auth and signing key titles.
+During login, jive lists existing `jive:*` keys on both the YubiKey and GitHub, reuses matching keys when possible, and only creates a new resident key when needed.
+`jive login` requires OpenSSH client commands on PATH: `ssh-keygen` (key creation/discovery) and `ssh-add` (load key handle into agent).
+On most macOS/Linux systems OpenSSH is preinstalled. If missing, install an OpenSSH client package first.
+
+Experimental CTAP/HID prototype flags:
+- `JIVE_EXPERIMENTAL_CTAP=1` enables direct CTAP/HID session probing (`getInfo`) before OpenSSH fallback.
+- `JIVE_EXPERIMENTAL_CTAP_CREATE=1` attempts a direct CTAP `makeCredential` prototype before OpenSSH fallback.
 
 # Technical details regarding Jive
 
@@ -94,9 +119,20 @@ Jive has no config file. Instead, jive walks upward from the current directory u
 
 ```
 .jive/
+  active-user.json # { "email": "..." }
+  users/
+    <email>/
+      read-only-token.json
+      read-only-authn-key
+      read-only-authn-key.pub
+      write-refresh-token.json # optional, when OAuth app issues refresh tokens
   state     # loaded repos, workspace topology
-  keys/     # github tokens, npm tokens, etc. (yubikey-encrypted)
 ```
+
+`jive login` persists a workspace-scoped read-only auth key under `.jive/users/<email>/read-only-authn-key`.
+The YubiKey resident key remains the commit-signing key.
+`jive login` acquires a write token for key setup, then acquires a lower-scope read token for persistence (refresh downscope when possible, otherwise a second browser OAuth pass).
+`jive create` and `jive templatize` reacquire write-capable GitHub tokens on demand (refresh token first when available, otherwise browser OAuth).
 
 ## Autocomplete
 

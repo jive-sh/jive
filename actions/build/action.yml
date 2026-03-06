@@ -1,0 +1,50 @@
+name: build
+description: Build, optionally run unit tests, and publish a temporary (preview) npm package.
+
+inputs:
+  unit-tests:
+    description: Run `bun run test:unit` after build when true.
+    required: false
+    default: "false"
+  npm-token:
+    description: npm auth token used for publishing temporary package versions.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: ${{ inputs.bun-version }}
+
+    - name: Configure npm auth
+      run: |
+        if [ -z "${{ inputs.npm-token }}" ]; then
+          echo "npm-token input is required." >&2
+          exit 1
+        fi
+        echo "//registry.npmjs.org/:_authToken=${{ inputs.npm-token }}" > "${HOME}/.npmrc"
+
+    - name: Install
+      run: bun install --frozen-lockfile
+
+    - name: Build
+      run: |
+        bun run build
+        if [ ! -d "build" ]; then
+          echo "Expected build directory to exist after running build script." >&2
+          exit 1
+        fi
+
+    - name: Unit tests
+      if: ${{ inputs.unit-tests == 'true' }}
+      run: bun run test:unit
+
+    - name: Publish Preview
+      run: |
+        BASE_VERSION=$(bun -p "require('./package.json').version.split('-')[0]")
+        PREVIEW_VERSION="${BASE_VERSION}-preview.${GITHUB_SHA::8}"
+        cd build
+        bun version $PREVIEW_VERSION
+        bun publish ./ --tag preview

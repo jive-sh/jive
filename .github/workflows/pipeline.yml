@@ -1,0 +1,51 @@
+name: CI/CD Pipeline
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  build:
+    name: Build
+    if: (github.event_name == 'pull_request') || (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/build
+        with:
+          unit-tests: true
+          npm-token: ${{ secrets.NPM_TOKEN }}
+
+  preview_deploy:
+    name: Preview Deploy
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/deploy
+        with:
+          environments: [Preview]
+          publish: false
+          integration-tests: true
+          npm-token: ${{ secrets.NPM_TOKEN }}
+
+  deploy:
+    name: Deploy
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/deploy
+        with:
+          environments: [Production]
+          publish: true
+          integration-tests: true
+          npm-token: ${{ secrets.NPM_TOKEN }}
+          primary-environment: Production
+
