@@ -9,8 +9,11 @@
     "jive": "bin/jive"
   },
   "scripts": {
+    "build:watch": "",
     "build": "bun build --compile src/index.ts --outfile build/jive",
-    "test": ""
+    "deploy": "bun ./src/deploy-test.ts",
+    "test:integration": "",
+    "test:unit": "echo 'I am a unit test'"
   },
   "devDependencies": {
     "@types/bun": "latest",

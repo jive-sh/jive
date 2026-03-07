@@ -1,9 +1,9 @@
-name: Jive Build
-description: Calls the Package's "build" script. Expects a "build" directory to be generated
+name: Jive Unit Tests
+description: Run unit tests against a build package.
 
 inputs:
   secrets:
-    description: Any secrets necessary for the "build" script to run 
+    description: Any secrets necessary for the "deploy" and "test:integration" scripts to run 
     required: true
 
 runs:
@@ -11,17 +11,13 @@ runs:
   steps:
     - name: Setup Bun
       uses: oven-sh/setup-bun@v2
-    # TODO: setup token for reading from private packages
-    - name: Install Dependencies
-      shell: bash
-      run: bun install --frozen-lockfile
     - name: Add Secrets to Env
       shell: bash
       env:
         SECRETS_JSON: ${{ inputs.secrets }}
       run: |
         bun run - <<'BUN'
-          const STEP = "build";
+          const STEP = "unit-tests";
           // TODO: move action to its own CLI rather than using composite
           if (typeof process.env.SECRETS_JSON === "string") {
             console.log(`::add-mask::${process.env.SECRETS_JSON}`);
@@ -48,11 +44,7 @@ runs:
             require("fs").appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);
           }
         BUN
-    - name: Build Package
+    - name: Run Unit Tests
       shell: bash
       run: |
-        bun run build
-        if [ ! -d "build" ]; then
-          echo "Expected ./build directory to exist after running build script." >&2
-          exit 1
-        fi
+        bun run test:unit

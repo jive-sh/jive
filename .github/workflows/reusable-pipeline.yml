@@ -1,0 +1,59 @@
+name: Jive Reusable CI/CD Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      environments:
+        description: |
+          Comma delimited list of environments to deploy to, sequentially.
+          If "Preview" is included, preview deploys and integration tests will occur on PRs
+        type: string
+        required: true
+      publish:
+        description: Whether to publish the package to npm when pushing to the default branch
+        type: boolean
+        default: true
+
+jobs:
+  pipeline:
+    name: Build
+    # Only run on PRs or pushes to the repo's default branch
+    if: >-
+      (
+        (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && 
+        contains(format(',{0},', inputs.environments), ',Preview,')
+      ) || 
+      (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    # For publishing
+    permissions:
+      contents: read
+      id-token: write 
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+      - name: Build Package
+        uses: ./actions/build
+        with:
+          secrets: ${{ toJSON(secrets) }}
+      - name: Unit Tests
+        uses: ./actions/unit-tests
+        with:
+          secrets: ${{ toJSON(secrets) }}
+      - name: Preview Deploy & Integration Tests
+        # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions
+        if: >-
+          (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
+          contains(format(',{0},', inputs.environments), ',Preview,')
+        uses: ./actions/deploy
+        with:
+          publish: false
+          environments: Preview
+          secrets: ${{ toJSON(secrets) }}
+      - name: Deploy to ${{ inputs.environments }} & Integration Tests
+        if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+        uses: ./actions/deploy
+        with:
+          publish: ${{ inputs.publish }}
+          environments: ${{ inputs.environments }}
+          secrets: ${{ toJSON(secrets) }}

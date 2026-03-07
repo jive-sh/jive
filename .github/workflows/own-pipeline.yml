@@ -1,0 +1,17 @@
+name: CI/CD Pipeline
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+jobs:
+  pipeline:
+    uses: ./.github/workflows/reusable-pipeline.yml
+    secrets: inherit
+    with:
+      environments: Preview,Production
