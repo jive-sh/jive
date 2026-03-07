@@ -3,7 +3,7 @@ description: Run unit tests against a build package.
 
 inputs:
   secrets:
-    description: Any secrets necessary for the "deploy" and "test:integration" scripts to run 
+    description: 'Any secrets necessary for the "test:unit" script to run'
     required: true
 
 runs:

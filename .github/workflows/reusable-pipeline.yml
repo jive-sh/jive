@@ -4,15 +4,17 @@ on:
   workflow_call:
     inputs:
       environments:
-        description: |
-          Comma delimited list of environments to deploy to, sequentially.
-          If "Preview" is included, preview deploys and integration tests will occur on PRs
         type: string
+        description: Comma delimited list of environments to deploy to, sequentially.
+        required: true
+      preview-deploys:
+        type: boolean
+        description: If true, preview deploys & integration tests against this deployment will be run on PRs 
         required: true
       publish:
-        description: Whether to publish the package to npm when pushing to the default branch
         type: boolean
-        default: true
+        description: Whether to publish the package to npm when pushing to the default branch
+        required: true
 
 jobs:
   pipeline:
@@ -20,8 +22,8 @@ jobs:
     # Only run on PRs or pushes to the repo's default branch
     if: >-
       (
-        (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && 
-        contains(format(',{0},', inputs.environments), ',Preview,')
+        inputs.preview-deploys &&
+        (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
       ) || 
       (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)
     runs-on: ubuntu-latest
@@ -43,14 +45,14 @@ jobs:
       - name: Preview Deploy & Integration Tests
         # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions
         if: >-
-          (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
-          contains(format(',{0},', inputs.environments), ',Preview,')
+          inputs.preview-deploys &&
+          (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
         uses: ./actions/deploy
         with:
           publish: false
           environments: Preview
           secrets: ${{ toJSON(secrets) }}
-      - name: Deploy to ${{ inputs.environments }} & Integration Tests
+      - name: ${{ inputs.environments }} Deploy & Integration Tests
         if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
         uses: ./actions/deploy
         with:

@@ -1,17 +1,17 @@
 name: Jive Deploy & Integration Tests
 description: |
-  Deploy sequentially to passed environments, run integration tests on that environment before continuing to the next env.
-  "Preview" as an environment should be passed stand-alone; it's meant for PR runs only.
+  Deploy sequentially to passed environments.
+  run integration tests on that environment before continuing to the next env.
 
 inputs:
   publish:
     description: Whether to publish the package to npm before deploying
-    default: true
+    required: true
   environments:
-    description: Deployment environment labels as a comma-separated list (for example, "Staging,Production").
+    description: 'Deployment environment labels as a comma-separated list (ex: "Staging,Production")'
     required: true
   secrets:
-    description: Any secrets necessary for the "deploy" and "test:integration" scripts to run 
+    description: 'Any secrets necessary for the "deploy" and "test:integration" scripts to run'
     required: true
 
 runs:
@@ -80,11 +80,6 @@ runs:
           if (environments.length === 0) {
             console.log("Provide at least one environment");
             process.exit(1);
-          }
-          if (environments.length > 1 && environments.includes("Preview")) {
-            // Preview deploy logic
-            console.log("Skipping preview deployment");
-            environments.splice(environments.indexOf("Preview"), 1);
           }
           import { spawnSync } from "node:child_process";
           const runCmd = (cmd, args) => {
