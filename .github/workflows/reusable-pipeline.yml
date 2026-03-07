@@ -18,7 +18,7 @@ on:
 
 jobs:
   pipeline:
-    name: Build
+    name: Pipeline
     # Only run on PRs or pushes to the repo's default branch
     if: >-
       (

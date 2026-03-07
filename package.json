@@ -10,7 +10,8 @@
   },
   "scripts": {
     "build:watch": "",
-    "build": "bun build --compile src/index.ts --outfile build/jive",
+    "build": "bun build --compile src/index.ts --outfile build/jive && cp ./package.json ./build",
+    "test:copy": "bun ./src/copy-package-json.ts",
     "deploy": "bun ./src/deploy-test.ts",
     "test:integration": "",
     "test:unit": "echo 'I am a unit test'"
