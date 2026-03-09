@@ -1,63 +1,58 @@
 import * as e from "effect";
 import { selectFromList } from "@ozyman42/interactive-cli-select";
-import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { createInterface } from "node:readline/promises";
 
-const logInfoSync = (...message: ReadonlyArray<unknown>): void => {
-  e.Effect.runSync(e.Effect.log(...message));
-};
-const logErrorSync = (...message: ReadonlyArray<unknown>): void => {
-  e.Effect.runSync(e.Effect.logError(...message));
-};
-
-export async function selectOne<T>(
+export const selectOne = <T>(
   prompt: string,
   options: T[],
   getKey: (option: T) => string,
   renderOption: (option: T, index: number) => string,
-): Promise<e.Option.Option<T>> {
-  if (options.length === 0) return e.Option.none();
+): e.Effect.Effect<e.Option.Option<T>> =>
+  e.Effect.gen(function*() {
+    if (options.length === 0) return e.Option.none();
 
-  logInfoSync(prompt);
-  const optionsWithIndex = options.map((option, index) => ({ option, index }));
+    yield* e.Effect.log(prompt);
+    const optionsWithIndex = options.map((option, index) => ({ option, index }));
 
-  const selection = await e.Effect.runPromiseExit(
-    selectFromList({
+    return yield* selectFromList({
       options: optionsWithIndex,
       getKey: ({ option }) => getKey(option),
       renderOption: ({ option, index }) => renderOption(option, index),
-    }),
-  );
+    }).pipe(
+      e.Effect.map((selection) => e.Option.some(selection.option)),
+      e.Effect.catchAll(() =>
+        e.Effect.gen(function*() {
+          yield* e.Effect.logError("Selection cancelled.");
+          return e.Option.none<T>();
+        })
+      ),
+    );
+  });
 
-  if (e.Exit.isFailure(selection)) {
-    logErrorSync("Selection cancelled.");
-    return e.Option.none();
-  }
-
-  return e.Option.some(selection.value.option);
-}
-
-export async function promptYesNo(question: string): Promise<boolean> {
+export const promptYesNo = (question: string): e.Effect.Effect<boolean> => {
   const options = [
     { id: "yes", label: "Yes" },
     { id: "no", label: "No" },
   ];
 
-  const selected = await selectOne(
-    question,
-    options,
-    (option) => option.id,
-    (option) => option.label,
+  return e.pipe(
+    selectOne(
+      question,
+      options,
+      (option) => option.id,
+      (option) => option.label,
+    ),
+    e.Effect.map((selected) => e.Option.isSome(selected) && selected.value.id === "yes"),
   );
+};
 
-  return e.Option.isSome(selected) && selected.value.id === "yes";
-}
-
-export async function promptText(question: string): Promise<string> {
-  const rl = createInterface({ input, output });
-  try {
-    return (await rl.question(question)).trim();
-  } finally {
-    rl.close();
-  }
-}
+export const promptText = (question: string): e.Effect.Effect<string> =>
+  e.Effect.acquireUseRelease(
+    e.Effect.sync(() => createInterface({ input, output })),
+    (rl) =>
+      e.Effect.promise(() => rl.question(question)).pipe(
+        e.Effect.map((value) => value.trim()),
+      ),
+    (rl) => e.Effect.sync(() => rl.close()),
+  );

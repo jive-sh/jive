@@ -1,9 +1,9 @@
 import * as e from "effect";
 import * as ep from "@effect/platform";
 import * as path from "path";
-import { IToolState } from "@/modules";
-import { WORKSPACE_DIR } from "./constants";
-import type { ILegacyCredentialState, IReadOnlyTokenState } from "./interface";
+import * as modules from "@/modules";
+import { WORKSPACE_DIR } from "@/modules/tool-state/constants";
+import type { ILegacyCredentialState, IReadOnlyTokenState } from "@/modules/tool-state/interface";
 
 const USERS_DIR = `${WORKSPACE_DIR}/users`;
 const ACTIVE_USER_FILE = `${WORKSPACE_DIR}/active-user.json`;
@@ -11,7 +11,7 @@ const LEGACY_CREDENTIALS_FILE = `${WORKSPACE_DIR}/credentials.json`;
 const READ_ONLY_TOKEN_FILE = "read-only-token.json";
 const WRITE_REFRESH_TOKEN_FILE = "write-refresh-token.json";
 
-export const ToolStateImpl = e.Layer.effect(IToolState, e.Effect.gen(function*() {
+export const ToolStateImpl = e.Layer.effect(modules.IToolState, e.Effect.gen(function*() {
   const fileSystem = yield* ep.FileSystem.FileSystem;
 
   const pathExists = e.Effect.fn(function*(targetPath: string) {
@@ -167,8 +167,14 @@ export const ToolStateImpl = e.Layer.effect(IToolState, e.Effect.gen(function*()
     const gitUserName = typeof state.value.gitUserName === "string" && state.value.gitUserName
       ? state.value.gitUserName
       : email;
+    const githubAccountId = typeof state.value.githubAccountId === "number" && Number.isFinite(state.value.githubAccountId)
+      ? state.value.githubAccountId
+      : 0;
+    const githubUsername = typeof state.value.githubUsername === "string" && state.value.githubUsername
+      ? state.value.githubUsername
+      : "";
 
-    return e.Option.some({ token, scope, tokenType, gitUserName });
+    return e.Option.some({ token, scope, tokenType, gitUserName, githubAccountId, githubUsername });
   });
 
   const writeReadOnlyTokenState = e.Effect.fn(function*(email: string, state: IReadOnlyTokenState) {
@@ -216,6 +222,7 @@ export const ToolStateImpl = e.Layer.effect(IToolState, e.Effect.gen(function*()
   });
 
   return {
+    requiredCLICommands: [],
     workspaceRoot,
     inWorkspace,
     readActiveUserEmail,

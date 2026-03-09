@@ -1,20 +1,13 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as e from "effect";
-import { ModuleDependenciesLive } from "../runtime";
-import { IToolState } from "../tool-state/interface";
-import { TOOL_NAME } from "../../constants";
-import type { Credentials } from "./types";
+import { TOOL_NAME } from "@/constants";
+import type { Credentials } from "@/modules/auth/types";
 
 const USERS_DIR = `.${TOOL_NAME}/users`;
 const READ_ONLY_AUTHN_KEY_FILE = "read-only-authn-key";
 
-const runSyncWithModules = <A, E>(effect: e.Effect.Effect<A, E, unknown>) =>
-  e.Effect.runSync(
-    e.Effect.provide(effect, ModuleDependenciesLive) as e.Effect.Effect<A, E, never>,
-  );
-
-type ToolStateApi = {
+export type ToolStateApi = {
   readonly workspaceRoot: e.Option.Option<string>;
   readonly inWorkspace: e.Effect.Effect<boolean>;
   readonly readActiveUserEmail: e.Effect.Effect<e.Option.Option<string>>;
@@ -22,144 +15,168 @@ type ToolStateApi = {
   readonly readLegacyCredentialState: e.Effect.Effect<e.Option.Option<{ token: string; email: string; gitUserName: string }>>;
   readonly readReadOnlyTokenState: (
     email: string,
-  ) => e.Effect.Effect<e.Option.Option<{ token: string; scope: string; tokenType: string; gitUserName: string }>>;
+  ) => e.Effect.Effect<e.Option.Option<{
+    token: string;
+    scope: string;
+    tokenType: string;
+    gitUserName: string;
+    githubAccountId: number;
+    githubUsername: string;
+  }>>;
   readonly writeReadOnlyTokenState: (
     email: string,
-    state: { token: string; scope: string; tokenType: string; gitUserName: string },
+    state: {
+      token: string;
+      scope: string;
+      tokenType: string;
+      gitUserName: string;
+      githubAccountId: number;
+      githubUsername: string;
+    },
   ) => e.Effect.Effect<void>;
   readonly readWriteRefreshToken: (email: string) => e.Effect.Effect<string>;
   readonly writeWriteRefreshToken: (email: string, token: string) => e.Effect.Effect<void>;
   readonly clearWriteRefreshToken: (email: string) => e.Effect.Effect<void>;
 };
 
-const withToolStateSync = <A>(fn: (toolState: ToolStateApi) => e.Effect.Effect<A>): A =>
-  runSyncWithModules(
-    e.Effect.gen(function*() {
-      const toolState = yield* IToolState;
-      return yield* fn(toolState);
-    }),
-  );
-
-const inWorkspace = () => withToolStateSync((toolState) => toolState.inWorkspace);
-const readActiveUserEmail = () => withToolStateSync((toolState) => toolState.readActiveUserEmail);
-const writeActiveUserEmail = (email: string) =>
-  withToolStateSync((toolState) => toolState.writeActiveUserEmail(email));
-const readLegacyCredentialState = () =>
-  withToolStateSync((toolState) => toolState.readLegacyCredentialState);
-const readReadOnlyTokenState = (email: string) =>
-  withToolStateSync((toolState) => toolState.readReadOnlyTokenState(email));
-const writeReadOnlyTokenState = (
-  email: string,
-  tokenState: { token: string; scope: string; tokenType: string; gitUserName: string },
-) => withToolStateSync((toolState) => toolState.writeReadOnlyTokenState(email, tokenState));
-const readWriteRefreshToken = (email: string) =>
-  withToolStateSync((toolState) => toolState.readWriteRefreshToken(email));
-const writeWriteRefreshToken = (email: string, token: string) =>
-  withToolStateSync((toolState) => toolState.writeWriteRefreshToken(email, token));
-const clearWriteRefreshToken = (email: string) =>
-  withToolStateSync((toolState) => toolState.clearWriteRefreshToken(email));
-const workspaceRoot = () =>
-  withToolStateSync((toolState) => e.Effect.sync(() => toolState.workspaceRoot));
-
-export function loadCredentials(): e.Option.Option<Credentials> {
-  if (!inWorkspace()) return e.Option.none();
-
-  const activeUserEmail = resolveActiveUserEmail();
-  if (e.Option.isNone(activeUserEmail)) return e.Option.none();
-
-  return loadCredentialsForUser(activeUserEmail.value);
+export interface UserTokenState {
+  readonly email: string;
+  readonly gitUserName: string;
+  readonly githubAccountId: number;
+  readonly githubUsername: string;
+  readonly readOnlyToken: string;
+  readonly readOnlyTokenScope: string;
+  readonly readOnlyTokenType: string;
+  readonly writeRefreshToken: string;
 }
 
-export function saveCredentials(credentials: Credentials): void {
-  writeReadOnlyTokenState(credentials.email, {
-    token: credentials.readOnlyToken,
-    scope: credentials.readOnlyTokenScope,
-    tokenType: credentials.readOnlyTokenType,
-    gitUserName: credentials.gitUserName,
+export const loadCredentials = (toolState: ToolStateApi): e.Effect.Effect<e.Option.Option<Credentials>> =>
+  e.Effect.gen(function*() {
+    if (!(yield* toolState.inWorkspace)) return e.Option.none();
+
+    const activeUserEmail = yield* resolveActiveUserEmail(toolState);
+    if (e.Option.isNone(activeUserEmail)) return e.Option.none();
+
+    return yield* loadCredentialsForUser(toolState, activeUserEmail.value);
   });
 
-  if (credentials.writeRefreshToken) {
-    writeWriteRefreshToken(credentials.email, credentials.writeRefreshToken);
-  } else {
-    clearWriteRefreshToken(credentials.email);
-  }
+export const saveCredentials = (
+  toolState: ToolStateApi,
+  credentials: Credentials,
+): e.Effect.Effect<void> =>
+  e.Effect.gen(function*() {
+    yield* saveUserTokenState(toolState, credentials);
+    yield* toolState.writeActiveUserEmail(credentials.email);
+  });
 
-  writeActiveUserEmail(credentials.email);
-}
+export const saveUserTokenState = (
+  toolState: ToolStateApi,
+  state: UserTokenState,
+): e.Effect.Effect<void> =>
+  e.Effect.gen(function*() {
+    yield* toolState.writeReadOnlyTokenState(state.email, {
+      token: state.readOnlyToken,
+      scope: state.readOnlyTokenScope,
+      tokenType: state.readOnlyTokenType,
+      gitUserName: state.gitUserName,
+      githubAccountId: state.githubAccountId,
+      githubUsername: state.githubUsername,
+    });
 
-export function loadWriteRefreshToken(email: string): string {
-  return readWriteRefreshToken(email);
-}
+    if (state.writeRefreshToken) {
+      yield* toolState.writeWriteRefreshToken(state.email, state.writeRefreshToken);
+    } else {
+      yield* toolState.clearWriteRefreshToken(state.email);
+    }
+  });
 
-export function getReadOnlyAuthKeyPaths(email: string): { privateKeyPath: string; publicKeyPath: string } {
-  const root = workspaceRoot();
-  if (e.Option.isNone(root)) {
+export const loadWriteRefreshToken = (
+  toolState: ToolStateApi,
+  email: string,
+): e.Effect.Effect<string> => toolState.readWriteRefreshToken(email);
+
+export function getReadOnlyAuthKeyPaths(
+  workspaceRoot: e.Option.Option<string>,
+  email: string,
+): { privateKeyPath: string; publicKeyPath: string } {
+  if (e.Option.isNone(workspaceRoot)) {
     return { privateKeyPath: "", publicKeyPath: "" };
   }
 
-  const privateKeyPath = path.join(userDirectory(root.value, email), READ_ONLY_AUTHN_KEY_FILE);
+  const privateKeyPath = path.join(userDirectory(workspaceRoot.value, email), READ_ONLY_AUTHN_KEY_FILE);
   return {
     privateKeyPath,
     publicKeyPath: `${privateKeyPath}.pub`,
   };
 }
 
-export function loadReadOnlyToken(): string {
-  const credentials = loadCredentials();
-  if (e.Option.isNone(credentials)) return "";
-  return credentials.value.readOnlyToken;
-}
-
-function loadCredentialsForUser(email: string): e.Option.Option<Credentials> {
-  const tokenState = readReadOnlyTokenState(email);
-  if (e.Option.isNone(tokenState)) return e.Option.none();
-
-  const { privateKeyPath, publicKeyPath } = getReadOnlyAuthKeyPaths(email);
-  if (!privateKeyPath || !publicKeyPath) return e.Option.none();
-
-  return e.Option.some({
-    email,
-    readOnlyToken: tokenState.value.token,
-    readOnlyTokenScope: tokenState.value.scope,
-    readOnlyTokenType: tokenState.value.tokenType,
-    readOnlyAuthPrivateKeyPath: privateKeyPath,
-    readOnlyAuthPublicKeyPath: publicKeyPath,
-    writeRefreshToken: loadWriteRefreshToken(email),
-    gitUserName: tokenState.value.gitUserName,
+export const loadReadOnlyToken = (toolState: ToolStateApi): e.Effect.Effect<string> =>
+  e.Effect.gen(function*() {
+    const credentials = yield* loadCredentials(toolState);
+    if (e.Option.isNone(credentials)) return "";
+    return credentials.value.readOnlyToken;
   });
-}
 
-function resolveActiveUserEmail(): e.Option.Option<string> {
-  const fromActiveFile = readActiveUserEmail();
-  if (e.Option.isSome(fromActiveFile)) return fromActiveFile;
+const loadCredentialsForUser = (
+  toolState: ToolStateApi,
+  email: string,
+): e.Effect.Effect<e.Option.Option<Credentials>> =>
+  e.Effect.gen(function*() {
+    const tokenState = yield* toolState.readReadOnlyTokenState(email);
+    if (e.Option.isNone(tokenState)) return e.Option.none();
 
-  const legacyMigrated = migrateLegacyCredentials();
-  if (e.Option.isNone(legacyMigrated)) return e.Option.none();
+    const { privateKeyPath, publicKeyPath } = getReadOnlyAuthKeyPaths(toolState.workspaceRoot, email);
+    if (!privateKeyPath || !publicKeyPath) return e.Option.none();
 
-  return e.Option.some(legacyMigrated.value.email);
-}
+    return e.Option.some({
+      email,
+      githubAccountId: tokenState.value.githubAccountId,
+      githubUsername: tokenState.value.githubUsername,
+      readOnlyToken: tokenState.value.token,
+      readOnlyTokenScope: tokenState.value.scope,
+      readOnlyTokenType: tokenState.value.tokenType,
+      readOnlyAuthPrivateKeyPath: privateKeyPath,
+      readOnlyAuthPublicKeyPath: publicKeyPath,
+      writeRefreshToken: yield* loadWriteRefreshToken(toolState, email),
+      gitUserName: tokenState.value.gitUserName,
+    });
+  });
 
-function migrateLegacyCredentials(): e.Option.Option<Credentials> {
-  const legacy = readLegacyCredentialState();
-  if (e.Option.isNone(legacy)) return e.Option.none();
+const resolveActiveUserEmail = (toolState: ToolStateApi): e.Effect.Effect<e.Option.Option<string>> =>
+  e.Effect.gen(function*() {
+    const fromActiveFile = yield* toolState.readActiveUserEmail;
+    if (e.Option.isSome(fromActiveFile)) return fromActiveFile;
 
-  const { privateKeyPath, publicKeyPath } = getReadOnlyAuthKeyPaths(legacy.value.email);
-  if (!privateKeyPath || !publicKeyPath) return e.Option.none();
+    const legacyMigrated = yield* migrateLegacyCredentials(toolState);
+    if (e.Option.isNone(legacyMigrated)) return e.Option.none();
 
-  const migrated: Credentials = {
-    email: legacy.value.email,
-    readOnlyToken: legacy.value.token,
-    readOnlyTokenScope: "repo user read:org",
-    readOnlyTokenType: "bearer",
-    readOnlyAuthPrivateKeyPath: privateKeyPath,
-    readOnlyAuthPublicKeyPath: publicKeyPath,
-    writeRefreshToken: "",
-    gitUserName: legacy.value.gitUserName,
-  };
+    return e.Option.some(legacyMigrated.value.email);
+  });
 
-  saveCredentials(migrated);
-  return e.Option.some(migrated);
-}
+const migrateLegacyCredentials = (toolState: ToolStateApi): e.Effect.Effect<e.Option.Option<Credentials>> =>
+  e.Effect.gen(function*() {
+    const legacy = yield* toolState.readLegacyCredentialState;
+    if (e.Option.isNone(legacy)) return e.Option.none();
+
+    const { privateKeyPath, publicKeyPath } = getReadOnlyAuthKeyPaths(toolState.workspaceRoot, legacy.value.email);
+    if (!privateKeyPath || !publicKeyPath) return e.Option.none();
+
+    const migrated: Credentials = {
+      email: legacy.value.email,
+      githubAccountId: 0,
+      githubUsername: "",
+      readOnlyToken: legacy.value.token,
+      readOnlyTokenScope: "repo user read:org",
+      readOnlyTokenType: "bearer",
+      readOnlyAuthPrivateKeyPath: privateKeyPath,
+      readOnlyAuthPublicKeyPath: publicKeyPath,
+      writeRefreshToken: "",
+      gitUserName: legacy.value.gitUserName,
+    };
+
+    yield* saveCredentials(toolState, migrated);
+    return e.Option.some(migrated);
+  });
 
 function userDirectory(root: string, email: string): string {
   const canonicalName = sanitizeEmailDirectoryName(email);

@@ -5,6 +5,8 @@ export interface IReadOnlyTokenState {
   readonly scope: string;
   readonly tokenType: string;
   readonly gitUserName: string;
+  readonly githubAccountId: number;
+  readonly githubUsername: string;
 }
 
 export interface ILegacyCredentialState {
@@ -14,6 +16,7 @@ export interface ILegacyCredentialState {
 }
 
 export class IToolState extends e.Context.Tag("IToolState")<IToolState, {
+  readonly requiredCLICommands: readonly string[];
   readonly workspaceRoot: e.Option.Option<string>;
   readonly inWorkspace: e.Effect.Effect<boolean>;
   readonly readActiveUserEmail: e.Effect.Effect<e.Option.Option<string>>;

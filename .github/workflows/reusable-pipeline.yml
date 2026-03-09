@@ -17,8 +17,8 @@ on:
         required: true
 
 jobs:
-  pipeline:
-    name: Pipeline
+  common_pipeline:
+    name: Common Pipeline
     # Only run on PRs or pushes to the repo's default branch
     if: >-
       (

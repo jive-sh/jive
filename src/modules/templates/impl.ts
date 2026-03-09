@@ -1,11 +1,11 @@
 import * as e from "effect";
 import * as ep from "@effect/platform";
 import * as path from "path";
-import { ITemplates, IToolState } from "@/modules";
-import { TEMPLATE_PREFIX } from "./constants";
+import * as modules from "@/modules";
+import { TEMPLATE_PREFIX } from "@/modules/templates/constants";
 
-export const TemplatesImpl = e.Layer.effect(ITemplates, e.Effect.gen(function*() {
-  const toolState = yield* IToolState;
+export const TemplatesImpl = e.Layer.effect(modules.ITemplates, e.Effect.gen(function*() {
+  const toolState = yield* modules.IToolState;
   const fileSystem = yield* ep.FileSystem.FileSystem;
 
   const isTemplatePackageName = (name: string): boolean =>
@@ -102,5 +102,8 @@ export const TemplatesImpl = e.Layer.effect(ITemplates, e.Effect.gen(function*()
     return Array.from(new Set([...localTemplates, ...npmTemplates])).sort();
   })();
 
-  return { availableTemplates };
+  return {
+    requiredCLICommands: [],
+    availableTemplates,
+  };
 }));

@@ -9,8 +9,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Setup Bun
-      uses: oven-sh/setup-bun@v2
     - name: Add Secrets to Env
       shell: bash
       env:

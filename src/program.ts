@@ -1,19 +1,34 @@
 import * as e from "effect";
 import { version } from "../package.json";
-import { CLI } from "./cli";
-import { TOOL_NAME } from "./constants";
-import { IAuth, IBun, IDaemon, IGit, ITemplates } from "./modules";
+import { CLI } from "@/temp-libs/cli";
+import { TOOL_NAME } from "@/constants";
+import * as modules from "@/modules";
 
-const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
+export class MissingDependenciesError extends e.Data.TaggedError("MissingDependenciesError")<{missingDependencies: string[]}> {}
 
 export const program = e.Effect.gen(function*() {
-  const auth = yield* IAuth;
-  const bun = yield* IBun;
-  const daemon = yield* IDaemon;
-  const git = yield* IGit;
-  const templates = yield* ITemplates;
+  const auth = yield* modules.IAuth;
+  const bun = yield* modules.IBun;
+  const daemon = yield* modules.IDaemon;
+  const git = yield* modules.IGit;
+  const hostShell = yield* modules.IHostShell;
+  const templates = yield* modules.ITemplates;
+  const toolState = yield* modules.IToolState;
+  const yubiKey = yield* modules.IYubiKey;
 
-  yield* auth.warnOnMissingOpenSshAtStartup;
+  const missingCLICommands = yield* hostShell.missingCommands([
+    ...auth.requiredCLICommands,
+    ...bun.requiredCLICommands,
+    ...daemon.requiredCLICommands,
+    ...git.requiredCLICommands,
+    ...hostShell.requiredCLICommands,
+    ...templates.requiredCLICommands,
+    ...toolState.requiredCLICommands,
+    ...yubiKey.requiredCLICommands,
+  ]);
+  if (missingCLICommands.length > 0) {
+    return yield* new MissingDependenciesError({missingDependencies: missingCLICommands});
+  }
 
   yield* CLI.new(TOOL_NAME, CLI.DiscreteOptions({
     load: CLI.AsyncOptions(
@@ -49,23 +64,21 @@ export const program = e.Effect.gen(function*() {
                       yield* e.Effect.log(`Updated @${org}/${repo}; it already existed so it was not re-added.`);
                       break;
                     case "SkippedDirty":
-                      yield* e.Effect.logWarning(yellow(`WARNING: skipped update for @${org}/${repo} because the working tree is dirty.`));
+                      yield* e.Effect.logWarning(`Skipped update for @${org}/${repo} because the working tree is dirty.`);
                       break;
                     case "SkippedOffDefaultBranch":
                       yield* e.Effect.logWarning(
-                        yellow(
-                          `WARNING: skipped update for @${org}/${repo} because current branch is ${updateResult.currentBranch}, expected ${updateResult.defaultBranch}.`,
-                        ),
+                        `Skipped update for @${org}/${repo} because current branch is ${updateResult.currentBranch}, expected ${updateResult.defaultBranch}.`,
                       );
                       break;
                     case "SkippedUnknownDefaultBranch":
-                      yield* e.Effect.logWarning(yellow(`WARNING: skipped update for @${org}/${repo} because default branch could not be determined.`));
+                      yield* e.Effect.logWarning(`Skipped update for @${org}/${repo} because the default branch could not be determined.`);
                       break;
                     case "SkippedPullFailed":
-                      yield* e.Effect.logWarning(yellow(`WARNING: skipped update for @${org}/${repo} because git pull failed.`));
+                      yield* e.Effect.logWarning(`Skipped update for @${org}/${repo} because git pull failed.`);
                       break;
                     case "Missing":
-                      yield* e.Effect.logWarning(yellow(`WARNING: skipped update for @${org}/${repo} because the repo path is missing.`));
+                      yield* e.Effect.logWarning(`Skipped update for @${org}/${repo} because the repo path is missing.`);
                       break;
                   }
                 }

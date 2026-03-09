@@ -7,7 +7,7 @@ export interface ActiveGitIdentity {
 }
 
 export class IAuth extends e.Context.Tag("IAuth")<IAuth, {
-  readonly warnOnMissingOpenSshAtStartup: e.Effect.Effect<void>;
+  readonly requiredCLICommands: readonly string[];
   readonly login: e.Effect.Effect<void>;
   readonly whoami: e.Effect.Effect<void>;
   readonly readOnlyToken: e.Effect.Effect<string>;

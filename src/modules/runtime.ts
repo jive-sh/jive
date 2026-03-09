@@ -1,22 +1,18 @@
-import { Layer } from "effect";
-import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
-import { BunImpl } from "./bun/impl";
-import { DaemonImpl } from "./daemon/impl";
-import { GitImpl } from "./git/impl";
-import { TemplatesImpl } from "./templates/impl";
-import { ToolStateImpl } from "./tool-state/impl";
+import * as e from "effect";
+import * as epn from "@effect/platform-node";
+import * as modules from "@/modules";
+import { PlainTextLogger } from "@/logging";
 
-const ToolStateWithDependenciesLive = Layer.provide(ToolStateImpl, NodeFileSystem.layer);
-const CoreModuleDependenciesLive = Layer.mergeAll(NodeFileSystem.layer, ToolStateWithDependenciesLive);
-
-const BunWithDependenciesLive = Layer.provide(BunImpl, CoreModuleDependenciesLive);
-const GitWithDependenciesLive = Layer.provide(GitImpl, CoreModuleDependenciesLive);
-const TemplatesWithDependenciesLive = Layer.provide(TemplatesImpl, CoreModuleDependenciesLive);
-
-export const ModuleDependenciesLive = Layer.mergeAll(
-  CoreModuleDependenciesLive,
-  BunWithDependenciesLive,
-  DaemonImpl,
-  GitWithDependenciesLive,
-  TemplatesWithDependenciesLive,
-);
+export const ModulesImpl = e.pipe(
+  modules.AuthImpl,
+  e.Layer.provideMerge(modules.YubiKeyImpl),
+  e.Layer.provideMerge(modules.TemplatesImpl),
+  e.Layer.provideMerge(modules.GitImpl),
+  e.Layer.provideMerge(modules.DaemonImpl),
+  e.Layer.provideMerge(modules.BunImpl),
+  e.Layer.provideMerge(modules.ToolStateImpl),
+  e.Layer.provideMerge(modules.HostShellImpl),
+  e.Layer.provideMerge(epn.NodeCommandExecutor.layer),
+  e.Layer.provideMerge(epn.NodeFileSystem.layer),
+  e.Layer.provideMerge(PlainTextLogger),
+) satisfies e.Layer.Layer<any, any, never>;

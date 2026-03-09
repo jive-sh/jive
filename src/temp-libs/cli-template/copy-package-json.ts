@@ -1,6 +1,6 @@
 import { promises } from "node:fs";
 import { resolve } from "node:path";
-import { TOOL_NAME } from "./constants";
+import { TOOL_NAME } from "@/constants";
 
 const PACKAGE_JSON_FILENAME = "package.json";
 const OG_PATH = resolve(PACKAGE_JSON_FILENAME);

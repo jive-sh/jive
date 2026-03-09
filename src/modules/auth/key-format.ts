@@ -1,5 +1,5 @@
 import * as e from "effect";
-import type { ParsedPublicKey } from "./types";
+import type { ParsedPublicKey } from "@/modules/auth/types";
 
 export function parsePublicKey(publicKey: string): e.Option.Option<ParsedPublicKey> {
   const trimmed = publicKey.trim();

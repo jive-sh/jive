@@ -10,11 +10,10 @@
   },
   "scripts": {
     "build:watch": "",
-    "build": "bun build --compile src/index.ts --outfile build/jive && cp ./package.json ./build",
-    "test:copy": "bun ./src/copy-package-json.ts",
-    "deploy": "bun ./src/deploy-test.ts",
+    "build": "bun build --compile src/index.ts --outfile build/jive && bun ./src/temp-libs/cli-template/copy-package-json.ts",
+    "deploy": "echo 'No custom deploy logic'",
     "test:integration": "",
-    "test:unit": "echo 'I am a unit test'"
+    "test:unit": "echo 'TODO: write unit tests'"
   },
   "devDependencies": {
     "@types/bun": "latest",

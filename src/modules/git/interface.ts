@@ -16,6 +16,7 @@ export type SubmoduleUpdateResult =
   | { readonly _tag: "SkippedPullFailed" };
 
 export class IGit extends e.Context.Tag("IGit")<IGit, {
+  readonly requiredCLICommands: readonly string[];
   readonly localOrgs: e.Effect.Effect<string[]>;
   readonly remoteRepos: (org: string, readOnlyToken?: string) => e.Effect.Effect<string[]>;
   readonly localRepos: (org: string) => e.Effect.Effect<string[]>;

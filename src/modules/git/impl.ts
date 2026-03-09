@@ -1,14 +1,16 @@
 import * as e from "effect";
 import * as ep from "@effect/platform";
 import * as path from "path";
-import { IGit, IToolState } from "@/modules";
-import type { GitIdentity, SubmoduleUpdateResult } from "./interface";
+import * as modules from "@/modules";
+import type { HostShellCommand } from "@/modules/host-shell/interface";
+import type { GitIdentity, SubmoduleUpdateResult } from "@/modules/git/interface";
 
 type SpawnIo = "inherit" | "ignore" | "pipe";
 
-export const GitImpl = e.Layer.effect(IGit, e.Effect.gen(function*() {
-  const toolState = yield* IToolState;
+export const GitImpl = e.Layer.effect(modules.IGit, e.Effect.gen(function*() {
+  const toolState = yield* modules.IToolState;
   const fileSystem = yield* ep.FileSystem.FileSystem;
+  const hostShell = yield* modules.IHostShell;
 
   const resolveRepoPath = e.Effect.fn(function*(org: string, repo: string) {
     if (e.Option.isNone(toolState.workspaceRoot)) return e.Option.none();
@@ -47,35 +49,35 @@ export const GitImpl = e.Layer.effect(IGit, e.Effect.gen(function*() {
     return `git@github.com:${org}/${repo}.git`;
   }
 
-  function runGit(
-    args: string[],
-    cwd: string,
-    io: SpawnIo,
-  ): e.Option.Option<ReturnType<typeof Bun.spawnSync>> {
-    const gitPath = Bun.which("git");
-    if (!gitPath) return e.Option.none();
+  const runGit = e.Effect.fn(function*(args: string[], cwd: string, io: SpawnIo) {
+    const command: HostShellCommand = {
+      command: "git",
+      args,
+      cwd: e.Option.some(cwd),
+      env: {},
+      stdin: io === "inherit" ? "inherit" : "ignore",
+      stdout: io,
+      stderr: io,
+      shell: e.Option.none(),
+    };
 
-    return e.Option.some(
-      Bun.spawnSync([gitPath, ...args], {
-        cwd,
-        stdin: io === "inherit" ? "inherit" : "ignore",
-        stdout: io,
-        stderr: io,
-      }),
+    return yield* hostShell.run(command).pipe(
+      e.Effect.map((result) => e.Option.some(result)),
+      e.Effect.catchAll(() => e.Effect.succeed(e.Option.none())),
     );
-  }
+  });
 
   const isDirty = e.Effect.fn(function*(repoPath: string) {
-    const status = runGit(["status", "--porcelain"], repoPath, "pipe");
+    const status = yield* runGit(["status", "--porcelain"], repoPath, "pipe");
     if (e.Option.isNone(status) || status.value.exitCode !== 0) return true;
-    return (status.value.stdout ?? Buffer.from("")).toString("utf8").trim().length > 0;
+    return status.value.stdout.trim().length > 0;
   });
 
   const currentBranchName = e.Effect.fn(function*(repoPath: string) {
-    const branchResult = runGit(["rev-parse", "--abbrev-ref", "HEAD"], repoPath, "pipe");
+    const branchResult = yield* runGit(["rev-parse", "--abbrev-ref", "HEAD"], repoPath, "pipe");
     if (e.Option.isNone(branchResult) || branchResult.value.exitCode !== 0) return e.Option.none<string>();
 
-    const branch = (branchResult.value.stdout ?? Buffer.from("")).toString("utf8").trim();
+    const branch = branchResult.value.stdout.trim();
     return branch ? e.Option.some(branch) : e.Option.none<string>();
   });
 
@@ -166,7 +168,7 @@ export const GitImpl = e.Layer.effect(IGit, e.Effect.gen(function*() {
     if (e.Option.isNone(toolState.workspaceRoot)) return false;
 
     const submodulePath = `@${org}/${repo}`;
-    const addResult = runGit(
+    const addResult = yield* runGit(
       ["submodule", "add", "--", httpsRepoUrl(org, repo), submodulePath],
       toolState.workspaceRoot.value,
       "inherit",
@@ -174,7 +176,7 @@ export const GitImpl = e.Layer.effect(IGit, e.Effect.gen(function*() {
     if (e.Option.isNone(addResult) || addResult.value.exitCode !== 0) return false;
 
     const repoPath = path.join(toolState.workspaceRoot.value, submodulePath);
-    const remoteResult = runGit(["remote", "set-url", "origin", sshRepoUrl(org, repo)], repoPath, "ignore");
+    const remoteResult = yield* runGit(["remote", "set-url", "origin", sshRepoUrl(org, repo)], repoPath, "ignore");
     return e.Option.isSome(remoteResult) && remoteResult.value.exitCode === 0;
   });
 
@@ -182,10 +184,10 @@ export const GitImpl = e.Layer.effect(IGit, e.Effect.gen(function*() {
     if (e.Option.isNone(toolState.workspaceRoot)) return false;
 
     const submodulePath = `@${org}/${repo}`;
-    const deinitResult = runGit(["submodule", "deinit", "-f", "--", submodulePath], toolState.workspaceRoot.value, "ignore");
+    const deinitResult = yield* runGit(["submodule", "deinit", "-f", "--", submodulePath], toolState.workspaceRoot.value, "ignore");
     if (e.Option.isNone(deinitResult)) return false;
 
-    const rmResult = runGit(["rm", "-f", "--", submodulePath], toolState.workspaceRoot.value, "inherit");
+    const rmResult = yield* runGit(["rm", "-f", "--", submodulePath], toolState.workspaceRoot.value, "inherit");
     if (e.Option.isNone(rmResult) || rmResult.value.exitCode !== 0) return false;
 
     const gitModulesPath = path.join(toolState.workspaceRoot.value, ".git", "modules", `@${org}`, repo);
@@ -217,7 +219,7 @@ export const GitImpl = e.Layer.effect(IGit, e.Effect.gen(function*() {
       } as const satisfies SubmoduleUpdateResult;
     }
 
-    const pullResult = runGit(
+    const pullResult = yield* runGit(
       ["pull", "--ff-only", "origin", defaultBranch.value],
       repoPath.value,
       "inherit",
@@ -233,10 +235,10 @@ export const GitImpl = e.Layer.effect(IGit, e.Effect.gen(function*() {
     const repoPath = yield* resolveRepoPath(org, repo);
     if (e.Option.isNone(repoPath)) return false;
 
-    const setRemote = runGit(["remote", "set-url", "origin", sshRepoUrl(org, repo)], repoPath.value, "ignore");
-    const setName = runGit(["config", "--local", "user.name", identity.userName], repoPath.value, "ignore");
-    const setEmail = runGit(["config", "--local", "user.email", identity.userEmail], repoPath.value, "ignore");
-    const setSshCommand = runGit(
+    const setRemote = yield* runGit(["remote", "set-url", "origin", sshRepoUrl(org, repo)], repoPath.value, "ignore");
+    const setName = yield* runGit(["config", "--local", "user.name", identity.userName], repoPath.value, "ignore");
+    const setEmail = yield* runGit(["config", "--local", "user.email", identity.userEmail], repoPath.value, "ignore");
+    const setSshCommand = yield* runGit(
       ["config", "--local", "core.sshCommand", `ssh -i \"${identity.authPrivateKeyPath}\" -o IdentitiesOnly=yes`],
       repoPath.value,
       "ignore",
@@ -249,9 +251,9 @@ export const GitImpl = e.Layer.effect(IGit, e.Effect.gen(function*() {
 
     if (!identity.signingPublicKey) return true;
 
-    const setGpgFormat = runGit(["config", "--local", "gpg.format", "ssh"], repoPath.value, "ignore");
-    const setSigningKey = runGit(["config", "--local", "user.signingkey", identity.signingPublicKey], repoPath.value, "ignore");
-    const setSignCommits = runGit(["config", "--local", "commit.gpgsign", "true"], repoPath.value, "ignore");
+    const setGpgFormat = yield* runGit(["config", "--local", "gpg.format", "ssh"], repoPath.value, "ignore");
+    const setSigningKey = yield* runGit(["config", "--local", "user.signingkey", identity.signingPublicKey], repoPath.value, "ignore");
+    const setSignCommits = yield* runGit(["config", "--local", "commit.gpgsign", "true"], repoPath.value, "ignore");
 
     return e.Option.isSome(setGpgFormat)
       && setGpgFormat.value.exitCode === 0
@@ -266,20 +268,28 @@ export const GitImpl = e.Layer.effect(IGit, e.Effect.gen(function*() {
     if (e.Option.isNone(repoPath)) return false;
     if (command.length === 0) return false;
 
-    try {
-      const result = Bun.spawnSync([...command], {
-        cwd: repoPath.value,
-        stdin: "inherit",
-        stdout: "inherit",
-        stderr: "inherit",
-      });
-      return result.exitCode === 0;
-    } catch {
-      return false;
-    }
+    const [executable, ...args] = command;
+    if (!executable) return false;
+
+    const result = yield* hostShell.run({
+      command: executable,
+      args,
+      cwd: e.Option.some(repoPath.value),
+      env: {},
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+      shell: e.Option.none(),
+    }).pipe(
+      e.Effect.map((value) => e.Option.some(value)),
+      e.Effect.catchAll(() => e.Effect.succeed(e.Option.none())),
+    );
+
+    return e.Option.isSome(result) && result.value.exitCode === 0;
   });
 
   return {
+    requiredCLICommands: ["git"],
     localOrgs,
     remoteRepos,
     localRepos,

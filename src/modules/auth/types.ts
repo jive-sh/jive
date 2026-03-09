@@ -1,6 +1,8 @@
 export interface Credentials {
   email: string;
   gitUserName: string;
+  githubAccountId: number;
+  githubUsername: string;
   readOnlyToken: string;
   readOnlyTokenScope: string;
   readOnlyTokenType: string;
@@ -10,6 +12,7 @@ export interface Credentials {
 }
 
 export interface GitHubSession {
+  accountId: number;
   token: string;
   tokenScope: string;
   tokenType: string;
@@ -17,7 +20,7 @@ export interface GitHubSession {
   refreshTokenExpiresInSeconds: number;
   username: string;
   name: string;
-  email: string;
+  discoveredEmail: string;
 }
 
 export interface GitHubUserKey {
