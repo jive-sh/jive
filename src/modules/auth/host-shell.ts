@@ -1,5 +1,5 @@
 import * as e from "effect";
-import type { HostShellCommand, HostShellCommandResult } from "@/modules/host-shell/interface";
+import type { HostShellCommand, HostShellCommandResult } from "../host-shell/interface";
 
 export interface AuthHostShell {
   readonly commandExists: (command: string) => e.Effect.Effect<boolean>;

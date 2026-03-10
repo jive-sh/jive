@@ -3,18 +3,18 @@ import * as os from "os";
 import * as path from "path";
 import * as e from "effect";
 import { TOOL_NAME } from "@/constants";
-import { FIDO_APPLICATION, GITHUB_KEY_PREFIX } from "@/modules/auth/constants";
-import type { AuthHostShell } from "@/modules/auth/host-shell";
+import { FIDO_APPLICATION, GITHUB_KEY_PREFIX } from "./constants";
+import type { AuthHostShell } from "./host-shell";
 import {
   isCtapCreateAttemptEnabled,
   isCtapPrototypeEnabled,
   runCtapGetInfoPrototype,
   runCtapMakeCredentialPrototype,
-} from "@/modules/auth/ctap-hid";
-import { parsePublicKey } from "@/modules/auth/key-format";
-import { runOpenSshCommand } from "@/modules/auth/openssh";
-import type { HostShellCommand } from "@/modules/host-shell/interface";
-import type { ConnectedYubiKeyDevice, YubiKeyJiveKey } from "@/modules/auth/types";
+} from "./ctap-hid";
+import { parsePublicKey } from "./key-format";
+import { runOpenSshCommand } from "./openssh";
+import type { ConnectedYubiKeyDevice, YubiKeyJiveKey } from "./types";
+import type { HostShellCommand } from "../host-shell/interface";
 
 interface ExtractedResidentKey {
   privatePath: string;
@@ -262,9 +262,8 @@ function toConnectedDevice(
   index: number,
 ): ConnectedYubiKeyDevice {
   const serial = device.serialNumber?.trim() ?? "";
-  const baseLabel = device.product?.trim() || "YubiKey";
+  const label = device.product?.trim() || "YubiKey";
   const id = serial || device.path || `${device.vendorId}:${device.productId}:${index + 1}`;
-  const label = serial ? `${baseLabel} ${serial}` : baseLabel;
 
   return { id, label };
 }

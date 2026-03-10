@@ -146,7 +146,10 @@ function cli(name: string, definition: CLI): e.Effect.Effect<void> {
     });
   }
 
-  completion.init();
+  if (isCompletionRequest()) {
+    completion.init();
+    return e.Effect.never;
+  }
 
   const args = process.argv.slice(2);
   const helpIndex = args.findIndex(isHelpFlag);
@@ -173,6 +176,10 @@ function hasHandler(node: CLI): boolean {
 
 function isHelpFlag(arg: string): boolean {
   return arg === "--help" || arg === "-h";
+}
+
+function isCompletionRequest(): boolean {
+  return process.argv.includes("--compgen");
 }
 
 function resolveGetter(getter: LazyEffect<string[]>): e.Effect.Effect<string[]> {

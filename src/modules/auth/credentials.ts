@@ -1,18 +1,18 @@
-import * as fs from "fs";
 import * as path from "path";
 import * as e from "effect";
 import { TOOL_NAME } from "@/constants";
-import type { Credentials } from "@/modules/auth/types";
+import type { Credentials } from "./types";
+import type { CurrentUserState } from "../tool-state/interface";
 
 const USERS_DIR = `.${TOOL_NAME}/users`;
-const READ_ONLY_AUTHN_KEY_FILE = "read-only-authn-key";
+const READ_ONLY_AUTHN_KEY_FILE = "readonly-github-authn-ssh-key";
 
 export type ToolStateApi = {
   readonly workspaceRoot: e.Option.Option<string>;
   readonly inWorkspace: e.Effect.Effect<boolean>;
-  readonly readActiveUserEmail: e.Effect.Effect<e.Option.Option<string>>;
-  readonly writeActiveUserEmail: (email: string) => e.Effect.Effect<void>;
-  readonly readLegacyCredentialState: e.Effect.Effect<e.Option.Option<{ token: string; email: string; gitUserName: string }>>;
+  readonly readCurrentUserState: e.Effect.Effect<e.Option.Option<CurrentUserState>>;
+  readonly clearCurrentUserState: e.Effect.Effect<void>;
+  readonly writeCurrentUserState: (state: CurrentUserState) => e.Effect.Effect<void>;
   readonly readReadOnlyTokenState: (
     email: string,
   ) => e.Effect.Effect<e.Option.Option<{
@@ -54,20 +54,17 @@ export const loadCredentials = (toolState: ToolStateApi): e.Effect.Effect<e.Opti
   e.Effect.gen(function*() {
     if (!(yield* toolState.inWorkspace)) return e.Option.none();
 
-    const activeUserEmail = yield* resolveActiveUserEmail(toolState);
-    if (e.Option.isNone(activeUserEmail)) return e.Option.none();
+    const currentUserState = yield* resolveCurrentUserState(toolState);
+    if (e.Option.isNone(currentUserState)) return e.Option.none();
 
-    return yield* loadCredentialsForUser(toolState, activeUserEmail.value);
+    return yield* loadCredentialsForUser(toolState, currentUserState.value.email);
   });
 
 export const saveCredentials = (
   toolState: ToolStateApi,
   credentials: Credentials,
 ): e.Effect.Effect<void> =>
-  e.Effect.gen(function*() {
-    yield* saveUserTokenState(toolState, credentials);
-    yield* toolState.writeActiveUserEmail(credentials.email);
-  });
+  saveUserTokenState(toolState, credentials);
 
 export const saveUserTokenState = (
   toolState: ToolStateApi,
@@ -142,58 +139,13 @@ const loadCredentialsForUser = (
     });
   });
 
-const resolveActiveUserEmail = (toolState: ToolStateApi): e.Effect.Effect<e.Option.Option<string>> =>
+const resolveCurrentUserState = (toolState: ToolStateApi): e.Effect.Effect<e.Option.Option<CurrentUserState>> =>
   e.Effect.gen(function*() {
-    const fromActiveFile = yield* toolState.readActiveUserEmail;
-    if (e.Option.isSome(fromActiveFile)) return fromActiveFile;
-
-    const legacyMigrated = yield* migrateLegacyCredentials(toolState);
-    if (e.Option.isNone(legacyMigrated)) return e.Option.none();
-
-    return e.Option.some(legacyMigrated.value.email);
-  });
-
-const migrateLegacyCredentials = (toolState: ToolStateApi): e.Effect.Effect<e.Option.Option<Credentials>> =>
-  e.Effect.gen(function*() {
-    const legacy = yield* toolState.readLegacyCredentialState;
-    if (e.Option.isNone(legacy)) return e.Option.none();
-
-    const { privateKeyPath, publicKeyPath } = getReadOnlyAuthKeyPaths(toolState.workspaceRoot, legacy.value.email);
-    if (!privateKeyPath || !publicKeyPath) return e.Option.none();
-
-    const migrated: Credentials = {
-      email: legacy.value.email,
-      githubAccountId: 0,
-      githubUsername: "",
-      readOnlyToken: legacy.value.token,
-      readOnlyTokenScope: "repo user read:org",
-      readOnlyTokenType: "bearer",
-      readOnlyAuthPrivateKeyPath: privateKeyPath,
-      readOnlyAuthPublicKeyPath: publicKeyPath,
-      writeRefreshToken: "",
-      gitUserName: legacy.value.gitUserName,
-    };
-
-    yield* saveCredentials(toolState, migrated);
-    return e.Option.some(migrated);
+    return yield* toolState.readCurrentUserState;
   });
 
 function userDirectory(root: string, email: string): string {
-  const canonicalName = sanitizeEmailDirectoryName(email);
-  const canonicalPath = path.join(root, USERS_DIR, canonicalName);
-
-  const legacyEncodedName = encodeURIComponent(email.trim().toLowerCase());
-  const legacyEncodedPath = path.join(root, USERS_DIR, legacyEncodedName);
-
-  if (canonicalPath !== legacyEncodedPath && fs.existsSync(legacyEncodedPath) && !fs.existsSync(canonicalPath)) {
-    try {
-      fs.renameSync(legacyEncodedPath, canonicalPath);
-    } catch {
-      // Keep using canonical path; read/write calls will surface errors if migration cannot complete.
-    }
-  }
-
-  return canonicalPath;
+  return path.join(root, USERS_DIR, sanitizeEmailDirectoryName(email));
 }
 
 function sanitizeEmailDirectoryName(email: string): string {

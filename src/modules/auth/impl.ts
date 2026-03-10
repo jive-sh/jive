@@ -1,17 +1,18 @@
 import * as e from "effect";
-import * as modules from "@/modules";
-import { loadCredentials, loadReadOnlyToken } from "@/modules/auth/credentials";
-import type { AuthHostShell } from "@/modules/auth/host-shell";
-import { SSH_KEYGEN_COMMAND } from "@/modules/auth/openssh";
-import { currentBrowserOpenCommand } from "@/modules/auth/oauth";
+import * as modules from "../index";
+import { signingKeyName } from "./constants";
+import { loadCredentials, loadReadOnlyToken } from "./credentials";
+import type { AuthHostShell } from "./host-shell";
+import { SSH_KEYGEN_COMMAND } from "./openssh";
 import {
-  ensureWriteTokenForActiveUser as ensureWriteTokenForActiveUserInternal,
+  ensureLoggedIn as ensureLoggedInInternal,
   login as loginInternal,
   whoami as whoamiInternal,
-} from "@/modules/auth/service";
+} from "./service";
 
 export const AuthImpl = e.Layer.effect(modules.IAuth, e.Effect.gen(function*() {
   const git = yield* modules.IGit;
+  const github = yield* modules.IGitHub;
   const hostShell = yield* modules.IHostShell;
   const toolState = yield* modules.IToolState;
   const yubiKey = yield* modules.IYubiKey;
@@ -26,26 +27,47 @@ export const AuthImpl = e.Layer.effect(modules.IAuth, e.Effect.gen(function*() {
       ),
   };
 
+  const dependencies = { git, github, hostShell: authHostShell, toolState, yubiKey };
+  const login = loginInternal(dependencies);
+  const ensureLoggedIn = ensureLoggedInInternal(dependencies);
+  const whoami = whoamiInternal(dependencies);
+
   return {
-    requiredCLICommands: [currentBrowserOpenCommand(), SSH_KEYGEN_COMMAND],
-    login: loginInternal({ git, hostShell: authHostShell, toolState, yubiKey }),
-    whoami: whoamiInternal({ git, hostShell: authHostShell, toolState, yubiKey }),
+    requiredCLICommands: [SSH_KEYGEN_COMMAND],
+    login,
+    ensureLoggedIn,
+    whoami,
     readOnlyToken: loadReadOnlyToken(toolState),
-    activeGitIdentity: e.pipe(
-      loadCredentials(toolState),
-      e.Effect.map((credentials) =>
-        e.Option.map(credentials, (value) => ({
-          userName: value.gitUserName || value.email,
-          userEmail: value.email,
-          readOnlyAuthPrivateKeyPath: value.readOnlyAuthPrivateKeyPath,
-        }))
-      ),
-    ),
-    ensureWriteTokenForActiveUser: ensureWriteTokenForActiveUserInternal({
-      git,
-      hostShell: authHostShell,
-      toolState,
-      yubiKey,
+    activeGitIdentity: e.Effect.gen(function*() {
+      yield* ensureLoggedIn;
+
+      const credentials = yield* loadCredentials(toolState);
+      if (e.Option.isNone(credentials)) return e.Option.none();
+
+      const currentUser = yield* toolState.readCurrentUserState;
+      const residentKeys = yield* yubiKey.listResidentJiveKeys;
+      const githubJiveKeys = yield* github.listJiveKeys(credentials.value.readOnlyToken);
+      const signingPublicKey = e.Option.isSome(currentUser) && e.Option.isSome(residentKeys) && e.Option.isSome(githubJiveKeys)
+        ? residentKeys.value.find((key) =>
+          key.name === signingKeyName(credentials.value.email, currentUser.value.yubiKeyId)
+          && githubJiveKeys.value.signing.some((entry) =>
+            entry.title === key.name && normalizeKeyBody(entry.key) === key.keyBody
+          )
+        )?.publicKey
+        : undefined;
+
+      return e.Option.some({
+        userName: credentials.value.gitUserName || credentials.value.email,
+        userEmail: credentials.value.email,
+        readOnlyAuthPrivateKeyPath: credentials.value.readOnlyAuthPrivateKeyPath,
+        signingPublicKey,
+      });
     }),
   };
 }));
+
+function normalizeKeyBody(key: string): string {
+  const parts = key.trim().split(/\s+/);
+  if (parts.length < 2) return key.trim();
+  return `${parts[0]} ${parts[1]}`;
+}

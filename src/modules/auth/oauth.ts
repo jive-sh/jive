@@ -1,6 +1,6 @@
 import * as e from "effect";
-import type { AuthHostShell } from "@/modules/auth/host-shell";
-import type { HostShellCommand } from "@/modules/host-shell/interface";
+import type { AuthHostShell } from "./host-shell";
+import type { HostShellCommand } from "../host-shell/interface";
 
 const OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
 

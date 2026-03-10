@@ -2,13 +2,12 @@ import * as e from "effect";
 import * as ep from "@effect/platform";
 import * as path from "path";
 import * as modules from "@/modules";
-import { WORKSPACE_DIR } from "@/modules/tool-state/constants";
-import type { ILegacyCredentialState, IReadOnlyTokenState } from "@/modules/tool-state/interface";
+import { WORKSPACE_DIR } from "./constants";
+import type { CurrentUserState, IReadOnlyTokenState } from "./interface";
 
 const USERS_DIR = `${WORKSPACE_DIR}/users`;
-const ACTIVE_USER_FILE = `${WORKSPACE_DIR}/active-user.json`;
-const LEGACY_CREDENTIALS_FILE = `${WORKSPACE_DIR}/credentials.json`;
-const READ_ONLY_TOKEN_FILE = "read-only-token.json";
+const CURRENT_USER_FILE = `${USERS_DIR}/current.json`;
+const READ_ONLY_TOKEN_FILE = "readonly-github-api-token.json";
 const WRITE_REFRESH_TOKEN_FILE = "write-refresh-token.json";
 
 export const ToolStateImpl = e.Layer.effect(modules.IToolState, e.Effect.gen(function*() {
@@ -42,28 +41,16 @@ export const ToolStateImpl = e.Layer.effect(modules.IToolState, e.Effect.gen(fun
       .replace(/[\/\\]/g, "_");
 
   const userDirectory = e.Effect.fn(function*(root: string, email: string) {
-    const canonicalName = sanitizeEmailDirectoryName(email);
-    const canonicalPath = path.join(root, USERS_DIR, canonicalName);
-
-    const legacyEncodedName = encodeURIComponent(email.trim().toLowerCase());
-    const legacyEncodedPath = path.join(root, USERS_DIR, legacyEncodedName);
-
-    if (canonicalPath !== legacyEncodedPath) {
-      const legacyExists = yield* pathExists(legacyEncodedPath);
-      const canonicalExists = yield* pathExists(canonicalPath);
-      if (legacyExists && !canonicalExists) {
-        yield* fileSystem.rename(legacyEncodedPath, canonicalPath).pipe(
-          e.Effect.catchAll(() => e.Effect.void),
-        );
-      }
-    }
-
-    return canonicalPath;
+    return path.join(root, USERS_DIR, sanitizeEmailDirectoryName(email));
   });
 
   const ensureUserStateDirectory = e.Effect.fn(function*(root: string, email: string) {
     const directory = yield* userDirectory(root, email);
     yield* fileSystem.makeDirectory(directory, { recursive: true });
+  });
+
+  const ensureUsersDirectory = e.Effect.fn(function*(root: string) {
+    yield* fileSystem.makeDirectory(path.join(root, USERS_DIR), { recursive: true });
   });
 
   const readOnlyTokenFilePath = e.Effect.fn(function*(root: string, email: string) {
@@ -104,53 +91,44 @@ export const ToolStateImpl = e.Layer.effect(modules.IToolState, e.Effect.gen(fun
     return e.Option.isSome(workspaceRoot);
   })();
 
-  const readActiveUserEmail = e.Effect.fn(function*() {
-    if (e.Option.isNone(workspaceRoot)) return e.Option.none<string>();
+  const readCurrentUserState = e.Effect.fn(function*() {
+    if (e.Option.isNone(workspaceRoot)) return e.Option.none<CurrentUserState>();
 
-    const activeUserPath = path.join(workspaceRoot.value, ACTIVE_USER_FILE);
-    const active = yield* readJsonObject(activeUserPath);
-    if (e.Option.isNone(active)) return e.Option.none<string>();
+    const currentUserPath = path.join(workspaceRoot.value, CURRENT_USER_FILE);
+    const current = yield* readJsonObject(currentUserPath);
+    if (e.Option.isNone(current)) return e.Option.none<CurrentUserState>();
 
-    const email = active.value.email;
-    return typeof email === "string" && email ? e.Option.some(email) : e.Option.none<string>();
+    const email = current.value.email;
+    const yubiKeyId = current.value.yubiKeyId;
+    const yubiKeyLabel = current.value.yubiKeyLabel;
+    if (typeof email !== "string" || !email) return e.Option.none<CurrentUserState>();
+    if (typeof yubiKeyId !== "string" || !yubiKeyId) return e.Option.none<CurrentUserState>();
+    if (typeof yubiKeyLabel !== "string" || !yubiKeyLabel) return e.Option.none<CurrentUserState>();
+
+    return e.Option.some({ email, yubiKeyId, yubiKeyLabel });
   })();
 
-  const writeActiveUserEmail = e.Effect.fn(function*(email: string) {
+  const clearCurrentUserState = e.Effect.fn(function*() {
     if (e.Option.isNone(workspaceRoot)) return;
 
-    const activeUserPath = path.join(workspaceRoot.value, ACTIVE_USER_FILE);
-    yield* writeJsonObject(activeUserPath, { email }).pipe(
+    const currentUserPath = path.join(workspaceRoot.value, CURRENT_USER_FILE);
+    yield* fileSystem.remove(currentUserPath, { force: true }).pipe(
+      e.Effect.catchAll(() => e.Effect.void),
+    );
+  })();
+
+  const writeCurrentUserState = e.Effect.fn(function*(state: CurrentUserState) {
+    if (e.Option.isNone(workspaceRoot)) return;
+
+    yield* ensureUsersDirectory(workspaceRoot.value).pipe(
+      e.Effect.catchAll(() => e.Effect.void),
+    );
+
+    const currentUserPath = path.join(workspaceRoot.value, CURRENT_USER_FILE);
+    yield* writeJsonObject(currentUserPath, state).pipe(
       e.Effect.catchAll(() => e.Effect.void),
     );
   });
-
-  const readLegacyCredentialState = e.Effect.fn(function*() {
-    if (e.Option.isNone(workspaceRoot)) return e.Option.none<ILegacyCredentialState>();
-
-    const legacyPath = path.join(workspaceRoot.value, LEGACY_CREDENTIALS_FILE);
-    const legacy = yield* readJsonObject(legacyPath);
-    if (e.Option.isNone(legacy)) return e.Option.none<ILegacyCredentialState>();
-
-    const token = typeof legacy.value.githubToken === "string"
-      ? legacy.value.githubToken
-      : typeof legacy.value.token === "string"
-        ? legacy.value.token
-        : "";
-
-    const email = typeof legacy.value.email === "string"
-      ? legacy.value.email
-      : typeof legacy.value.githubEmail === "string"
-        ? legacy.value.githubEmail
-        : "";
-
-    const gitUserName = typeof legacy.value.githubName === "string" && legacy.value.githubName
-      ? legacy.value.githubName
-      : email;
-
-    if (!token || !email) return e.Option.none<ILegacyCredentialState>();
-
-    return e.Option.some({ token, email, gitUserName });
-  })();
 
   const readReadOnlyTokenState = e.Effect.fn(function*(email: string) {
     if (e.Option.isNone(workspaceRoot)) return e.Option.none<IReadOnlyTokenState>();
@@ -225,9 +203,9 @@ export const ToolStateImpl = e.Layer.effect(modules.IToolState, e.Effect.gen(fun
     requiredCLICommands: [],
     workspaceRoot,
     inWorkspace,
-    readActiveUserEmail,
-    writeActiveUserEmail,
-    readLegacyCredentialState,
+    readCurrentUserState,
+    clearCurrentUserState,
+    writeCurrentUserState,
     readReadOnlyTokenState,
     writeReadOnlyTokenState,
     readWriteRefreshToken,

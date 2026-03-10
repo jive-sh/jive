@@ -119,19 +119,23 @@ Jive has no config file. Instead, jive walks upward from the current directory u
 
 ```
 .jive/
-  active-user.json # { "email": "..." }
   users/
+    current.json # { "email": "...", "yubiKeyId": "...", "yubiKeyLabel": "..." } # yubiKeyLabel may be a Jive-local label
     <email>/
-      read-only-token.json
-      read-only-authn-key
-      read-only-authn-key.pub
+      readonly-github-api-token.json
+      readonly-github-authn-ssh-key
+      readonly-github-authn-ssh-key.pub
       write-refresh-token.json # optional, when OAuth app issues refresh tokens
   state     # loaded repos, workspace topology
 ```
 
-`jive login` persists a workspace-scoped read-only auth key under `.jive/users/<email>/read-only-authn-key`.
+`jive login` persists a workspace-scoped read-only GitHub API token under `.jive/users/<email>/readonly-github-api-token.json`.
+`jive login` persists a workspace-scoped read-only GitHub auth SSH key under `.jive/users/<email>/readonly-github-authn-ssh-key`.
 The YubiKey resident key remains the commit-signing key.
-`jive login` acquires a write token for key setup, then acquires a lower-scope read token for persistence (refresh downscope when possible, otherwise a second browser OAuth pass).
+`jive login` acquires a write token for key setup, then acquires a separate read-scope token in a second browser OAuth pass for persistence.
+The read token includes key-read scopes so Jive can inspect GitHub auth and signing keys before deciding whether write-capable repair is needed.
+Jive now ensures the local read-only GitHub auth SSH key exists, uploads it to GitHub if needed, and rewrites local workspace repos to use that key for clone/pull access before it attempts YubiKey signing-key setup.
+GitHub auth keys are named `jive:<email>`. GitHub/YubiKey signing keys are named `jive:<email>:<yubiKeyId>` so multiple YubiKeys can coexist for the same email.
 `jive create` and `jive templatize` reacquire write-capable GitHub tokens on demand (refresh token first when available, otherwise browser OAuth).
 
 ## Autocomplete

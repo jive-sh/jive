@@ -1,10 +1,11 @@
 import * as e from "effect";
 import * as epn from "@effect/platform-node";
-import * as modules from "@/modules";
+import * as modules from "./index";
 import { PlainTextLogger } from "@/logging";
 
 export const ModulesImpl = e.pipe(
   modules.AuthImpl,
+  e.Layer.provideMerge(modules.GitHubImpl),
   e.Layer.provideMerge(modules.YubiKeyImpl),
   e.Layer.provideMerge(modules.TemplatesImpl),
   e.Layer.provideMerge(modules.GitImpl),

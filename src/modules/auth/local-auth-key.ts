@@ -1,12 +1,36 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as e from "effect";
-import { GITHUB_KEY_PREFIX } from "@/modules/auth/constants";
-import type { AuthHostShell } from "@/modules/auth/host-shell";
-import { parsePublicKey } from "@/modules/auth/key-format";
-import { runOpenSshCommand } from "@/modules/auth/openssh";
-import type { HostShellCommand } from "@/modules/host-shell/interface";
-import type { LocalAuthKey } from "@/modules/auth/types";
+import { authKeyName } from "./constants";
+import type { AuthHostShell } from "./host-shell";
+import { parsePublicKey } from "./key-format";
+import { runOpenSshCommand } from "./openssh";
+import type { LocalAuthKey } from "./types";
+import type { HostShellCommand } from "../host-shell/interface";
+
+export const loadReadOnlyAuthKey = (
+  privateKeyPath: string,
+  publicKeyPath: string,
+): e.Effect.Effect<e.Option.Option<LocalAuthKey>> =>
+  e.Effect.gen(function*() {
+    if (!privateKeyPath || !publicKeyPath) return e.Option.none();
+    if (!fs.existsSync(privateKeyPath) || !fs.existsSync(publicKeyPath)) return e.Option.none();
+
+    const publicKey = yield* e.Effect.sync(() => fs.readFileSync(publicKeyPath, "utf8").trim());
+    const parsed = parsePublicKey(publicKey);
+    if (e.Option.isNone(parsed)) {
+      yield* e.Effect.logWarning(`Existing auth key was not parseable: ${publicKeyPath}.`);
+      return e.Option.none();
+    }
+
+    return e.Option.some({
+      name: parsed.value.comment,
+      publicKey,
+      keyBody: parsed.value.keyBody,
+      privateKeyPath,
+      publicKeyPath,
+    });
+  });
 
 export const createReadOnlyAuthKey = (
   hostShell: AuthHostShell,
@@ -15,7 +39,7 @@ export const createReadOnlyAuthKey = (
   email: string,
 ): e.Effect.Effect<e.Option.Option<LocalAuthKey>> =>
   e.Effect.gen(function*() {
-    const keyName = `${GITHUB_KEY_PREFIX}${email}`;
+    const keyName = authKeyName(email);
 
     yield* e.Effect.sync(() => {
       fs.mkdirSync(path.dirname(privateKeyPath), { recursive: true });

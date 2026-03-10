@@ -6,11 +6,21 @@ import * as modules from "@/modules";
 
 export class MissingDependenciesError extends e.Data.TaggedError("MissingDependenciesError")<{missingDependencies: string[]}> {}
 
+// TODO:
+// 1. (Done) login and ensureLogin should have the same code. Login method just deletes the .jive/users/current.json then runs ensure code
+// 2. (Done) getting the active user identity should also run ensurelogin too in order for us to have certainty that the proper credentials are in all places
+// 3. (Partially addressed) local-only YubiKey relabeling was removed; if we want custom names, they need to come from true on-device support rather than workspace-local state.
+// 4. (Done) write-capable GitHub auth should only be acquired once per login/ensure run and then reused for later repair steps in that run.
+// 5. GitHub user auth keys are still read/write. A truly read-only SSH auth path will require a deploy-key or HTTPS/token redesign rather than `/user/keys`.
+// 6. (Done) same-directory and child-module imports should prefer relative paths over `@/...`.
+// 7. (Done) GitHub behavior now lives in `src/modules/github/*` instead of under `src/modules/auth/*`.
+
 export const program = e.Effect.gen(function*() {
   const auth = yield* modules.IAuth;
   const bun = yield* modules.IBun;
   const daemon = yield* modules.IDaemon;
   const git = yield* modules.IGit;
+  const github = yield* modules.IGitHub;
   const hostShell = yield* modules.IHostShell;
   const templates = yield* modules.ITemplates;
   const toolState = yield* modules.IToolState;
@@ -21,6 +31,7 @@ export const program = e.Effect.gen(function*() {
     ...bun.requiredCLICommands,
     ...daemon.requiredCLICommands,
     ...git.requiredCLICommands,
+    ...github.requiredCLICommands,
     ...hostShell.requiredCLICommands,
     ...templates.requiredCLICommands,
     ...toolState.requiredCLICommands,
@@ -37,13 +48,13 @@ export const program = e.Effect.gen(function*() {
         CLI.AsyncOptions(
           e.Effect.fn(function*() {
             const readOnlyToken = yield* auth.readOnlyToken;
-            return yield* git.remoteRepos(org, readOnlyToken);
+            return yield* github.remoteRepos(org, readOnlyToken);
           }),
           (repo) =>
             CLI.Handle(
               e.Effect.fn(function*() {
-                const readOnlyToken = yield* auth.readOnlyToken;
                 const activeIdentity = yield* auth.activeGitIdentity;
+                const readOnlyToken = yield* auth.readOnlyToken;
                 if (!readOnlyToken || e.Option.isNone(activeIdentity)) {
                   yield* e.Effect.logError(`Not logged in. Run \`${TOOL_NAME} login\` first.`);
                   return;
@@ -58,7 +69,8 @@ export const program = e.Effect.gen(function*() {
                   }
                   yield* e.Effect.log(`Added @${org}/${repo} as a submodule.`);
                 } else {
-                  const updateResult = yield* git.updateSubmoduleIfAllowed(org, repo, readOnlyToken);
+                  const defaultBranch = yield* github.repoDefaultBranch(org, repo, readOnlyToken);
+                  const updateResult = yield* git.updateSubmoduleIfAllowed(org, repo, defaultBranch);
                   switch (updateResult._tag) {
                     case "Updated":
                       yield* e.Effect.log(`Updated @${org}/${repo}; it already existed so it was not re-added.`);
@@ -87,6 +99,7 @@ export const program = e.Effect.gen(function*() {
                   userName: activeIdentity.value.userName,
                   userEmail: activeIdentity.value.userEmail,
                   authPrivateKeyPath: activeIdentity.value.readOnlyAuthPrivateKeyPath,
+                  signingPublicKey: activeIdentity.value.signingPublicKey,
                 });
                 if (!configured) {
                   yield* e.Effect.logError(`Failed to configure git remote/user for @${org}/${repo}.`);
@@ -139,8 +152,7 @@ export const program = e.Effect.gen(function*() {
       (template) =>
         CLI.Handle(
           e.Effect.fn(function*([repo]) {
-            const writeToken = yield* auth.ensureWriteTokenForActiveUser;
-            if (e.Option.isNone(writeToken)) return;
+            yield* auth.ensureLoggedIn;
 
             // TODO: scaffold repo from template, create on GitHub, link to workspace
             yield* e.Effect.log(`Creating ${repo} from template ${template}...`);
@@ -156,8 +168,7 @@ export const program = e.Effect.gen(function*() {
           (repo) =>
             CLI.Handle(
               e.Effect.fn(function*([templateName]) {
-                const writeToken = yield* auth.ensureWriteTokenForActiveUser;
-                if (e.Option.isNone(writeToken)) return;
+                yield* auth.ensureLoggedIn;
 
                 // TODO: extract template definition from existing repo instance
                 yield* e.Effect.log(`Syncing ${org}/${repo} into template ${templateName}...`);

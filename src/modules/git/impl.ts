@@ -1,9 +1,9 @@
 import * as e from "effect";
 import * as ep from "@effect/platform";
 import * as path from "path";
-import * as modules from "@/modules";
-import type { HostShellCommand } from "@/modules/host-shell/interface";
-import type { GitIdentity, SubmoduleUpdateResult } from "@/modules/git/interface";
+import * as modules from "../index";
+import type { GitIdentity, SubmoduleUpdateResult } from "./interface";
+import type { HostShellCommand } from "../host-shell/interface";
 
 type SpawnIo = "inherit" | "ignore" | "pipe";
 
@@ -81,21 +81,6 @@ export const GitImpl = e.Layer.effect(modules.IGit, e.Effect.gen(function*() {
     return branch ? e.Option.some(branch) : e.Option.none<string>();
   });
 
-  const fetchDefaultBranch = e.Effect.fn(function*(org: string, repo: string, readOnlyToken: string) {
-    const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
-    if (readOnlyToken) {
-      headers.Authorization = `Bearer ${readOnlyToken}`;
-    }
-
-    const response = yield* e.Effect.promise(() => fetch(`https://api.github.com/repos/${org}/${repo}`, { headers }));
-    if (!response.ok) return e.Option.none<string>();
-
-    const payload = yield* e.Effect.promise(() => response.json() as Promise<{ default_branch?: unknown }>);
-    return typeof payload.default_branch === "string" && payload.default_branch
-      ? e.Option.some(payload.default_branch)
-      : e.Option.none<string>();
-  });
-
   const localOrgs = e.Effect.fn(function*() {
     if (e.Option.isNone(toolState.workspaceRoot)) return [] as string[];
 
@@ -112,30 +97,6 @@ export const GitImpl = e.Layer.effect(modules.IGit, e.Effect.gen(function*() {
 
     return orgs;
   })();
-
-  const remoteRepos = e.Effect.fn(function*(org: string, readOnlyToken = "") {
-    const baseHeaders: Record<string, string> = { Accept: "application/vnd.github+json" };
-    if (readOnlyToken) {
-      baseHeaders.Authorization = `Bearer ${readOnlyToken}`;
-    }
-
-    const orgResponse = yield* e.Effect.promise(() =>
-      fetch(`https://api.github.com/orgs/${org}/repos?per_page=100&type=all`, { headers: baseHeaders }),
-    );
-
-    if (orgResponse.ok) {
-      const repos = yield* e.Effect.promise(() => orgResponse.json() as Promise<Array<{ name: string }>>);
-      return repos.map((repo) => repo.name);
-    }
-
-    const userResponse = yield* e.Effect.promise(() =>
-      fetch(`https://api.github.com/users/${org}/repos?per_page=100&type=all`, { headers: baseHeaders }),
-    );
-    if (!userResponse.ok) return [] as string[];
-
-    const repos = yield* e.Effect.promise(() => userResponse.json() as Promise<Array<{ name: string }>>);
-    return repos.map((repo) => repo.name);
-  });
 
   const localRepos = e.Effect.fn(function*(org: string) {
     if (e.Option.isNone(toolState.workspaceRoot)) return [] as string[];
@@ -198,14 +159,13 @@ export const GitImpl = e.Layer.effect(modules.IGit, e.Effect.gen(function*() {
     return true;
   });
 
-  const updateSubmoduleIfAllowed = e.Effect.fn(function*(org: string, repo: string, readOnlyToken: string) {
+  const updateSubmoduleIfAllowed = e.Effect.fn(function*(org: string, repo: string, defaultBranch: e.Option.Option<string>) {
     const repoPath = yield* resolveRepoPath(org, repo);
     if (e.Option.isNone(repoPath)) return { _tag: "Missing" } as const satisfies SubmoduleUpdateResult;
 
     const dirty = yield* isDirty(repoPath.value);
     if (dirty) return { _tag: "SkippedDirty" } as const satisfies SubmoduleUpdateResult;
 
-    const defaultBranch = yield* fetchDefaultBranch(org, repo, readOnlyToken);
     if (e.Option.isNone(defaultBranch)) {
       return { _tag: "SkippedUnknownDefaultBranch" } as const satisfies SubmoduleUpdateResult;
     }
@@ -291,7 +251,6 @@ export const GitImpl = e.Layer.effect(modules.IGit, e.Effect.gen(function*() {
   return {
     requiredCLICommands: ["git"],
     localOrgs,
-    remoteRepos,
     localRepos,
     submoduleExists,
     addSubmodule,

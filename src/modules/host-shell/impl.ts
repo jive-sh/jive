@@ -1,7 +1,7 @@
 import * as e from "effect";
 import * as ep from "@effect/platform";
 import * as path from "node:path";
-import { IHostShell, type HostShellCommand, type HostShellCommandResult, type HostShellProcess } from "@/modules/host-shell/interface";
+import { IHostShell, type HostShellCommand, type HostShellCommandResult, type HostShellProcess } from "./interface";
 
 const WINDOWS_EXECUTABLE_EXTENSIONS = [".COM", ".EXE", ".BAT", ".CMD"] as const;
 

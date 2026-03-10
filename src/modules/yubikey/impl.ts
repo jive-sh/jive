@@ -1,13 +1,13 @@
 import * as e from "effect";
-import * as modules from "@/modules";
-import { REQUIRED_OPENSSH_COMMANDS } from "@/modules/auth/openssh";
-import type { AuthHostShell } from "@/modules/auth/host-shell";
+import * as modules from "../index";
+import type { AuthHostShell } from "../auth/host-shell";
+import { REQUIRED_OPENSSH_COMMANDS } from "../auth/openssh";
 import {
   createResidentJiveKey,
   listConnectedYubiKeys,
   listResidentJiveKeys,
   loadResidentJiveKeyIntoAgent,
-} from "@/modules/auth/yubikey";
+} from "../auth/yubikey";
 
 export const YubiKeyImpl = e.Layer.effect(modules.IYubiKey, e.Effect.gen(function*() {
   const hostShell = yield* modules.IHostShell;

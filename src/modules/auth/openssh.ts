@@ -1,6 +1,6 @@
 import * as e from "effect";
-import type { AuthHostShell } from "@/modules/auth/host-shell";
-import type { HostShellCommand, HostShellCommandResult } from "@/modules/host-shell/interface";
+import type { AuthHostShell } from "./host-shell";
+import type { HostShellCommand, HostShellCommandResult } from "../host-shell/interface";
 
 export const SSH_KEYGEN_COMMAND = "ssh-keygen" as const;
 export const SSH_ADD_COMMAND = "ssh-add" as const;

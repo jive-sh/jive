@@ -25,11 +25,12 @@ export const PlainTextLogger = e.Logger.replace(
   ConsoleLogger,
 );
 
-function formatLogLine(level: string, message: unknown): string {
+function formatLogLine(level: e.LogLevel.LogLevel["label"], message: unknown): string {
   const rendered = formatMessage(message);
+  const prefix = (level === "INFO" ? "" : (level.padStart(5, " ") + ": "));
   return rendered
     .split("\n")
-    .map((line) => `${level} ${line}`)
+    .map((line) => `${prefix}${line}`)
     .join("\n");
 }
 
@@ -47,7 +48,7 @@ function formatPart(value: unknown): string {
   return util.inspect(value, { depth: null, colors: false });
 }
 
-function colorize(level: string, message: string, isTTY: boolean): string {
+function colorize(level: e.LogLevel.LogLevel["label"], message: string, isTTY: boolean): string {
   if (!isTTY) return message;
 
   const prefix = LOG_LEVEL_STYLES[level as keyof typeof LOG_LEVEL_STYLES] ?? "";

@@ -2,7 +2,7 @@ import * as e from "effect";
 import * as ep from "@effect/platform";
 import * as path from "path";
 import * as modules from "@/modules";
-import { TEMPLATE_PREFIX } from "@/modules/templates/constants";
+import { TEMPLATE_PREFIX } from "./constants";
 
 export const TemplatesImpl = e.Layer.effect(modules.ITemplates, e.Effect.gen(function*() {
   const toolState = yield* modules.IToolState;

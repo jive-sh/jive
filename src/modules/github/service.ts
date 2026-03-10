@@ -1,29 +1,30 @@
 import * as e from "effect";
-import { GITHUB_KEY_PREFIX } from "@/modules/auth/constants";
-import type { AuthHostShell } from "@/modules/auth/host-shell";
-import { parsePublicKey } from "@/modules/auth/key-format";
+import { GITHUB_KEY_PREFIX } from "../auth/constants";
+import type { AuthHostShell } from "../auth/host-shell";
+import { parsePublicKey } from "../auth/key-format";
 import {
   beginOAuthCodeRequest,
-  displayAutoClosingOAuthBrowserAction,
   displayOAuthBrowserAction,
   type OAuthBrowserAction,
   type OAuthCodeResult,
-} from "@/modules/auth/oauth";
-import type { GitHubJiveKeyInventory, GitHubSession, GitHubUserKey, YubiKeyJiveKey } from "@/modules/auth/types";
+} from "../auth/oauth";
+import type { GitHubJiveKeyInventory, GitHubSession, GitHubUserKey, YubiKeyJiveKey } from "../auth/types";
 
 const CLIENT_ID = "Ov23liKYxk1Ag7SsNhbP";
 const CLIENT_SECRET = "e2901fbe93c591e7a53a903e70490ff87e998159";
 
-// repo                list/read private repos (and currently broader repo permissions for OAuth apps)
-// user                read profile + primary email
-// read:org            list org membership
-const READ_SCOPES = "repo user read:org";
+// repo                  list/read private repos (and currently broader repo permissions for OAuth apps)
+// user                  read profile + primary email
+// read:org              list org membership
+// read:public_key       list auth SSH keys
+// read:ssh_signing_key  list SSH signing keys
+const READ_SCOPES = "repo user read:org read:public_key read:ssh_signing_key";
 
 // write:public_key      register SSH authentication keys (/user/keys)
 // write:ssh_signing_key register SSH signing keys (/user/ssh_signing_keys)
 const WRITE_SCOPES = `${READ_SCOPES} write:public_key write:ssh_signing_key`;
 const WRITE_KEY_SCOPES = ["write:public_key", "write:ssh_signing_key"] as const;
-const REQUIRED_READ_SCOPES = ["repo", "user", "read:org"] as const;
+const REQUIRED_READ_SCOPES = ["repo", "user", "read:org", "read:public_key", "read:ssh_signing_key"] as const;
 
 interface GitHubUserEmail {
   email: string;
@@ -40,19 +41,9 @@ interface TokenExchangeResponse {
   error_description?: string;
 }
 
-export interface GitApi {
+interface WorkspaceGitApi {
   readonly localOrgs: e.Effect.Effect<string[]>;
   readonly localRepos: (org: string) => e.Effect.Effect<string[]>;
-  readonly configureRepoRemoteAndUser: (
-    org: string,
-    repo: string,
-    identity: {
-      readonly userName: string;
-      readonly userEmail: string;
-      readonly authPrivateKeyPath: string;
-      readonly signingPublicKey?: string;
-    },
-  ) => e.Effect.Effect<boolean>;
 }
 
 export interface PendingGitHubLogin {
@@ -64,36 +55,6 @@ export interface PendingGitHubLogin {
 export function isGitHubOAuthConfigured(): boolean {
   return Boolean(CLIENT_ID && CLIENT_SECRET);
 }
-
-export const loginToGitHubReadOnly = (
-  hostShell: AuthHostShell,
-): e.Effect.Effect<e.Option.Option<GitHubSession>> =>
-  e.Effect.gen(function*() {
-    const login = beginGitHubReadOnlyLogin(hostShell);
-    const session = yield* login.waitForSession;
-    if (e.Option.isSome(session)) {
-      login.continueInBrowser(displayAutoClosingOAuthBrowserAction(
-        "GitHub read token obtained",
-        closeTabMessage("Read token obtained", session.value.username),
-      ));
-    }
-    return session;
-  });
-
-export const loginToGitHubWrite = (
-  hostShell: AuthHostShell,
-): e.Effect.Effect<e.Option.Option<GitHubSession>> =>
-  e.Effect.gen(function*() {
-    const login = beginGitHubWriteLogin(hostShell);
-    const session = yield* login.waitForSession;
-    if (e.Option.isSome(session)) {
-      login.continueInBrowser(displayAutoClosingOAuthBrowserAction(
-        "GitHub write token obtained",
-        closeTabMessage("Write token obtained", session.value.username),
-      ));
-    }
-    return session;
-  });
 
 export function beginGitHubReadOnlyLogin(
   hostShell: AuthHostShell,
@@ -244,36 +205,75 @@ export const ensureGitHubAuthKey = (
     yield* replaceAuthKeyByName(githubToken, keyName, publicKey, parsed.value.keyBody, inventory.value.auth);
   });
 
-export const applyGitHubIdentityToWorkspace = (
-  root: string,
-  session: GitHubSession,
-  userEmail: string,
-  signingPublicKey: string,
-  readOnlyAuthPrivateKeyPath: string,
-  githubTokenForChecks: string,
-  git: GitApi,
-): e.Effect.Effect<void> =>
-  forEachWorkspaceRepo(root, git, (org, repo) =>
-    e.Effect.gen(function*() {
-      const configured = yield* git.configureRepoRemoteAndUser(org, repo, {
-        userName: session.name,
-        userEmail,
-        authPrivateKeyPath: readOnlyAuthPrivateKeyPath,
-        signingPublicKey,
-      });
-      if (!configured) {
-        yield* e.Effect.logWarning(`Could not apply git identity config to @${org}/${repo}.`);
-      }
-      yield* checkRepoAccess(org, repo, githubTokenForChecks);
-    })
-  );
-
 export const checkWorkspaceRepoAccess = (
   root: string,
   githubToken: string,
-  git: GitApi,
+  git: WorkspaceGitApi,
 ): e.Effect.Effect<void> =>
   forEachWorkspaceRepo(root, git, (org, repo) => checkRepoAccess(org, repo, githubToken));
+
+export const remoteRepos = (
+  org: string,
+  readOnlyToken = "",
+): e.Effect.Effect<string[]> =>
+  e.Effect.gen(function*() {
+    const baseHeaders: Record<string, string> = { Accept: "application/vnd.github+json" };
+    if (readOnlyToken) {
+      baseHeaders.Authorization = `Bearer ${readOnlyToken}`;
+    }
+
+    const orgResponse = yield* fetchResponse(`https://api.github.com/orgs/${org}/repos?per_page=100&type=all`, {
+      headers: baseHeaders,
+    }).pipe(
+      e.Effect.map(e.Option.some),
+      e.Effect.catchAll(() => e.Effect.succeed(e.Option.none<Response>())),
+    );
+
+    if (e.Option.isSome(orgResponse) && orgResponse.value.ok) {
+      const repos = yield* parseJson<Array<{ name: string }>>(orgResponse.value).pipe(
+        e.Effect.catchAll(() => e.Effect.succeed([])),
+      );
+      return repos.map((repo) => repo.name);
+    }
+
+    const userResponse = yield* fetchResponse(`https://api.github.com/users/${org}/repos?per_page=100&type=all`, {
+      headers: baseHeaders,
+    }).pipe(
+      e.Effect.map(e.Option.some),
+      e.Effect.catchAll(() => e.Effect.succeed(e.Option.none<Response>())),
+    );
+    if (e.Option.isNone(userResponse) || !userResponse.value.ok) return [] as string[];
+
+    const repos = yield* parseJson<Array<{ name: string }>>(userResponse.value).pipe(
+      e.Effect.catchAll(() => e.Effect.succeed([])),
+    );
+    return repos.map((repo) => repo.name);
+  });
+
+export const repoDefaultBranch = (
+  org: string,
+  repo: string,
+  readOnlyToken: string,
+): e.Effect.Effect<e.Option.Option<string>> =>
+  e.Effect.gen(function*() {
+    const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
+    if (readOnlyToken) {
+      headers.Authorization = `Bearer ${readOnlyToken}`;
+    }
+
+    const response = yield* fetchResponse(`https://api.github.com/repos/${org}/${repo}`, { headers }).pipe(
+      e.Effect.map(e.Option.some),
+      e.Effect.catchAll(() => e.Effect.succeed(e.Option.none<Response>())),
+    );
+    if (e.Option.isNone(response) || !response.value.ok) return e.Option.none<string>();
+
+    const payload = yield* parseJson<{ default_branch?: unknown }>(response.value).pipe(
+      e.Effect.catchAll(() => e.Effect.succeed({} as { default_branch?: unknown })),
+    );
+    return typeof payload.default_branch === "string" && payload.default_branch
+      ? e.Option.some(payload.default_branch)
+      : e.Option.none<string>();
+  });
 
 function beginGitHubLoginWithScopes(
   hostShell: AuthHostShell,
@@ -363,12 +363,6 @@ function buildGitHubAuthorizeUrl(scopes: string, redirectUri: string, state: str
   authUrl.searchParams.set("scope", scopes);
   authUrl.searchParams.set("state", state);
   return authUrl;
-}
-
-function closeTabMessage(prefix: string, username: string): string {
-  return username
-    ? `${prefix} for @${username}. You may close this tab now.`
-    : "You may close this tab now.";
 }
 
 const replaceAuthKeyByName = (
@@ -651,7 +645,7 @@ function hasScope(scopeList: string, scope: string): boolean {
 
 const forEachWorkspaceRepo = (
   root: string,
-  git: GitApi,
+  git: WorkspaceGitApi,
   run: (org: string, repo: string) => e.Effect.Effect<void>,
 ): e.Effect.Effect<void> =>
   e.Effect.gen(function*() {

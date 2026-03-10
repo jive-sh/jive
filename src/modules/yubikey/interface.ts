@@ -1,5 +1,5 @@
 import * as e from "effect";
-import type { ConnectedYubiKeyDevice, YubiKeyJiveKey } from "@/modules/auth/types";
+import type { ConnectedYubiKeyDevice, YubiKeyJiveKey } from "../auth/types";
 
 export class IYubiKey extends e.Context.Tag("IYubiKey")<IYubiKey, {
   readonly requiredCLICommands: readonly string[];
