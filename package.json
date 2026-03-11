@@ -6,11 +6,12 @@
   "license": "MIT",
   "version": "0.0.1",
   "bin": {
-    "jive": "bin/jive"
+    "jive": "bin/jive",
+    "git-credential-jive": "bin/git-credential-jive"
   },
   "scripts": {
     "build:watch": "",
-    "build": "bun build --compile src/index.ts --outfile build/jive && bun ./src/temp-libs/cli-template/copy-package-json.ts",
+    "build": "bun build --compile src/index.ts --outfile build/jive && bun build --compile src/git-credential-helper.ts --outfile build/git-credential-jive && bun ./src/temp-libs/cli-template/copy-package-json.ts",
     "deploy": "echo 'No custom deploy logic'",
     "test:integration": "",
     "test:unit": "echo 'TODO: write unit tests'"
