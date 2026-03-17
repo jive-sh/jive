@@ -3,11 +3,18 @@ import * as ep from "@effect/platform";
 import * as path from "path";
 import * as modules from "@/modules";
 import { WORKSPACE_DIR } from "./constants";
-import type { CurrentUserState, IReadOnlyTokenState } from "./interface";
+import {
+  RepoIntegrityCompromisedReason,
+  VerifyRepoIntegrityError,
+  type CurrentUserState,
+  type IOrgScopedCloneTokenState,
+  type IReadOnlyTokenState,
+  type RepoIdentifier,
+} from "./interface";
 
 const USERS_DIR = `${WORKSPACE_DIR}/users`;
 const CURRENT_USER_FILE = `${USERS_DIR}/current.json`;
-const READ_ONLY_TOKEN_FILE = "readonly-github-api-token.json";
+const READ_ONLY_TOKEN_FILE = "readonly-github-clone-token.json";
 const WRITE_REFRESH_TOKEN_FILE = "write-refresh-token.json";
 
 export const ToolStateImpl = e.Layer.effect(modules.IToolState, e.Effect.gen(function*() {
@@ -34,6 +41,13 @@ export const ToolStateImpl = e.Layer.effect(modules.IToolState, e.Effect.gen(fun
 
   const workspaceRoot = yield* findWorkspaceRoot();
 
+  const repoPathFor = (repo: RepoIdentifier): string =>
+    path.join(
+      e.Option.getOrElse(workspaceRoot, () => process.cwd()),
+      `@${repo.org}`,
+      repo.repo,
+    );
+
   const sanitizeEmailDirectoryName = (email: string): string =>
     email
       .trim()
@@ -56,6 +70,16 @@ export const ToolStateImpl = e.Layer.effect(modules.IToolState, e.Effect.gen(fun
   const readOnlyTokenFilePath = e.Effect.fn(function*(root: string, email: string) {
     const directory = yield* userDirectory(root, email);
     return path.join(directory, READ_ONLY_TOKEN_FILE);
+  });
+
+  const orgScopedCloneTokenFilePath = e.Effect.fn(function*(root: string, email: string, owner: string) {
+    const directory = yield* userDirectory(root, email);
+    const normalizedOwner = owner
+      .trim()
+      .toLowerCase()
+      .replace(/^@+/, "")
+      .replace(/[\/\\]/g, "_");
+    return path.join(directory, `readonly-org-scoped-@${normalizedOwner}-repo-token.json`);
   });
 
   const writeRefreshTokenFilePath = e.Effect.fn(function*(root: string, email: string) {
@@ -87,129 +111,166 @@ export const ToolStateImpl = e.Layer.effect(modules.IToolState, e.Effect.gen(fun
     });
   });
 
-  const inWorkspace = e.Effect.fn(function*() {
-    return e.Option.isSome(workspaceRoot);
-  })();
-
-  const readCurrentUserState = e.Effect.fn(function*() {
-    if (e.Option.isNone(workspaceRoot)) return e.Option.none<CurrentUserState>();
-
-    const currentUserPath = path.join(workspaceRoot.value, CURRENT_USER_FILE);
-    const current = yield* readJsonObject(currentUserPath);
-    if (e.Option.isNone(current)) return e.Option.none<CurrentUserState>();
-
-    const email = current.value.email;
-    const yubiKeyId = current.value.yubiKeyId;
-    const yubiKeyLabel = current.value.yubiKeyLabel;
-    if (typeof email !== "string" || !email) return e.Option.none<CurrentUserState>();
-    if (typeof yubiKeyId !== "string" || !yubiKeyId) return e.Option.none<CurrentUserState>();
-    if (typeof yubiKeyLabel !== "string" || !yubiKeyLabel) return e.Option.none<CurrentUserState>();
-
-    return e.Option.some({ email, yubiKeyId, yubiKeyLabel });
-  })();
-
-  const clearCurrentUserState = e.Effect.fn(function*() {
-    if (e.Option.isNone(workspaceRoot)) return;
-
-    const currentUserPath = path.join(workspaceRoot.value, CURRENT_USER_FILE);
-    yield* fileSystem.remove(currentUserPath, { force: true }).pipe(
-      e.Effect.catchAll(() => e.Effect.void),
-    );
-  })();
-
-  const writeCurrentUserState = e.Effect.fn(function*(state: CurrentUserState) {
-    if (e.Option.isNone(workspaceRoot)) return;
-
-    yield* ensureUsersDirectory(workspaceRoot.value).pipe(
-      e.Effect.catchAll(() => e.Effect.void),
-    );
-
-    const currentUserPath = path.join(workspaceRoot.value, CURRENT_USER_FILE);
-    yield* writeJsonObject(currentUserPath, state).pipe(
-      e.Effect.catchAll(() => e.Effect.void),
-    );
-  });
-
-  const readReadOnlyTokenState = e.Effect.fn(function*(email: string) {
-    if (e.Option.isNone(workspaceRoot)) return e.Option.none<IReadOnlyTokenState>();
-
-    const tokenPath = yield* readOnlyTokenFilePath(workspaceRoot.value, email);
-    const state = yield* readJsonObject(tokenPath);
-    if (e.Option.isNone(state)) return e.Option.none<IReadOnlyTokenState>();
-
-    const token = typeof state.value.token === "string" ? state.value.token : "";
-    if (!token) return e.Option.none<IReadOnlyTokenState>();
-
-    const scope = typeof state.value.scope === "string" ? state.value.scope : "";
-    const tokenType = typeof state.value.tokenType === "string" ? state.value.tokenType : "bearer";
-    const gitUserName = typeof state.value.gitUserName === "string" && state.value.gitUserName
-      ? state.value.gitUserName
-      : email;
-    const githubAccountId = typeof state.value.githubAccountId === "number" && Number.isFinite(state.value.githubAccountId)
-      ? state.value.githubAccountId
-      : 0;
-    const githubUsername = typeof state.value.githubUsername === "string" && state.value.githubUsername
-      ? state.value.githubUsername
-      : "";
-
-    return e.Option.some({ token, scope, tokenType, gitUserName, githubAccountId, githubUsername });
-  });
-
-  const writeReadOnlyTokenState = e.Effect.fn(function*(email: string, state: IReadOnlyTokenState) {
-    if (e.Option.isNone(workspaceRoot)) return;
-
-    yield* ensureUserStateDirectory(workspaceRoot.value, email).pipe(
-      e.Effect.catchAll(() => e.Effect.void),
-    );
-    const tokenPath = yield* readOnlyTokenFilePath(workspaceRoot.value, email);
-    yield* writeJsonObject(tokenPath, state).pipe(
-      e.Effect.catchAll(() => e.Effect.void),
-    );
-  });
-
-  const readWriteRefreshToken = e.Effect.fn(function*(email: string) {
-    if (e.Option.isNone(workspaceRoot)) return "";
-
-    const tokenPath = yield* writeRefreshTokenFilePath(workspaceRoot.value, email);
-    const token = yield* fileSystem.readFileString(tokenPath).pipe(
-      e.Effect.catchAll(() => e.Effect.succeed("")),
-    );
-
-    return token.trim();
-  });
-
-  const writeWriteRefreshToken = e.Effect.fn(function*(email: string, token: string) {
-    if (e.Option.isNone(workspaceRoot)) return;
-
-    yield* ensureUserStateDirectory(workspaceRoot.value, email).pipe(
-      e.Effect.catchAll(() => e.Effect.void),
-    );
-    const tokenPath = yield* writeRefreshTokenFilePath(workspaceRoot.value, email);
-    yield* fileSystem.writeFileString(tokenPath, token, { mode: 0o600 }).pipe(
-      e.Effect.catchAll(() => e.Effect.void),
-    );
-  });
-
-  const clearWriteRefreshToken = e.Effect.fn(function*(email: string) {
-    if (e.Option.isNone(workspaceRoot)) return;
-
-    const tokenPath = yield* writeRefreshTokenFilePath(workspaceRoot.value, email);
-    yield* fileSystem.remove(tokenPath, { force: true }).pipe(
-      e.Effect.catchAll(() => e.Effect.void),
-    );
-  });
-
   return {
+    getRepoPath: (repo: RepoIdentifier) => repoPathFor(repo),
     requiredCLICommands: [],
     workspaceRoot,
-    inWorkspace,
-    readCurrentUserState,
-    clearCurrentUserState,
-    writeCurrentUserState,
-    readReadOnlyTokenState,
-    writeReadOnlyTokenState,
-    readWriteRefreshToken,
-    writeWriteRefreshToken,
-    clearWriteRefreshToken,
+    inWorkspace: e.Effect.fn(function*() {
+      return e.Option.isSome(workspaceRoot);
+    })(),
+    readCurrentUserState: e.Effect.fn(function*() {
+      if (e.Option.isNone(workspaceRoot)) return e.Option.none<CurrentUserState>();
+
+      const currentUserPath = path.join(workspaceRoot.value, CURRENT_USER_FILE);
+      const current = yield* readJsonObject(currentUserPath);
+      if (e.Option.isNone(current)) return e.Option.none<CurrentUserState>();
+
+      const email = current.value.email;
+      if (typeof email !== "string" || !email) return e.Option.none<CurrentUserState>();
+      return e.Option.some({ email });
+    })(),
+    clearCurrentUserState: e.Effect.fn(function*() {
+      if (e.Option.isNone(workspaceRoot)) return;
+
+      const currentUserPath = path.join(workspaceRoot.value, CURRENT_USER_FILE);
+      yield* fileSystem.remove(currentUserPath, { force: true }).pipe(
+        e.Effect.catchAll(() => e.Effect.void),
+      );
+    })(),
+    writeCurrentUserState: e.Effect.fn(function*(state: CurrentUserState) {
+      if (e.Option.isNone(workspaceRoot)) return;
+
+      yield* ensureUsersDirectory(workspaceRoot.value).pipe(
+        e.Effect.catchAll(() => e.Effect.void),
+      );
+
+      const currentUserPath = path.join(workspaceRoot.value, CURRENT_USER_FILE);
+      yield* writeJsonObject(currentUserPath, state).pipe(
+        e.Effect.catchAll(() => e.Effect.void),
+      );
+    }),
+    readReadOnlyTokenState: e.Effect.fn(function*(email: string) {
+      if (e.Option.isNone(workspaceRoot)) return e.Option.none<IReadOnlyTokenState>();
+
+      const tokenPath = yield* readOnlyTokenFilePath(workspaceRoot.value, email);
+      const state = yield* readJsonObject(tokenPath);
+      if (e.Option.isNone(state)) return e.Option.none<IReadOnlyTokenState>();
+
+      const token = typeof state.value.token === "string" ? state.value.token : "";
+      if (!token) return e.Option.none<IReadOnlyTokenState>();
+
+      const scope = typeof state.value.scope === "string" ? state.value.scope : "";
+      const tokenType = typeof state.value.tokenType === "string" ? state.value.tokenType : "bearer";
+      const gitUserName = typeof state.value.gitUserName === "string" && state.value.gitUserName
+        ? state.value.gitUserName
+        : email;
+      const githubAccountId = typeof state.value.githubAccountId === "number" && Number.isFinite(state.value.githubAccountId)
+        ? state.value.githubAccountId
+        : 0;
+      const githubUsername = typeof state.value.githubUsername === "string" && state.value.githubUsername
+        ? state.value.githubUsername
+        : "";
+      const sshKeySource: "local" | "yubikey" = state.value.sshKeySource === "yubikey" ? "yubikey" : "local";
+      const sshKeyFingerprint = typeof state.value.sshKeyFingerprint === "string" ? state.value.sshKeyFingerprint : "";
+      const sshKeyName = typeof state.value.sshKeyName === "string" ? state.value.sshKeyName : "";
+      const sshKeyPath = typeof state.value.sshKeyPath === "string" ? state.value.sshKeyPath : "";
+      const yubiKeySerial = typeof state.value.yubiKeySerial === "string" ? state.value.yubiKeySerial : "";
+
+      return e.Option.some({
+        token,
+        scope,
+        tokenType,
+        gitUserName,
+        githubAccountId,
+        githubUsername,
+        sshKeySource,
+        sshKeyFingerprint,
+        sshKeyName,
+        sshKeyPath,
+        yubiKeySerial,
+      });
+    }),
+    writeReadOnlyTokenState: e.Effect.fn(function*(email: string, state: IReadOnlyTokenState) {
+      if (e.Option.isNone(workspaceRoot)) return;
+
+      yield* ensureUserStateDirectory(workspaceRoot.value, email).pipe(
+        e.Effect.catchAll(() => e.Effect.void),
+      );
+      const tokenPath = yield* readOnlyTokenFilePath(workspaceRoot.value, email);
+      yield* writeJsonObject(tokenPath, state).pipe(
+        e.Effect.catchAll(() => e.Effect.void),
+      );
+    }),
+    readOrgScopedCloneTokenState: e.Effect.fn(function*(email: string, owner: string) {
+      if (e.Option.isNone(workspaceRoot)) return e.Option.none<IOrgScopedCloneTokenState>();
+
+      const tokenPath = yield* orgScopedCloneTokenFilePath(workspaceRoot.value, email, owner);
+      const state = yield* readJsonObject(tokenPath);
+      if (e.Option.isNone(state)) return e.Option.none<IOrgScopedCloneTokenState>();
+
+      const token = typeof state.value.token === "string" ? state.value.token : "";
+      if (!token) return e.Option.none<IOrgScopedCloneTokenState>();
+
+      const tokenType = typeof state.value.tokenType === "string" ? state.value.tokenType : "bearer";
+      return e.Option.some({ token, tokenType });
+    }),
+    writeOrgScopedCloneTokenState: e.Effect.fn(function*(email: string, owner: string, state: IOrgScopedCloneTokenState) {
+      if (e.Option.isNone(workspaceRoot)) return;
+
+      yield* ensureUserStateDirectory(workspaceRoot.value, email).pipe(
+        e.Effect.catchAll(() => e.Effect.void),
+      );
+      const tokenPath = yield* orgScopedCloneTokenFilePath(workspaceRoot.value, email, owner);
+      yield* writeJsonObject(tokenPath, state).pipe(
+        e.Effect.catchAll(() => e.Effect.void),
+      );
+    }),
+    readWriteRefreshToken: e.Effect.fn(function*(email: string) {
+      if (e.Option.isNone(workspaceRoot)) return "";
+
+      const tokenPath = yield* writeRefreshTokenFilePath(workspaceRoot.value, email);
+      const token = yield* fileSystem.readFileString(tokenPath).pipe(
+        e.Effect.catchAll(() => e.Effect.succeed("")),
+      );
+
+      return token.trim();
+    }),
+    writeWriteRefreshToken: e.Effect.fn(function*(email: string, token: string) {
+      if (e.Option.isNone(workspaceRoot)) return;
+
+      yield* ensureUserStateDirectory(workspaceRoot.value, email).pipe(
+        e.Effect.catchAll(() => e.Effect.void),
+      );
+      const tokenPath = yield* writeRefreshTokenFilePath(workspaceRoot.value, email);
+      yield* fileSystem.writeFileString(tokenPath, token, { mode: 0o600 }).pipe(
+        e.Effect.catchAll(() => e.Effect.void),
+      );
+    }),
+    clearWriteRefreshToken: e.Effect.fn(function*(email: string) {
+      if (e.Option.isNone(workspaceRoot)) return;
+
+      const tokenPath = yield* writeRefreshTokenFilePath(workspaceRoot.value, email);
+      yield* fileSystem.remove(tokenPath, { force: true }).pipe(
+        e.Effect.catchAll(() => e.Effect.void),
+      );
+    }),
+    verifyRepoIntegrity: e.Effect.fn(function*(repo: RepoIdentifier) {
+      const repoPath = repoPathFor(repo);
+      const repoExists = yield* pathExists(repoPath);
+      if (!repoExists) {
+        return yield* e.Effect.fail(new VerifyRepoIntegrityError({
+          reason: RepoIntegrityCompromisedReason.RepoMissing(),
+        }));
+      }
+
+      const packageJsonExists = yield* pathExists(path.join(repoPath, "package.json"));
+      if (!packageJsonExists) {
+        return yield* e.Effect.fail(new VerifyRepoIntegrityError({
+          reason: RepoIntegrityCompromisedReason.NotAPackage(),
+        }));
+      }
+
+      return { path: repoPath };
+    }),
   };
 }));

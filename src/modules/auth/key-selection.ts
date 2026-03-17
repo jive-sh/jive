@@ -1,34 +1,14 @@
 import * as e from "effect";
-import { authKeyName, GITHUB_KEY_PREFIX, signingKeyName } from "./constants";
-import { selectOne } from "./prompts";
-import type { ConnectedYubiKeyDevice, GitHubJiveKeyInventory, YubiKeyJiveKey } from "./types";
+import { selectOne } from "@/prompts";
+
+interface GitHubNamedKey {
+  readonly title: string;
+}
 
 interface SelectVerifiedEmailInput {
   readonly verifiedEmails: readonly string[];
   readonly discoveredEmail: string;
 }
-
-interface SelectOrCreateJiveKeyInput {
-  readonly yubiKeys: readonly YubiKeyJiveKey[];
-  readonly githubJiveKeys: e.Option.Option<GitHubJiveKeyInventory>;
-  readonly selectedEmail: string;
-  readonly selectedYubiKeyId: string;
-  readonly createResidentJiveKey: (name: string) => e.Effect.Effect<e.Option.Option<YubiKeyJiveKey>>;
-}
-
-export const selectConnectedYubiKey = (
-  devices: readonly ConnectedYubiKeyDevice[],
-): e.Effect.Effect<e.Option.Option<ConnectedYubiKeyDevice>> => {
-  if (devices.length === 0) return e.Effect.succeed(e.Option.none());
-  if (devices.length === 1) return e.Effect.succeed(e.Option.some(devices[0]!));
-
-  return selectOne(
-    "Select the YubiKey to use with Jive:",
-    [...devices],
-    (device) => device.id,
-    (device, index) => `${index + 1}. ${formatConnectedYubiKey(device)}`,
-  );
-};
 
 export const selectVerifiedEmail = (
   input: SelectVerifiedEmailInput,
@@ -59,153 +39,30 @@ export const selectVerifiedEmail = (
     );
   });
 
-export const selectOrCreateJiveKey = (
-  input: SelectOrCreateJiveKeyInput,
-): e.Effect.Effect<e.Option.Option<YubiKeyJiveKey>> =>
+export const printGitHubJiveKeyList = (
+  auth: readonly GitHubNamedKey[],
+  signing: readonly GitHubNamedKey[],
+): e.Effect.Effect<void> =>
   e.Effect.gen(function*() {
-    const { yubiKeys, githubJiveKeys, selectedEmail, selectedYubiKeyId, createResidentJiveKey } = input;
-    const targetName = signingKeyName(selectedEmail, selectedYubiKeyId);
-    const matchingKeys = yubiKeys.filter((key) => key.name === targetName);
-
-    if (yubiKeys.length === 0) {
-      return yield* createNewJiveKeyForName(targetName, createResidentJiveKey);
-    }
-
-    if (matchingKeys.length === 0) {
-      yield* e.Effect.log(`No resident YubiKey jive signing key exists yet for ${targetName}.`);
-      return yield* createNewJiveKeyForName(targetName, createResidentJiveKey);
-    }
-
-    const fullyMatched = matchingKeys.filter((key) => {
-      const status = getGitHubPresenceForName(key.name, githubJiveKeys);
-      return status.hasAuth && status.hasSigning;
-    });
-
-    if (fullyMatched.length === 1) {
-      const only = fullyMatched[0];
-      if (only) return e.Option.some(only);
-    }
-
-    if (fullyMatched.length > 1) {
-      yield* e.Effect.log(`Multiple resident YubiKey keys already match ${selectedEmail} and GitHub.`);
-      return yield* promptForKeySelection(fullyMatched, githubJiveKeys);
-    }
-
-    const partiallyMatched = matchingKeys.filter((key) => {
-      const status = getGitHubPresenceForName(key.name, githubJiveKeys);
-      return status.hasAuth || status.hasSigning;
-    });
-
-    if (partiallyMatched.length === 1) {
-      const only = partiallyMatched[0];
-      if (only) return e.Option.some(only);
-    }
-
-    if (matchingKeys.length === 1) {
-      const only = matchingKeys[0];
-      if (only) return e.Option.some(only);
-    }
-
-    yield* e.Effect.log(`Multiple resident YubiKey keys exist for ${selectedEmail}.`);
-    return yield* promptForKeySelection(matchingKeys, githubJiveKeys);
+    yield* printNamedKeySection("Jive auth keys on GitHub:", auth);
+    yield* printNamedKeySection("Jive SSH signing keys on GitHub:", signing);
   });
 
-export const printYubiKeyList = (keys: YubiKeyJiveKey[]): e.Effect.Effect<void> =>
-  e.Effect.gen(function*() {
-    yield* e.Effect.log("Jive keys on YubiKey:");
+function printNamedKeySection(
+  header: string,
+  keys: readonly GitHubNamedKey[],
+): e.Effect.Effect<void> {
+  return e.Effect.gen(function*() {
+    yield* e.Effect.log(header);
     if (keys.length === 0) {
       yield* e.Effect.log("- (none)");
       return;
     }
 
     for (const key of keys) {
-      yield* e.Effect.log(`- ${key.name}`);
+      yield* e.Effect.log(`- ${key.title}`);
     }
   });
-
-export const printGitHubJiveKeyList = (
-  auth: Array<{ title: string }>,
-  signing: Array<{ title: string }>,
-): e.Effect.Effect<void> =>
-  e.Effect.gen(function*() {
-    yield* e.Effect.log("Jive auth keys on GitHub:");
-    if (auth.length === 0) {
-      yield* e.Effect.log("- (none)");
-    } else {
-      for (const key of auth) yield* e.Effect.log(`- ${key.title}`);
-    }
-
-    yield* e.Effect.log("Jive signing keys on GitHub:");
-    if (signing.length === 0) {
-      yield* e.Effect.log("- (none)");
-    } else {
-      for (const key of signing) yield* e.Effect.log(`- ${key.title}`);
-    }
-  });
-
-const createNewJiveKeyForName = (
-  name: string,
-  createResidentJiveKey: (name: string) => e.Effect.Effect<e.Option.Option<YubiKeyJiveKey>>,
-): e.Effect.Effect<e.Option.Option<YubiKeyJiveKey>> =>
-  e.Effect.gen(function*() {
-    yield* e.Effect.log(`Creating Jive signing key on YubiKey: ${name}`);
-    return yield* createResidentJiveKey(name);
-  });
-
-const promptForKeySelection = (
-  keys: YubiKeyJiveKey[],
-  githubJiveKeys: e.Option.Option<GitHubJiveKeyInventory>,
-): e.Effect.Effect<e.Option.Option<YubiKeyJiveKey>> => {
-  if (keys.length === 0) return e.Effect.succeed(e.Option.none());
-
-  return selectOne(
-    "Select a YubiKey jive key:",
-    keys,
-    (key) => key.keyBody,
-    (key, index) => `${index + 1}. ${key.name} (${describeGitHubPresenceForName(key.name, githubJiveKeys)})`,
-  );
-};
-
-function describeGitHubPresenceForName(
-  keyName: string,
-  githubJiveKeys: e.Option.Option<GitHubJiveKeyInventory>,
-): string {
-  const { hasAuth, hasSigning, inventoryAvailable } = getGitHubPresenceForName(keyName, githubJiveKeys);
-  if (!inventoryAvailable) return "github keys unavailable";
-
-  if (hasAuth && hasSigning) return "auth+signing on github";
-  if (hasAuth) return "auth on github";
-  if (hasSigning) return "signing on github";
-  return "not on github";
-}
-
-function getGitHubPresenceForName(
-  keyName: string,
-  githubJiveKeys: e.Option.Option<GitHubJiveKeyInventory>,
-): { hasAuth: boolean; hasSigning: boolean; inventoryAvailable: boolean } {
-  if (e.Option.isNone(githubJiveKeys)) {
-    return { hasAuth: false, hasSigning: false, inventoryAvailable: false };
-  }
-
-  const email = extractEmailFromKeyName(keyName);
-  const hasAuth = email
-    ? githubJiveKeys.value.auth.some((entry) => entry.title === authKeyName(email))
-    : githubJiveKeys.value.auth.some((entry) => entry.title === keyName);
-  const hasSigning = githubJiveKeys.value.signing.some((entry) => entry.title === keyName);
-  return { hasAuth, hasSigning, inventoryAvailable: true };
-}
-
-function extractEmailFromKeyName(keyName: string): string {
-  if (!keyName.startsWith(GITHUB_KEY_PREFIX)) return "";
-
-  const suffix = keyName.slice(GITHUB_KEY_PREFIX.length);
-  const separatorIndex = suffix.lastIndexOf(":");
-  if (separatorIndex === -1) return suffix;
-  return suffix.slice(0, separatorIndex);
-}
-
-function formatConnectedYubiKey(device: ConnectedYubiKeyDevice): string {
-  return `${device.id} (${device.label})`;
 }
 
 function dedupeEmails(emails: readonly string[]): string[] {

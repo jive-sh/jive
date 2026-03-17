@@ -1,14 +1,8 @@
 import * as e from "effect";
 import { GITHUB_KEY_PREFIX } from "../auth/constants";
-import type { AuthHostShell } from "../auth/host-shell";
-import { parsePublicKey } from "../auth/key-format";
-import {
-  beginOAuthCodeRequest,
-  displayOAuthBrowserAction,
-  type OAuthBrowserAction,
-  type OAuthCodeResult,
-} from "../auth/oauth";
-import type { GitHubJiveKeyInventory, GitHubSession, GitHubUserKey, YubiKeyJiveKey } from "../auth/types";
+import { beginOAuthCodeRequest, displayOAuthBrowserAction, type OAuthBrowserHost, type OAuthBrowserAction, type OAuthCodeResult } from "../auth/oauth";
+import { parsePublicKey } from "../ssh/key-format";
+import type { GitHubJiveKeyInventory, GitHubSession, GitHubUserKey } from "./types";
 
 const CLIENT_ID = "Ov23liKYxk1Ag7SsNhbP";
 const CLIENT_SECRET = "e2901fbe93c591e7a53a903e70490ff87e998159";
@@ -21,9 +15,10 @@ const CLIENT_SECRET = "e2901fbe93c591e7a53a903e70490ff87e998159";
 const READ_SCOPES = "repo user read:org read:public_key read:ssh_signing_key";
 
 // write:public_key      register SSH authentication keys (/user/keys)
-// write:ssh_signing_key register SSH signing keys (/user/ssh_signing_keys)
-const WRITE_SCOPES = `${READ_SCOPES} write:public_key write:ssh_signing_key`;
-const WRITE_KEY_SCOPES = ["write:public_key", "write:ssh_signing_key"] as const;
+// write:ssh_signing_key create SSH signing keys (/user/ssh_signing_keys)
+// admin:ssh_signing_key delete SSH signing keys (/user/ssh_signing_keys/:id)
+const WRITE_SCOPES = `${READ_SCOPES} write:public_key write:ssh_signing_key admin:ssh_signing_key`;
+const WRITE_KEY_SCOPES = ["write:public_key", "write:ssh_signing_key", "admin:ssh_signing_key"] as const;
 const REQUIRED_READ_SCOPES = ["repo", "user", "read:org", "read:public_key", "read:ssh_signing_key"] as const;
 
 interface GitHubUserEmail {
@@ -52,22 +47,33 @@ export interface PendingGitHubLogin {
   readonly continueInBrowser: (action: OAuthBrowserAction) => void;
 }
 
+interface GitHubLoginOptions {
+  readonly openBrowser?: boolean;
+  readonly promptAccountSelection?: boolean;
+}
+
 export function isGitHubOAuthConfigured(): boolean {
   return Boolean(CLIENT_ID && CLIENT_SECRET);
 }
 
 export function beginGitHubReadOnlyLogin(
-  hostShell: AuthHostShell,
-  options: { readonly openBrowser?: boolean } = {},
+  hostShell: OAuthBrowserHost,
+  options: GitHubLoginOptions = {},
 ): PendingGitHubLogin {
-  return beginGitHubLoginWithScopes(hostShell, READ_SCOPES, "GitHub (read token)", options.openBrowser ?? true);
+  return beginGitHubLoginWithScopes(hostShell, READ_SCOPES, "GitHub (read token)", {
+    openBrowser: options.openBrowser ?? true,
+    promptAccountSelection: options.promptAccountSelection ?? false,
+  });
 }
 
 export function beginGitHubWriteLogin(
-  hostShell: AuthHostShell,
-  options: { readonly openBrowser?: boolean } = {},
+  hostShell: OAuthBrowserHost,
+  options: GitHubLoginOptions = {},
 ): PendingGitHubLogin {
-  return beginGitHubLoginWithScopes(hostShell, WRITE_SCOPES, "GitHub (write token)", options.openBrowser ?? true);
+  return beginGitHubLoginWithScopes(hostShell, WRITE_SCOPES, "GitHub (write token)", {
+    openBrowser: options.openBrowser ?? true,
+    promptAccountSelection: options.promptAccountSelection ?? false,
+  });
 }
 
 export const renewWriteTokenFromRefresh = (
@@ -168,21 +174,6 @@ export const listGitHubJiveKeys = (
     });
   });
 
-export const ensureGitHubSigningJiveKey = (
-  githubToken: string,
-  key: YubiKeyJiveKey,
-  knownJiveInventory: e.Option.Option<GitHubJiveKeyInventory> = e.Option.none(),
-): e.Effect.Effect<void> =>
-  e.Effect.gen(function*() {
-    const inventory = yield* resolveJiveInventory(githubToken, knownJiveInventory);
-    if (e.Option.isNone(inventory)) {
-      yield* e.Effect.logWarning("Could not verify existing GitHub signing keys before registering the jive key.");
-      return;
-    }
-
-    yield* ensureSigningKey(githubToken, key, inventory.value.signing);
-  });
-
 export const ensureGitHubAuthKey = (
   githubToken: string,
   keyName: string,
@@ -203,6 +194,22 @@ export const ensureGitHubAuthKey = (
     }
 
     yield* replaceAuthKeyByName(githubToken, keyName, publicKey, parsed.value.keyBody, inventory.value.auth);
+  });
+
+export const ensureGitHubSigningKey = (
+  githubToken: string,
+  keyName: string,
+  publicKey: string,
+  knownJiveInventory: e.Option.Option<GitHubJiveKeyInventory> = e.Option.none(),
+): e.Effect.Effect<void> =>
+  e.Effect.gen(function*() {
+    const inventory = yield* resolveJiveInventory(githubToken, knownJiveInventory);
+    if (e.Option.isNone(inventory)) {
+      yield* e.Effect.logWarning("Could not verify existing GitHub SSH signing keys before registering the jive key.");
+      return;
+    }
+
+    yield* replaceSigningKeyByName(githubToken, keyName, publicKey, inventory.value.signing);
   });
 
 export const checkWorkspaceRepoAccess = (
@@ -276,16 +283,16 @@ export const repoDefaultBranch = (
   });
 
 function beginGitHubLoginWithScopes(
-  hostShell: AuthHostShell,
+  hostShell: OAuthBrowserHost,
   scopes: string,
   providerName: string,
-  openBrowser: boolean,
+  options: Required<GitHubLoginOptions>,
 ): PendingGitHubLogin {
   const request = beginOAuthCodeRequest(
     hostShell,
     providerName,
-    (redirectUri, state) => buildGitHubAuthorizeUrl(scopes, redirectUri, state),
-    { openBrowser },
+    (redirectUri, state) => buildGitHubAuthorizeUrl(scopes, redirectUri, state, options),
+    { openBrowser: options.openBrowser },
   );
 
   const waitForSession = e.Effect.gen(function*() {
@@ -356,12 +363,20 @@ const exchangeCodeForSession = (
     );
   });
 
-function buildGitHubAuthorizeUrl(scopes: string, redirectUri: string, state: string): URL {
+function buildGitHubAuthorizeUrl(
+  scopes: string,
+  redirectUri: string,
+  state: string,
+  options: Pick<Required<GitHubLoginOptions>, "promptAccountSelection">,
+): URL {
   const authUrl = new URL("https://github.com/login/oauth/authorize");
   authUrl.searchParams.set("client_id", CLIENT_ID);
   authUrl.searchParams.set("redirect_uri", redirectUri);
   authUrl.searchParams.set("scope", scopes);
   authUrl.searchParams.set("state", state);
+  if (options.promptAccountSelection) {
+    authUrl.searchParams.set("prompt", "select_account");
+  }
   return authUrl;
 }
 
@@ -387,33 +402,23 @@ const replaceAuthKeyByName = (
     yield* createGitHubAuthKey(githubToken, keyName, publicKey);
   });
 
-const ensureSigningKey = (
+const replaceSigningKeyByName = (
   githubToken: string,
-  key: YubiKeyJiveKey,
+  keyName: string,
+  publicKey: string,
   existingSigning: GitHubUserKey[],
 ): e.Effect.Effect<void> =>
   e.Effect.gen(function*() {
-    const nameMatches = existingSigning.filter((entry) => entry.title === key.name);
-    const nameAndBodyMatch = nameMatches.find((entry) => normalizeKeyBody(entry.key) === key.keyBody);
-    if (nameAndBodyMatch) return;
+    const sameName = existingSigning.filter((entry) => entry.title === keyName);
+    const normalizedKey = normalizeKeyBody(publicKey);
+    const exactMatch = sameName.find((entry) => normalizeKeyBody(entry.key) === normalizedKey);
+    if (exactMatch) return;
 
-    if (nameMatches.length > 0) {
-      for (const staleKey of nameMatches) {
-        yield* deleteGitHubSigningKey(githubToken, staleKey.id);
-      }
-    } else {
-      const bodyMatch = existingSigning.find((entry) => normalizeKeyBody(entry.key) === key.keyBody);
-      if (bodyMatch) {
-        if (bodyMatch.title !== key.name) {
-          yield* e.Effect.logWarning(
-            `Signing key already exists on GitHub with non-standard title "${bodyMatch.title}" (expected "${key.name}").`,
-          );
-        }
-        return;
-      }
+    for (const staleKey of sameName) {
+      yield* deleteGitHubSigningKey(githubToken, staleKey.id);
     }
 
-    yield* createGitHubSigningKey(githubToken, key.name, key.publicKey);
+    yield* createGitHubSigningKey(githubToken, keyName, publicKey);
   });
 
 const createGitHubAuthKey = (
@@ -469,7 +474,7 @@ const createGitHubSigningKey = (
         e.Effect.gen(function*() {
           yield* e.Effect.logWarning(`Could not register SSH signing key: ${getErrorMessage(error)}`);
           return e.Option.none<Response>();
-        })
+        }),
       ),
     );
     if (e.Option.isNone(addRes) || addRes.value.ok) return;
@@ -574,7 +579,7 @@ const fetchAllGitHubKeys = (
     const authRows = yield* parseJson<Array<{ id: number; key: string; title?: string }>>(authRes.value).pipe(
       e.Effect.catchAll(() => e.Effect.succeed([])),
     );
-    const signingRows = yield* parseJson<Array<{ id: number; key: string; title?: string }>>(signingRes.value).pipe(
+    const signingRows = yield* parseJson<Array<{ id: number; title?: string; key?: string }>>(signingRes.value).pipe(
       e.Effect.catchAll(() => e.Effect.succeed([])),
     );
 
@@ -586,8 +591,8 @@ const fetchAllGitHubKeys = (
 
     const signing = signingRows.map((row) => ({
       id: row.id,
-      key: row.key,
-      title: row.title ?? parseKeyComment(row.key),
+      key: row.key ?? "",
+      title: row.title ?? parseKeyComment(row.key ?? ""),
     } satisfies GitHubUserKey));
 
     return e.Option.some({ auth, signing });
@@ -617,6 +622,10 @@ function parseKeyComment(key: string): string {
   const parts = key.trim().split(/\s+/);
   if (parts.length < 3) return "";
   return parts.slice(2).join(" ");
+}
+
+function normalizeArmoredKey(key: string): string {
+  return key.trim().replace(/\r\n/g, "\n");
 }
 
 function normalizeKeyBody(key: string): string {

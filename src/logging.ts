@@ -56,3 +56,16 @@ function colorize(level: e.LogLevel.LogLevel["label"], message: string, isTTY: b
 
   return `${prefix}${message}${RESET}`;
 }
+
+export function pluralize(items: any[], singular: string, plural: string) {
+  return items.length === 1 ? singular : plural;
+}
+
+export function prettyList(items: string[]): string {
+  const [first, ...others] = items;
+  if (!first) return "";
+  if (others.length === 0) return first;
+  if (others.length === 1) return `${first} and ${others[0]}`;
+  const last = others.pop()!;
+  return `${first}${others.map(other => `, ${other}`).join("")}, and ${last}`;
+}

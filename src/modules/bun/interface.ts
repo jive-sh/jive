@@ -1,8 +1,9 @@
 import * as e from "effect";
+import type { RepoIdentifier } from "@/modules/tool-state/interface";
 
 export class IBun extends e.Context.Tag("IBun")<IBun, {
-  readonly requiredCLICommands: readonly string[];
-  readonly install: (org: string, repo: string) => e.Effect.Effect<void>;
-  readonly link: (org: string, repo: string) => e.Effect.Effect<void>;
-  readonly unlink: (org: string, repo: string) => e.Effect.Effect<void>;
+  // TODO: should I just expose run directly?
+  readonly install: (repo: RepoIdentifier) => e.Effect.Effect<void>;
+  readonly link: (repo: RepoIdentifier) => e.Effect.Effect<void>;
+  readonly unlink: (repo: RepoIdentifier) => e.Effect.Effect<void>;
 }>() {}

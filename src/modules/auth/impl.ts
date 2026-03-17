@@ -1,73 +1,65 @@
 import * as e from "effect";
-import * as modules from "../index";
-import { signingKeyName } from "./constants";
-import { loadCredentials, loadReadOnlyToken } from "./credentials";
-import type { AuthHostShell } from "./host-shell";
-import { SSH_KEYGEN_COMMAND } from "./openssh";
+import * as modules from "@/modules";
+import { loadCredentials } from "./credentials";
+import { type CurrentUser, NotLoggedInError } from "./interface";
 import {
+  type AuthGitService,
   ensureLoggedIn as ensureLoggedInInternal,
   login as loginInternal,
-  whoami as whoamiInternal,
 } from "./service";
 
 export const AuthImpl = e.Layer.effect(modules.IAuth, e.Effect.gen(function*() {
-  const git = yield* modules.IGit;
+  const git = (yield* modules.IGit) as unknown as AuthGitService;
   const github = yield* modules.IGitHub;
   const hostShell = yield* modules.IHostShell;
+  const ssh = yield* modules.ISsh;
   const toolState = yield* modules.IToolState;
   const yubiKey = yield* modules.IYubiKey;
-
-  const authHostShell: AuthHostShell = {
-    commandExists: hostShell.commandExists,
-    missingCommands: hostShell.missingCommands,
-    run: (command) =>
-      hostShell.run(command).pipe(
-        e.Effect.map((result) => e.Option.some(result)),
-        e.Effect.catchAll(() => e.Effect.succeed(e.Option.none())),
-      ),
+  const currentUserFromCredentials = (credentials: {
+    readonly email: string;
+    readonly gitUserName: string;
+    readonly githubUsername: string;
+    readonly readOnlyToken: string;
+  }): CurrentUser => ({
+    preferredEmail: e.Option.some(credentials.email),
+    userName: credentials.gitUserName || credentials.githubUsername || credentials.email,
+    userEmail: credentials.email,
+    readonlyToken: credentials.readOnlyToken,
+  });
+  const dependencies = {
+    git,
+    github,
+    hostShell: {
+      hasCommand: e.Effect.fn(function*(command: string) {
+        return yield* hostShell.getCommand(command).pipe(
+          e.Effect.as(true),
+          e.Effect.catchTag("CommandNotFoundError", () => e.Effect.succeed(false)),
+        );
+      }),
+    },
+    ssh,
+    toolState,
+    yubiKey,
   };
-
-  const dependencies = { git, github, hostShell: authHostShell, toolState, yubiKey };
-  const login = loginInternal(dependencies);
-  const ensureLoggedIn = ensureLoggedInInternal(dependencies);
-  const whoami = whoamiInternal(dependencies);
 
   return {
-    requiredCLICommands: [SSH_KEYGEN_COMMAND],
-    login,
-    ensureLoggedIn,
-    whoami,
-    readOnlyToken: loadReadOnlyToken(toolState),
-    activeGitIdentity: e.Effect.gen(function*() {
-      yield* ensureLoggedIn;
+    assertLoggedIn: e.Effect.gen(function*() {
+      const credentials = yield* loadCredentials(toolState);
+      if (e.Option.isNone(credentials)) {
+        return yield* e.Effect.fail(new NotLoggedInError());
+      }
+
+      return currentUserFromCredentials(credentials.value);
+    }),
+    ensureLoggedIn: (opts: { chooseNewUser: boolean }) => e.Effect.gen(function*() {
+      yield* (opts.chooseNewUser ? loginInternal(dependencies) : ensureLoggedInInternal(dependencies));
 
       const credentials = yield* loadCredentials(toolState);
-      if (e.Option.isNone(credentials)) return e.Option.none();
+      if (e.Option.isNone(credentials)) {
+        return yield* e.Effect.fail(new NotLoggedInError());
+      }
 
-      const currentUser = yield* toolState.readCurrentUserState;
-      const residentKeys = yield* yubiKey.listResidentJiveKeys;
-      const githubJiveKeys = yield* github.listJiveKeys(credentials.value.readOnlyToken);
-      const signingPublicKey = e.Option.isSome(currentUser) && e.Option.isSome(residentKeys) && e.Option.isSome(githubJiveKeys)
-        ? residentKeys.value.find((key) =>
-          key.name === signingKeyName(credentials.value.email, currentUser.value.yubiKeyId)
-          && githubJiveKeys.value.signing.some((entry) =>
-            entry.title === key.name && normalizeKeyBody(entry.key) === key.keyBody
-          )
-        )?.publicKey
-        : undefined;
-
-      return e.Option.some({
-        userName: credentials.value.gitUserName || credentials.value.email,
-        userEmail: credentials.value.email,
-        readOnlyAuthPrivateKeyPath: credentials.value.readOnlyAuthPrivateKeyPath,
-        signingPublicKey,
-      });
-    }),
+      return currentUserFromCredentials(credentials.value);
+    }) as e.Effect.Effect<CurrentUser>,
   };
 }));
-
-function normalizeKeyBody(key: string): string {
-  const parts = key.trim().split(/\s+/);
-  if (parts.length < 2) return key.trim();
-  return `${parts[0]} ${parts[1]}`;
-}

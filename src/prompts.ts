@@ -3,6 +3,15 @@ import { selectFromList } from "@ozyman42/interactive-cli-select";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 
+// TODO: Move this raw-mode cleanup into @ozyman42/interactive-cli-select once that repo is back in scope.
+const restoreTerminalInputMode = (): e.Effect.Effect<void> =>
+  e.Effect.sync(() => {
+    if (input.isTTY && typeof input.setRawMode === "function" && input.isRaw) {
+      input.setRawMode(false);
+    }
+    input.resume();
+  });
+
 export const selectOne = <T>(
   prompt: string,
   options: T[],
@@ -15,7 +24,7 @@ export const selectOne = <T>(
     yield* e.Effect.log(prompt);
     const optionsWithIndex = options.map((option, index) => ({ option, index }));
 
-    return yield* selectFromList({
+    const selected = yield* selectFromList({
       options: optionsWithIndex,
       getKey: ({ option }) => getKey(option),
       renderOption: ({ option, index }) => renderOption(option, index),
@@ -25,9 +34,12 @@ export const selectOne = <T>(
         e.Effect.gen(function*() {
           yield* e.Effect.logError("Selection cancelled.");
           return e.Option.none<T>();
-        })
+        }),
       ),
     );
+
+    yield* restoreTerminalInputMode();
+    return selected;
   });
 
 export const promptYesNo = (question: string): e.Effect.Effect<boolean> => {

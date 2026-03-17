@@ -93,17 +93,15 @@ export const TemplatesImpl = e.Layer.effect(modules.ITemplates, e.Effect.gen(fun
     return [...found];
   });
 
-  const availableTemplates = e.Effect.fn(function*() {
-    const [localTemplates, npmTemplates] = yield* e.Effect.all(
-      [queryLocalTemplatePackages(), queryNpmTemplates()],
-      { concurrency: "unbounded" },
-    );
-
-    return Array.from(new Set([...localTemplates, ...npmTemplates])).sort();
-  })();
-
   return {
     requiredCLICommands: [],
-    availableTemplates,
+    availableTemplates: e.Effect.fn(function*() {
+      const [localTemplates, npmTemplates] = yield* e.Effect.all(
+        [queryLocalTemplatePackages(), queryNpmTemplates()],
+        { concurrency: "unbounded" },
+      );
+
+      return Array.from(new Set([...localTemplates, ...npmTemplates])).sort();
+    })(),
   };
 }));

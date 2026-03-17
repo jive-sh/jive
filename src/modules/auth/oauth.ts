@@ -1,6 +1,8 @@
 import * as e from "effect";
-import type { AuthHostShell } from "./host-shell";
-import type { HostShellCommand } from "../host-shell/interface";
+
+export interface OAuthBrowserHost {
+  readonly openUrl: (url: string) => e.Effect.Effect<boolean>;
+}
 
 const OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -23,17 +25,6 @@ interface BeginOAuthCodeRequestOptions {
   readonly openBrowser: boolean;
 }
 
-export function currentBrowserOpenCommand(): string {
-  switch (process.platform) {
-    case "darwin":
-      return "open";
-    case "win32":
-      return "cmd";
-    default:
-      return "xdg-open";
-  }
-}
-
 export function displayOAuthBrowserAction(title: string, body: string): OAuthBrowserAction {
   return { _tag: "Display", title, body, attemptAutoClose: false };
 }
@@ -47,7 +38,7 @@ export function redirectOAuthBrowserAction(url: string): OAuthBrowserAction {
 }
 
 export function beginOAuthCodeRequest(
-  hostShell: AuthHostShell,
+  hostShell: OAuthBrowserHost,
   providerName: string,
   buildAuthorizeUrl: (redirectUri: string, state: string) => URL,
   options: BeginOAuthCodeRequestOptions,
@@ -148,7 +139,7 @@ export function beginOAuthCodeRequest(
 }
 
 export const requestOAuthCode = (
-  hostShell: AuthHostShell,
+  hostShell: OAuthBrowserHost,
   providerName: string,
   buildAuthorizeUrl: (redirectUri: string, state: string) => URL,
 ): e.Effect.Effect<e.Option.Option<OAuthCodeResult>> =>
@@ -166,28 +157,10 @@ export const requestOAuthCode = (
     return result;
   });
 
-const openBrowser = (hostShell: AuthHostShell, url: string): e.Effect.Effect<void> =>
+const openBrowser = (hostShell: OAuthBrowserHost, url: string): e.Effect.Effect<void> =>
   e.Effect.gen(function*() {
-    const command = currentBrowserOpenCommand();
-    const args = command === "open"
-      ? [url]
-      : command === "cmd"
-        ? ["/c", "start", "", url]
-        : [url];
-
-    const spec: HostShellCommand = {
-      command,
-      args,
-      cwd: e.Option.none(),
-      env: {},
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
-      shell: e.Option.none(),
-    };
-
-    const result = yield* hostShell.run(spec);
-    if (e.Option.isNone(result) || result.value.exitCode !== 0) {
+    const opened = yield* hostShell.openUrl(url);
+    if (!opened) {
       yield* e.Effect.log(`Could not open browser automatically. Visit this URL to authorize:\n  ${url}`);
     }
   });

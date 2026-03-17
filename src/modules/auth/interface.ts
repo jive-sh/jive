@@ -1,17 +1,15 @@
 import * as e from "effect";
 
-export interface ActiveGitIdentity {
+export interface CurrentUser {
+  readonly preferredEmail: e.Option.Option<string>;
   readonly userName: string;
   readonly userEmail: string;
-  readonly readOnlyAuthPrivateKeyPath: string;
-  readonly signingPublicKey?: string;
+  readonly readonlyToken: string;
 }
 
+export class NotLoggedInError extends e.Data.TaggedError("NotLoggedInError")<{}> {}
+
 export class IAuth extends e.Context.Tag("IAuth")<IAuth, {
-  readonly requiredCLICommands: readonly string[];
-  readonly login: e.Effect.Effect<void>;
-  readonly ensureLoggedIn: e.Effect.Effect<void>;
-  readonly whoami: e.Effect.Effect<void>;
-  readonly readOnlyToken: e.Effect.Effect<string>;
-  readonly activeGitIdentity: e.Effect.Effect<e.Option.Option<ActiveGitIdentity>>;
+  readonly assertLoggedIn: e.Effect.Effect<CurrentUser, NotLoggedInError>;
+  readonly ensureLoggedIn: (opts: {chooseNewUser: boolean;}) => e.Effect.Effect<CurrentUser>;
 }>() {}

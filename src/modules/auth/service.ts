@@ -2,47 +2,58 @@ import * as e from "effect";
 import { TOOL_NAME } from "@/constants";
 import { authKeyName, signingKeyName } from "./constants";
 import {
-  getReadOnlyAuthKeyPaths,
   loadCredentials,
   saveCredentials,
   saveUserTokenState,
   type ToolStateApi,
 } from "./credentials";
-import type { AuthHostShell } from "./host-shell";
-import {
-  printGitHubJiveKeyList,
-  printYubiKeyList,
-  selectConnectedYubiKey,
-  selectOrCreateJiveKey,
-  selectVerifiedEmail,
-} from "./key-selection";
-import { createReadOnlyAuthKey, loadReadOnlyAuthKey } from "./local-auth-key";
+import { printGitHubJiveKeyList, selectVerifiedEmail } from "./key-selection";
 import {
   displayAutoClosingOAuthBrowserAction,
   displayOAuthBrowserAction,
   redirectOAuthBrowserAction,
   type OAuthBrowserAction,
 } from "./oauth";
-import { promptYesNo } from "./prompts";
-import type { ConnectedYubiKeyDevice, Credentials, GitHubJiveKeyInventory, GitHubSession, LocalAuthKey, YubiKeyJiveKey } from "./types";
+import { selectOne } from "@/prompts";
+import type { Credentials } from "./types";
 import type { GitService } from "../git/interface";
 import type { GitHubService } from "../github/interface";
+import type { GitHubJiveKeyInventory, GitHubSession, GitHubUserKey } from "../github/types";
+import type { SshService } from "../ssh/interface";
+import type { SshJiveKey } from "../ssh/types";
 import { WORKSPACE_DIR } from "../tool-state/constants";
 import type { CurrentUserState } from "../tool-state/interface";
+import type { ConnectedYubiKey } from "../yubikey/interface";
+
+type AuthServiceHostShell = {
+  readonly hasCommand: (command: string) => e.Effect.Effect<boolean>;
+};
+
+export type AuthGitService = Pick<GitService, "localOrgs" | "localRepos"> & {
+  readonly configureRepoRemoteAndUser: (
+    org: string,
+    repo: string,
+    identity: {
+      readonly userName: string;
+      readonly userEmail: string;
+      readonly sshPrivateKeyPath: string;
+    },
+  ) => e.Effect.Effect<boolean, unknown>;
+};
 
 interface AuthServiceDependencies {
   readonly toolState: ToolStateApi;
-  readonly git: GitService;
+  readonly git: AuthGitService;
   readonly github: GitHubService;
-  readonly hostShell: AuthHostShell;
-  readonly yubiKey: YubiKeyApi;
-}
-
-interface YubiKeyApi {
-  readonly listConnectedDevices: e.Effect.Effect<e.Option.Option<ConnectedYubiKeyDevice[]>>;
-  readonly listResidentJiveKeys: e.Effect.Effect<e.Option.Option<YubiKeyJiveKey[]>>;
-  readonly createResidentJiveKey: (name: string) => e.Effect.Effect<e.Option.Option<YubiKeyJiveKey>>;
-  readonly loadResidentJiveKeyIntoAgent: (target: YubiKeyJiveKey) => e.Effect.Effect<void>;
+  readonly hostShell: AuthServiceHostShell;
+  readonly ssh: Pick<
+    SshService,
+    "ensureResidentSshSupport" | "resolveStoredSshKey" | "selectOrCreateLocalSshKey" | "selectOrCreateYubiKeySshKey"
+  >;
+  readonly yubiKey: {
+    readonly listConnectedDevices: e.Effect.Effect<ConnectedYubiKey[]>;
+    readonly ensurePinConfigured: (serial: string) => e.Effect.Effect<boolean>;
+  };
 }
 
 interface ReadOnlyLoginResult {
@@ -59,18 +70,15 @@ interface PreparedAuthState {
   readonly root: string;
   readonly currentUser: CurrentUserState;
   readonly credentials: Credentials;
+  readonly sshKey: SshJiveKey;
   readonly githubJiveKeys: GitHubJiveKeyInventory;
   readonly reusableWriteSession: e.Option.Option<GitHubSession>;
 }
 
-interface EnsuredReadOnlyMaterial {
+interface EnsuredGitHubKeyMaterial {
   readonly credentials: Credentials;
+  readonly sshKey: SshJiveKey;
   readonly githubJiveKeys: GitHubJiveKeyInventory;
-}
-
-interface EnsuredSigningMaterial {
-  readonly credentials: Credentials;
-  readonly signingKey: e.Option.Option<YubiKeyJiveKey>;
 }
 
 interface ExistingReadState {
@@ -82,24 +90,35 @@ type AcquireReusableWriteSession = (
   expectedCredentials: e.Option.Option<Credentials>,
 ) => e.Effect.Effect<e.Option.Option<GitHubSession>>;
 
+interface RunLoginFlowOptions {
+  readonly successPrefix: string;
+  readonly promptAccountSelection: boolean;
+}
+
 export const login = (
   dependencies: AuthServiceDependencies,
-): e.Effect.Effect<void> =>
+)=>
   e.Effect.gen(function*() {
     yield* dependencies.toolState.clearCurrentUserState;
-    yield* runLoginFlow(dependencies, "Logged in as");
+    yield* runLoginFlow(dependencies, {
+      successPrefix: "Logged in as",
+      promptAccountSelection: true,
+    });
   });
 
 export const ensureLoggedIn = (
   dependencies: AuthServiceDependencies,
-): e.Effect.Effect<void> => runLoginFlow(dependencies, "Ensured login for");
+)=> runLoginFlow(dependencies, {
+  successPrefix: "Ensured login for",
+  promptAccountSelection: false,
+});
 
 const runLoginFlow = (
   dependencies: AuthServiceDependencies,
-  successPrefix: string,
-): e.Effect.Effect<void> =>
+  options: RunLoginFlowOptions,
+) =>
   e.Effect.gen(function*() {
-    const prepared = yield* prepareExistingOrFreshAuthState(dependencies);
+    const prepared = yield* prepareExistingOrFreshAuthState(dependencies, options);
     if (e.Option.isNone(prepared)) return;
 
     const acquireReusableWriteSession = createReusableWriteSessionAcquirer(
@@ -107,60 +126,30 @@ const runLoginFlow = (
       prepared.value.reusableWriteSession,
     );
 
-    const ensuredReadOnly = yield* ensureReadOnlyAuthMaterial(
+    const ensured = yield* ensureGitHubKeyMaterial(
       dependencies,
       prepared.value,
       acquireReusableWriteSession,
     );
-    if (e.Option.isNone(ensuredReadOnly)) return;
+    if (e.Option.isNone(ensured)) return;
 
-    yield* finalizeReadOnlyAuthState(dependencies, prepared.value.root, prepared.value.currentUser, ensuredReadOnly.value);
-
-    const ensuredSigning = yield* ensureSigningMaterial(
-      dependencies,
-      prepared.value.currentUser,
-      ensuredReadOnly.value,
-      acquireReusableWriteSession,
+    yield* finalizeAuthState(dependencies, prepared.value.root, prepared.value.currentUser, ensured.value);
+    yield* e.Effect.log(
+      `${options.successPrefix} @${ensured.value.credentials.githubUsername} (${prepared.value.currentUser.email})`,
     );
-    yield* finalizeSigningAuthState(dependencies, prepared.value.root, ensuredSigning);
-    yield* logSigningStatus(ensuredSigning.signingKey);
-    yield* e.Effect.log(`${successPrefix} @${ensuredSigning.credentials.githubUsername} (${prepared.value.currentUser.email})`);
-  });
-
-export const whoami = (
-  dependencies: AuthServiceDependencies,
-): e.Effect.Effect<void> =>
-  e.Effect.gen(function*() {
-    const { git, github, toolState } = dependencies;
-    const root = toolState.workspaceRoot;
-    if (e.Option.isNone(root)) {
-      yield* e.Effect.logError(`You're not in a ${TOOL_NAME} workspace.`);
-      return;
-    }
-
-    const credentials = yield* loadCredentials(toolState);
-    if (e.Option.isNone(credentials)) {
-      yield* e.Effect.logError(`Not logged in. Run \`${TOOL_NAME} login\` first.`);
-      return;
-    }
-
-    yield* e.Effect.log(credentials.value.email);
-    yield* github.checkWorkspaceRepoAccess(root.value, credentials.value.readOnlyToken, git);
   });
 
 const prepareFreshLoginState = (
   dependencies: AuthServiceDependencies,
+  options: RunLoginFlowOptions,
 ): e.Effect.Effect<e.Option.Option<PreparedAuthState>> =>
   e.Effect.gen(function*() {
-    const { github, toolState, yubiKey } = dependencies;
+    const { github, toolState } = dependencies;
     const root = yield* requireWorkspaceRoot(toolState);
     if (e.Option.isNone(root)) return e.Option.none<PreparedAuthState>();
     if (!(yield* ensureGitHubOAuthConfigured(github))) return e.Option.none<PreparedAuthState>();
 
-    const selectedYubiKey = yield* resolveSelectedYubiKey(yubiKey, e.Option.none());
-    if (e.Option.isNone(selectedYubiKey)) return e.Option.none<PreparedAuthState>();
-
-    const writeLogin = github.beginWriteLogin();
+    const writeLogin = github.beginWriteLogin({ promptAccountSelection: options.promptAccountSelection });
     const writeSession = yield* writeLogin.waitForSession;
     if (e.Option.isNone(writeSession)) return e.Option.none<PreparedAuthState>();
 
@@ -173,11 +162,14 @@ const prepareFreshLoginState = (
 
     const githubJiveKeys = yield* github.listJiveKeys(readOnlyLogin.value.session.token);
     if (e.Option.isNone(githubJiveKeys)) {
-      yield* e.Effect.logError("Could not list existing jive keys on GitHub with the read token.");
+      yield* e.Effect.logError("Could not list existing Jive keys on GitHub with the read token.");
       return e.Option.none<PreparedAuthState>();
     }
 
-    yield* printGitHubJiveKeyList(githubJiveKeys.value.auth, githubJiveKeys.value.signing);
+    yield* printGitHubJiveKeyList(
+      githubJiveKeys.value.auth,
+      githubJiveKeys.value.signing,
+    );
 
     const selectedEmail = yield* selectVerifiedEmail({
       verifiedEmails: Array.from(readOnlyLogin.value.verifiedEmails),
@@ -185,25 +177,29 @@ const prepareFreshLoginState = (
     });
     if (e.Option.isNone(selectedEmail)) return e.Option.none<PreparedAuthState>();
 
-    const currentUser: CurrentUserState = {
-      email: selectedEmail.value,
-      yubiKeyId: selectedYubiKey.value.id,
-      yubiKeyLabel: selectedYubiKey.value.label,
-    };
-    yield* printKeyNamingConvention(currentUser);
-
-    const credentials = buildCredentials(
+    const sshKey = yield* resolveSelectedSshKey(
+      dependencies,
       root.value,
+      selectedEmail.value,
+      e.Option.none(),
+    );
+    if (e.Option.isNone(sshKey)) return e.Option.none<PreparedAuthState>();
+
+    const currentUser: CurrentUserState = { email: selectedEmail.value };
+    const credentials = buildCredentials(
       currentUser.email,
       writeSession.value,
       readOnlyLogin.value.session,
+      sshKey.value,
     );
     yield* persistSelectedAuthState(toolState, currentUser, credentials);
+    yield* printKeyNamingConvention(credentials);
 
     return e.Option.some({
       root: root.value,
       currentUser,
       credentials,
+      sshKey: sshKey.value,
       githubJiveKeys: githubJiveKeys.value,
       reusableWriteSession: e.Option.some(writeSession.value),
     });
@@ -211,35 +207,39 @@ const prepareFreshLoginState = (
 
 const prepareExistingOrFreshAuthState = (
   dependencies: AuthServiceDependencies,
+  options: RunLoginFlowOptions,
 ): e.Effect.Effect<e.Option.Option<PreparedAuthState>> =>
   e.Effect.gen(function*() {
-    const { github, toolState, yubiKey } = dependencies;
+    const { github, toolState } = dependencies;
     const root = yield* requireWorkspaceRoot(toolState);
     if (e.Option.isNone(root)) return e.Option.none<PreparedAuthState>();
     if (!(yield* ensureGitHubOAuthConfigured(github))) return e.Option.none<PreparedAuthState>();
 
     const currentUserState = yield* toolState.readCurrentUserState;
     if (e.Option.isNone(currentUserState)) {
-      return yield* prepareFreshLoginState(dependencies);
+      return yield* prepareFreshLoginState(dependencies, options);
     }
 
-    const selectedYubiKey = yield* resolveSelectedYubiKey(yubiKey, currentUserState);
-    if (e.Option.isNone(selectedYubiKey)) return e.Option.none<PreparedAuthState>();
-
-    const currentUser: CurrentUserState = {
-      email: currentUserState.value.email,
-      yubiKeyId: selectedYubiKey.value.id,
-      yubiKeyLabel: selectedYubiKey.value.label,
-    };
-
-    const existingReadState = yield* loadExistingReadState(github, toolState, currentUser.email);
+    const existingReadState = yield* loadExistingReadState(github, toolState, currentUserState.value.email);
     if (e.Option.isSome(existingReadState)) {
-      yield* toolState.writeCurrentUserState(currentUser);
-      yield* printKeyNamingConvention(currentUser);
+      const sshKey = yield* resolveSelectedSshKey(
+        dependencies,
+        root.value,
+        currentUserState.value.email,
+        e.Option.some(existingReadState.value.credentials),
+      );
+      if (e.Option.isNone(sshKey)) return e.Option.none<PreparedAuthState>();
+
+      const credentials = mergeCredentialsWithSshKey(existingReadState.value.credentials, sshKey.value);
+      yield* toolState.writeCurrentUserState(currentUserState.value);
+      yield* saveCredentials(toolState, credentials);
+      yield* printKeyNamingConvention(credentials);
+
       return e.Option.some({
         root: root.value,
-        currentUser,
-        credentials: existingReadState.value.credentials,
+        currentUser: currentUserState.value,
+        credentials,
+        sshKey: sshKey.value,
         githubJiveKeys: existingReadState.value.githubJiveKeys,
         reusableWriteSession: e.Option.none(),
       });
@@ -248,7 +248,7 @@ const prepareExistingOrFreshAuthState = (
     return yield* reacquirePreparedAuthState(
       dependencies,
       root.value,
-      currentUser,
+      currentUserState.value,
     );
   });
 
@@ -280,182 +280,112 @@ const reacquirePreparedAuthState = (
 
     const githubJiveKeys = yield* github.listJiveKeys(readOnlyLogin.value.session.token);
     if (e.Option.isNone(githubJiveKeys)) {
-      yield* e.Effect.logError("Could not list existing jive keys on GitHub with the refreshed read token.");
+      yield* e.Effect.logError("Could not list existing Jive keys on GitHub with the refreshed read token.");
       return e.Option.none<PreparedAuthState>();
     }
 
-    const credentials = buildCredentials(
+    const sshKey = yield* resolveSelectedSshKey(
+      dependencies,
       root,
+      currentUser.email,
+      existingCredentials,
+    );
+    if (e.Option.isNone(sshKey)) return e.Option.none<PreparedAuthState>();
+
+    const credentials = buildCredentials(
       currentUser.email,
       writeSession.value.session,
       readOnlyLogin.value.session,
+      sshKey.value,
     );
     yield* persistSelectedAuthState(toolState, currentUser, credentials);
-    yield* printKeyNamingConvention(currentUser);
+    yield* printKeyNamingConvention(credentials);
 
     return e.Option.some({
       root,
       currentUser,
       credentials,
+      sshKey: sshKey.value,
       githubJiveKeys: githubJiveKeys.value,
       reusableWriteSession: e.Option.some(writeSession.value.session),
     });
   });
 
-const ensureReadOnlyAuthMaterial = (
+const ensureGitHubKeyMaterial = (
   dependencies: AuthServiceDependencies,
   prepared: PreparedAuthState,
   acquireReusableWriteSession: AcquireReusableWriteSession,
-): e.Effect.Effect<e.Option.Option<EnsuredReadOnlyMaterial>> =>
+): e.Effect.Effect<e.Option.Option<EnsuredGitHubKeyMaterial>> =>
   e.Effect.gen(function*() {
-    const { currentUser, credentials, githubJiveKeys } = prepared;
-    const { github, hostShell, toolState } = dependencies;
+    const { credentials, githubJiveKeys, sshKey } = prepared;
+    const { github } = dependencies;
+    const keyName = authKeyName(credentials.email, credentials.sshKeyName, credentials.sshKeyFingerprint);
+    const signingName = signingKeyName(credentials.email, credentials.sshKeyName, credentials.sshKeyFingerprint);
 
-    const authKeyPaths = getReadOnlyAuthKeyPaths(toolState.workspaceRoot, currentUser.email);
-    const localAuthKey = yield* ensureLocalAuthKey(
-      hostShell,
-      authKeyPaths.privateKeyPath,
-      authKeyPaths.publicKeyPath,
-      currentUser.email,
-    );
-    if (e.Option.isNone(localAuthKey)) return e.Option.none<EnsuredReadOnlyMaterial>();
+    const needsAuthRepair = !hasGitHubAuthKey(githubJiveKeys, keyName, sshKey.publicKey);
+    const needsSigningRepair = !hasGitHubSigningKey(githubJiveKeys, signingName, sshKey.publicKey);
 
-    const needsAuthRepair = !hasGitHubAuthKey(githubJiveKeys, localAuthKey.value);
-
-    let nextCredentials: Credentials = {
-      ...credentials,
-      readOnlyAuthPrivateKeyPath: localAuthKey.value.privateKeyPath,
-      readOnlyAuthPublicKeyPath: localAuthKey.value.publicKeyPath,
-    };
+    let nextCredentials = credentials;
     let nextGitHubJiveKeys = githubJiveKeys;
 
-    if (needsAuthRepair) {
+    if (needsAuthRepair || needsSigningRepair) {
       const writeSession = yield* acquireReusableWriteSession(e.Option.some(nextCredentials));
-      if (e.Option.isNone(writeSession)) return e.Option.none<EnsuredReadOnlyMaterial>();
+      if (e.Option.isNone(writeSession)) return e.Option.none<EnsuredGitHubKeyMaterial>();
 
       nextCredentials = mergeCredentialsWithWriteSession(nextCredentials, writeSession.value);
-      yield* github.ensureAuthKey(
-        writeSession.value.token,
-        localAuthKey.value.name,
-        localAuthKey.value.publicKey,
-        e.Option.some(githubJiveKeys),
-      );
+
+      if (needsAuthRepair) {
+        yield* github.ensureAuthKey(
+          writeSession.value.token,
+          keyName,
+          sshKey.publicKey,
+          e.Option.some(githubJiveKeys),
+        );
+      }
+
+      if (needsSigningRepair) {
+        yield* github.ensureSigningKey(
+          writeSession.value.token,
+          signingName,
+          sshKey.publicKey,
+          e.Option.some(githubJiveKeys),
+        );
+      }
 
       const refreshedInventory = yield* github.listJiveKeys(nextCredentials.readOnlyToken);
       nextGitHubJiveKeys = e.Option.getOrElse(
         refreshedInventory,
-        () => upsertGitHubAuthKey(githubJiveKeys, localAuthKey.value),
+        () => upsertGitHubKeys(githubJiveKeys, keyName, signingName, sshKey.publicKey),
       );
     }
 
     return e.Option.some({
       credentials: nextCredentials,
+      sshKey,
       githubJiveKeys: nextGitHubJiveKeys,
-    } satisfies EnsuredReadOnlyMaterial);
+    });
   });
 
-const finalizeReadOnlyAuthState = (
+const finalizeAuthState = (
   dependencies: AuthServiceDependencies,
   root: string,
   currentUser: CurrentUserState,
-  ensured: EnsuredReadOnlyMaterial,
-): e.Effect.Effect<void> =>
+  ensured: EnsuredGitHubKeyMaterial,
+)=>
   e.Effect.gen(function*() {
     const { git, github, toolState } = dependencies;
     yield* toolState.writeCurrentUserState(currentUser);
     yield* saveCredentials(toolState, ensured.credentials);
-    yield* applyStoredIdentityToWorkspace(root, ensured.credentials, e.Option.none(), git);
+    yield* applyStoredIdentityToWorkspace(root, ensured.credentials, ensured.sshKey, git);
     yield* github.checkWorkspaceRepoAccess(root, ensured.credentials.readOnlyToken, git);
-  });
-
-const ensureSigningMaterial = (
-  dependencies: AuthServiceDependencies,
-  currentUser: CurrentUserState,
-  ensuredReadOnly: EnsuredReadOnlyMaterial,
-  acquireReusableWriteSession: AcquireReusableWriteSession,
-): e.Effect.Effect<EnsuredSigningMaterial> =>
-  e.Effect.gen(function*() {
-    const { github, yubiKey } = dependencies;
-    const residentKeys = yield* loadResidentSigningKeys(yubiKey);
-    if (e.Option.isNone(residentKeys)) {
-      yield* e.Effect.logWarning("Skipping Jive signing-key setup because resident YubiKey keys could not be inspected.");
-      return {
-        credentials: ensuredReadOnly.credentials,
-        signingKey: e.Option.none(),
-      } satisfies EnsuredSigningMaterial;
-    }
-
-    yield* printYubiKeyList(residentKeys.value);
-    yield* printGitHubJiveKeyList(ensuredReadOnly.githubJiveKeys.auth, ensuredReadOnly.githubJiveKeys.signing);
-
-    const selectedSigningKey = yield* selectOrCreateJiveKey({
-      yubiKeys: residentKeys.value,
-      githubJiveKeys: e.Option.some(ensuredReadOnly.githubJiveKeys),
-      selectedEmail: currentUser.email,
-      selectedYubiKeyId: currentUser.yubiKeyId,
-      createResidentJiveKey: yubiKey.createResidentJiveKey,
-    });
-    if (e.Option.isNone(selectedSigningKey)) {
-      return {
-        credentials: ensuredReadOnly.credentials,
-        signingKey: e.Option.none(),
-      } satisfies EnsuredSigningMaterial;
-    }
-
-    let nextCredentials = ensuredReadOnly.credentials;
-    const needsSigningRepair = !hasGitHubSigningKey(ensuredReadOnly.githubJiveKeys, selectedSigningKey.value);
-
-    if (needsSigningRepair) {
-      const writeSession = yield* acquireReusableWriteSession(e.Option.some(nextCredentials));
-      if (e.Option.isNone(writeSession)) {
-        yield* e.Effect.logWarning("Skipping GitHub signing-key registration because a write-capable session could not be acquired.");
-        return {
-          credentials: nextCredentials,
-          signingKey: e.Option.none(),
-        } satisfies EnsuredSigningMaterial;
-      }
-
-      nextCredentials = mergeCredentialsWithWriteSession(nextCredentials, writeSession.value);
-      yield* github.ensureSigningJiveKey(
-        writeSession.value.token,
-        selectedSigningKey.value,
-        e.Option.some(ensuredReadOnly.githubJiveKeys),
-      );
-    }
-
-    yield* yubiKey.loadResidentJiveKeyIntoAgent(selectedSigningKey.value);
-
-    return {
-      credentials: nextCredentials,
-      signingKey: e.Option.some(selectedSigningKey.value),
-    } satisfies EnsuredSigningMaterial;
-  });
-
-const finalizeSigningAuthState = (
-  dependencies: AuthServiceDependencies,
-  root: string,
-  ensured: EnsuredSigningMaterial,
-): e.Effect.Effect<void> =>
-  e.Effect.gen(function*() {
-    const { git, toolState } = dependencies;
-    yield* saveCredentials(toolState, ensured.credentials);
-
-    if (e.Option.isSome(ensured.signingKey)) {
-      yield* applyStoredIdentityToWorkspace(
-        root,
-        ensured.credentials,
-        e.Option.some(ensured.signingKey.value.publicKey),
-        git,
-      );
-    }
   });
 
 const applyStoredIdentityToWorkspace = (
   root: string,
   credentials: Credentials,
-  signingPublicKey: e.Option.Option<string>,
-  git: GitService,
-): e.Effect.Effect<void> =>
+  sshKey: SshJiveKey,
+  git: AuthGitService,
+)=>
   e.Effect.gen(function*() {
     void root;
     const orgs = yield* git.localOrgs;
@@ -465,8 +395,7 @@ const applyStoredIdentityToWorkspace = (
         const configured = yield* git.configureRepoRemoteAndUser(org, repo, {
           userName: credentials.gitUserName || credentials.email,
           userEmail: credentials.email,
-          authPrivateKeyPath: credentials.readOnlyAuthPrivateKeyPath,
-          signingPublicKey: e.Option.getOrElse(signingPublicKey, () => undefined),
+          sshPrivateKeyPath: sshKey.privateKeyPath,
         });
         if (!configured) {
           yield* e.Effect.logWarning(`Could not apply git identity config to @${org}/${repo}.`);
@@ -498,62 +427,6 @@ const ensureGitHubOAuthConfigured = (github: GitHubService): e.Effect.Effect<boo
     return false;
   });
 
-const resolveSelectedYubiKey = (
-  yubiKey: YubiKeyApi,
-  currentUserState: e.Option.Option<CurrentUserState>,
-): e.Effect.Effect<e.Option.Option<ConnectedYubiKeyDevice>> =>
-  e.Effect.gen(function*() {
-    const connectedYubiKeys = yield* yubiKey.listConnectedDevices;
-    if (e.Option.isNone(connectedYubiKeys) || connectedYubiKeys.value.length === 0) {
-      yield* e.Effect.logError("No YubiKey detected. Please connect one before running login.");
-      return e.Option.none<ConnectedYubiKeyDevice>();
-    }
-
-    if (connectedYubiKeys.value.length > 1) {
-      yield* e.Effect.logWarning(
-        "Jive cannot yet inspect or target resident keys per YubiKey independently; OpenSSH will still operate on the device you touch.",
-      );
-    }
-
-    if (e.Option.isSome(currentUserState)) {
-      const matching = connectedYubiKeys.value.find((device) => device.id === currentUserState.value.yubiKeyId);
-      if (matching) {
-        yield* e.Effect.log(`Using connected YubiKey: ${formatConnectedYubiKey(matching)}`);
-        return e.Option.some(matching);
-      }
-
-      yield* e.Effect.logWarning(
-        `Previously selected YubiKey is not connected: ${currentUserState.value.yubiKeyLabel} (${currentUserState.value.yubiKeyId}).`,
-      );
-
-      const useDifferent = yield* promptYesNo(
-        connectedYubiKeys.value.length === 1
-          ? `Use ${connectedYubiKeys.value[0]!.label} instead?`
-          : "Use a different connected YubiKey instead?",
-      );
-      if (!useDifferent) return e.Option.none<ConnectedYubiKeyDevice>();
-    }
-
-    const selected = yield* selectConnectedYubiKey(connectedYubiKeys.value);
-    if (e.Option.isSome(selected)) {
-      yield* e.Effect.log(`Using connected YubiKey: ${formatConnectedYubiKey(selected.value)}`);
-      return e.Option.some(selected.value);
-    }
-    return e.Option.none<ConnectedYubiKeyDevice>();
-  });
-
-const loadResidentSigningKeys = (
-  yubiKey: YubiKeyApi,
-): e.Effect.Effect<e.Option.Option<YubiKeyJiveKey[]>> =>
-  e.Effect.gen(function*() {
-    const residentKeys = yield* yubiKey.listResidentJiveKeys;
-    if (e.Option.isNone(residentKeys)) {
-      yield* e.Effect.logWarning("Could not inspect resident Jive signing keys on the connected YubiKey.");
-      return e.Option.none<YubiKeyJiveKey[]>();
-    }
-    return residentKeys;
-  });
-
 const loadExistingReadState = (
   github: GitHubService,
   toolState: ToolStateApi,
@@ -563,6 +436,7 @@ const loadExistingReadState = (
     const credentials = yield* loadCredentials(toolState);
     if (e.Option.isNone(credentials)) return e.Option.none<ExistingReadState>();
     if (credentials.value.email !== selectedEmail) return e.Option.none<ExistingReadState>();
+    if (!credentials.value.sshKeyPath.trim()) return e.Option.none<ExistingReadState>();
     if (!github.isReadScopeSatisfied(credentials.value.readOnlyTokenScope)) return e.Option.none<ExistingReadState>();
 
     const verifiedEmails = yield* github.getVerifiedEmails(credentials.value.readOnlyToken);
@@ -576,6 +450,101 @@ const loadExistingReadState = (
       githubJiveKeys: githubJiveKeys.value,
     });
   });
+
+const resolveSelectedSshKey = (
+  dependencies: AuthServiceDependencies,
+  workspaceRoot: string,
+  email: string,
+  expectedCredentials: e.Option.Option<Credentials>,
+): e.Effect.Effect<e.Option.Option<SshJiveKey>> =>
+  e.Effect.gen(function*() {
+    const { ssh } = dependencies;
+
+    if (e.Option.isSome(expectedCredentials) && expectedCredentials.value.sshKeyPath.trim()) {
+      const matching = yield* ssh.resolveStoredSshKey(
+        workspaceRoot,
+        expectedCredentials.value.sshKeyPath,
+        expectedCredentials.value.sshKeySource,
+        expectedCredentials.value.yubiKeySerial,
+      );
+      if (e.Option.isSome(matching)) return matching;
+
+      yield* e.Effect.logWarning(
+        `Previously selected SSH key ${expectedCredentials.value.sshKeyPath} is not currently available. Select a different key.`,
+      );
+    }
+
+    yield* e.Effect.log(
+      "Select the SSH key Jive should use for both GitHub auth and commit signing.",
+    );
+
+    const source = yield* selectKeySource();
+    if (e.Option.isNone(source)) return e.Option.none<SshJiveKey>();
+
+    if (source.value === "local") {
+      return yield* ssh.selectOrCreateLocalSshKey(workspaceRoot, email);
+    }
+
+    return yield* selectOrCreateYubiKeyBackedSshKey(dependencies, workspaceRoot, email);
+  });
+
+const selectOrCreateYubiKeyBackedSshKey = (
+  dependencies: AuthServiceDependencies,
+  workspaceRoot: string,
+  email: string,
+): e.Effect.Effect<e.Option.Option<SshJiveKey>> =>
+  e.Effect.gen(function*() {
+    const { hostShell, ssh, yubiKey } = dependencies;
+
+    const hasYkman = yield* hostShell.hasCommand("ykman");
+    if (!hasYkman) {
+      yield* e.Effect.logError("YubiKey mode requires `ykman` on PATH.");
+      return e.Option.none<SshJiveKey>();
+    }
+
+    if (!(yield* ssh.ensureResidentSshSupport)) return e.Option.none<SshJiveKey>();
+
+    const devices = yield* yubiKey.listConnectedDevices;
+    if (devices.length === 0) {
+      yield* e.Effect.logError("No YubiKeys were detected. Insert one and try again.");
+      return e.Option.none<SshJiveKey>();
+    }
+
+    const selectedDevice = yield* selectConnectedYubiKey(devices);
+    if (e.Option.isNone(selectedDevice)) return e.Option.none<SshJiveKey>();
+
+    const pinConfigured = yield* yubiKey.ensurePinConfigured(selectedDevice.value.serial);
+    if (!pinConfigured) return e.Option.none<SshJiveKey>();
+
+    return yield* ssh.selectOrCreateYubiKeySshKey(
+      workspaceRoot,
+      selectedDevice.value.serial,
+      email,
+    );
+  });
+
+const selectKeySource = (): e.Effect.Effect<e.Option.Option<"local" | "yubikey">> =>
+  selectOne(
+    "Choose the SSH key source Jive should use:",
+    [
+      { id: "local" as const, label: "Local key stored in this workspace" },
+      { id: "yubikey" as const, label: "Resident key stored on a YubiKey" },
+    ],
+    (option) => option.id,
+    (option, index) => `${index + 1}. ${option.label}`,
+  ).pipe(
+    e.Effect.map((selected) => e.Option.map(selected, (option) => option.id)),
+  );
+
+const selectConnectedYubiKey = (
+  devices: readonly ConnectedYubiKey[],
+): e.Effect.Effect<e.Option.Option<ConnectedYubiKey>> =>
+  selectOne(
+    "Select the YubiKey Jive should use:",
+    [...devices],
+    (device) => device.serial,
+    (device, index) => `${index + 1}. ${device.label} (${device.serial})`,
+  );
 
 const acquireWriteSession = (
   dependencies: AuthServiceDependencies,
@@ -650,25 +619,16 @@ const persistSelectedAuthState = (
       gitUserName: credentials.gitUserName,
       githubAccountId: credentials.githubAccountId,
       githubUsername: credentials.githubUsername,
+      sshKeySource: credentials.sshKeySource,
+      sshKeyFingerprint: credentials.sshKeyFingerprint,
+      sshKeyName: credentials.sshKeyName,
+      sshKeyPath: credentials.sshKeyPath,
+      yubiKeySerial: credentials.yubiKeySerial,
       readOnlyToken: credentials.readOnlyToken,
       readOnlyTokenScope: credentials.readOnlyTokenScope,
       readOnlyTokenType: credentials.readOnlyTokenType,
       writeRefreshToken: credentials.writeRefreshToken,
     });
-  });
-
-const ensureLocalAuthKey = (
-  hostShell: AuthHostShell,
-  privateKeyPath: string,
-  publicKeyPath: string,
-  email: string,
-): e.Effect.Effect<e.Option.Option<LocalAuthKey>> =>
-  e.Effect.gen(function*() {
-    const existing = yield* loadReadOnlyAuthKey(privateKeyPath, publicKeyPath);
-    if (e.Option.isSome(existing)) return existing;
-
-    yield* e.Effect.log(`Creating local read-only GitHub auth SSH key: ${authKeyName(email)}`);
-    return yield* createReadOnlyAuthKey(hostShell, privateKeyPath, publicKeyPath, email);
   });
 
 const acquireReadOnlySession = (
@@ -717,51 +677,57 @@ const acquireReadOnlySession = (
     return e.Option.some({
       session: readSession.value,
       verifiedEmails,
-    } satisfies ReadOnlyLoginResult);
+    });
   });
 
 function buildCredentials(
-  workspaceRoot: string,
   email: string,
   writeSession: GitHubSession,
   readSession: GitHubSession,
+  sshKey: SshJiveKey,
 ): Credentials {
-  const authKeyPaths = getReadOnlyAuthKeyPaths(e.Option.some(workspaceRoot), email);
   return {
     email,
-    gitUserName: writeSession.name,
+    gitUserName: writeSession.name || readSession.name || email,
     githubAccountId: writeSession.accountId,
     githubUsername: writeSession.username,
     readOnlyToken: readSession.token,
     readOnlyTokenScope: readSession.tokenScope,
     readOnlyTokenType: readSession.tokenType,
-    readOnlyAuthPrivateKeyPath: authKeyPaths.privateKeyPath,
-    readOnlyAuthPublicKeyPath: authKeyPaths.publicKeyPath,
+    sshKeySource: sshKey.source,
+    sshKeyFingerprint: sshKey.fingerprint,
+    sshKeyName: sshKey.name,
+    sshKeyPath: sshKey.relativePrivateKeyPath,
+    yubiKeySerial: sshKey.yubiKeySerial,
     writeRefreshToken: writeSession.refreshToken,
   };
 }
 
-const printKeyNamingConvention = (currentUser: CurrentUserState): e.Effect.Effect<void> =>
+const printKeyNamingConvention = (credentials: Credentials): e.Effect.Effect<void> =>
   e.Effect.gen(function*() {
-    yield* e.Effect.log(`Jive auth key name: ${authKeyName(currentUser.email)}`);
-    yield* e.Effect.log(`Jive signing key name: ${signingKeyName(currentUser.email, currentUser.yubiKeyId)}`);
+    yield* e.Effect.log(`Jive auth key name: ${authKeyName(credentials.email, credentials.sshKeyName, credentials.sshKeyFingerprint)}`);
+    yield* e.Effect.log(`Jive SSH signing key name: ${signingKeyName(credentials.email, credentials.sshKeyName, credentials.sshKeyFingerprint)}`);
   });
 
 function hasGitHubAuthKey(
   inventory: GitHubJiveKeyInventory,
-  localAuthKey: LocalAuthKey,
+  keyName: string,
+  publicKey: string,
 ): boolean {
+  const normalizedKeyBody = normalizeKeyBody(publicKey);
   return inventory.auth.some((entry) =>
-    entry.title === localAuthKey.name && normalizeKeyBody(entry.key) === localAuthKey.keyBody
+    entry.title === keyName && normalizeKeyBody(entry.key) === normalizedKeyBody
   );
 }
 
 function hasGitHubSigningKey(
   inventory: GitHubJiveKeyInventory,
-  signingKey: YubiKeyJiveKey,
+  keyName: string,
+  publicKey: string,
 ): boolean {
+  const normalizedKeyBody = normalizeKeyBody(publicKey);
   return inventory.signing.some((entry) =>
-    entry.title === signingKey.name && normalizeKeyBody(entry.key) === signingKey.keyBody
+    entry.title === keyName && normalizeKeyBody(entry.key) === normalizedKeyBody
   );
 }
 
@@ -807,19 +773,6 @@ function formatCompletedAuthorizationBody(username: string, verifiedEmails: read
   return lines.join("\n");
 }
 
-const logSigningStatus = (
-  signingKey: e.Option.Option<YubiKeyJiveKey>,
-): e.Effect.Effect<void> =>
-  e.Effect.gen(function*() {
-    if (e.Option.isNone(signingKey)) {
-      yield* e.Effect.logWarning("Read-only GitHub auth is ready, but Jive signing-key setup is still incomplete.");
-    }
-  });
-
-function formatConnectedYubiKey(device: ConnectedYubiKeyDevice): string {
-  return `${device.id} (${device.label})`;
-}
-
 function mergeCredentialsWithWriteSession(credentials: Credentials, session: GitHubSession): Credentials {
   return {
     ...credentials,
@@ -830,19 +783,42 @@ function mergeCredentialsWithWriteSession(credentials: Credentials, session: Git
   };
 }
 
-function upsertGitHubAuthKey(
+function mergeCredentialsWithSshKey(credentials: Credentials, sshKey: SshJiveKey): Credentials {
+  return {
+    ...credentials,
+    sshKeySource: sshKey.source,
+    sshKeyFingerprint: sshKey.fingerprint,
+    sshKeyName: sshKey.name,
+    sshKeyPath: sshKey.relativePrivateKeyPath,
+    yubiKeySerial: sshKey.yubiKeySerial,
+  };
+}
+
+function upsertGitHubKeys(
   inventory: GitHubJiveKeyInventory,
-  localAuthKey: LocalAuthKey,
+  authName: string,
+  signingName: string,
+  publicKey: string,
 ): GitHubJiveKeyInventory {
-  const nextAuth = inventory.auth.filter((entry) => entry.title !== localAuthKey.name);
-  nextAuth.push({
-    id: 0,
-    key: localAuthKey.publicKey,
-    title: localAuthKey.name,
-  });
+  const nextAuth = replaceNamedKey(inventory.auth, authName, publicKey);
+  const nextSigning = replaceNamedKey(inventory.signing, signingName, publicKey);
 
   return {
     auth: nextAuth,
-    signing: inventory.signing,
+    signing: nextSigning,
   };
+}
+
+function replaceNamedKey(
+  existing: readonly GitHubUserKey[],
+  title: string,
+  key: string,
+): GitHubUserKey[] {
+  const next = existing.filter((entry) => entry.title !== title);
+  next.push({
+    id: 0,
+    title,
+    key,
+  });
+  return next;
 }
