@@ -1,16 +1,15 @@
 import * as e from "effect";
+import { bright, dim, magenta as magentaColor, red, yellow } from "ansicolor";
 import * as util from "node:util";
 
 const LOG_LEVEL_STYLES = {
-  TRACE: "\x1b[2m",
-  DEBUG: "\x1b[2m",
-  INFO: "",
-  WARN: "\x1b[33m",
-  ERROR: "\x1b[31m",
-  FATAL: "\x1b[1;31m",
-} as const satisfies Record<string, string>;
-
-const RESET = "\x1b[0m";
+  TRACE: dim,
+  DEBUG: dim,
+  INFO: (message: string) => message,
+  WARN: yellow,
+  ERROR: red,
+  FATAL: bright.red,
+} as const satisfies Record<string, (message: string) => string>;
 
 const ConsoleLogger = e.Logger.make(({ logLevel, message }) => {
   const stream = logLevel.label === "ERROR" || logLevel.label === "FATAL"
@@ -51,10 +50,13 @@ function formatPart(value: unknown): string {
 function colorize(level: e.LogLevel.LogLevel["label"], message: string, isTTY: boolean): string {
   if (!isTTY) return message;
 
-  const prefix = LOG_LEVEL_STYLES[level as keyof typeof LOG_LEVEL_STYLES] ?? "";
-  if (!prefix) return message;
+  const style = LOG_LEVEL_STYLES[level as keyof typeof LOG_LEVEL_STYLES];
+  return style ? style(message) : message;
+}
 
-  return `${prefix}${message}${RESET}`;
+export function magenta(text: string, isTTY = process.stdout.isTTY || process.stderr.isTTY): string {
+  if (!isTTY) return text;
+  return magentaColor(text);
 }
 
 export function pluralize(items: any[], singular: string, plural: string) {

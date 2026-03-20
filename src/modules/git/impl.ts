@@ -1,285 +1,255 @@
 import * as e from "effect";
 import * as ep from "@effect/platform";
-import * as path from "path";
+import * as path from "node:path";
 import * as process from "node:process";
-import { GIT_CREDENTIAL_HELPER_NAME } from "@/constants";
-import * as modules from "../index";
-import type { GitIdentity, SubmoduleUpdateResult } from "./interface";
-import type { HostShellCommand } from "../host-shell/interface";
-
-type SpawnIo = "inherit" | "ignore" | "pipe";
+import { GIT_CREDENTIAL_HELPER_NAME, TOOL_NAME } from "@/constants";
+import * as modules from "@/modules";
+import { type CurrentUser } from "@/modules/auth/interface";
+import { RepoIdentifier } from "@/modules/tool-state/interface";
+import { IN } from "../host-shell/interface";
+import parseGitRemote from "git-url-parse";
 
 export const GitImpl = e.Layer.effect(modules.IGit, e.Effect.gen(function*() {
   const toolState = yield* modules.IToolState;
   const fileSystem = yield* ep.FileSystem.FileSystem;
   const hostShell = yield* modules.IHostShell;
 
-  const resolveRepoPath = e.Effect.fn(function*(org: string, repo: string) {
-    if (e.Option.isNone(toolState.workspaceRoot)) return e.Option.none();
-
-    const repoPath = path.join(toolState.workspaceRoot.value, `@${org}`, repo);
-    const exists = yield* fileSystem.exists(repoPath).pipe(
-      e.Effect.catchAll(() => e.Effect.succeed(false)),
-    );
-    return exists ? e.Option.some(repoPath) : e.Option.none();
-  });
-
-  const listDirectoryNames = e.Effect.fn(function*(targetPath: string) {
-    return yield* fileSystem.readDirectory(targetPath).pipe(
-      e.Effect.catchAll(() => e.Effect.succeed([] as string[])),
-    );
-  });
-
   const isDirectory = e.Effect.fn(function*(targetPath: string) {
-    return yield* fileSystem.stat(targetPath).pipe(
-      e.Effect.map((info) => info.type === "Directory"),
-      e.Effect.catchAll(() => e.Effect.succeed(false)),
+    const exists = yield* fileSystem.exists(targetPath);
+    if (!exists) return false;
+    return (yield* fileSystem.stat(targetPath)).type === "Directory";
+  });
+
+  const httpsRepoUrl = ({org, repo}: {org: string; repo: string;}): string =>
+    `https://github.com/${org}/${repo}.git`;
+
+  const sshRepoUrl = ({org, repo}: {org: string; repo: string;}): string =>
+    `git@github.com:${org}/${repo}.git`;
+
+  const credentialHelperExecutablePath = (): string =>
+    path.join(path.dirname(process.execPath), GIT_CREDENTIAL_HELPER_NAME);
+
+  const shellQuote = (value: string): string =>
+    `"${value.split('"').join("\\\"")}"`;
+
+  const sshCommand = (identityFile: string): string =>
+    `ssh -i ${shellQuote(identityFile)} -o IdentitiesOnly=yes`;
+
+  const repoPath = e.Effect.fn(function*(repoId: RepoIdentifier) {
+    return yield* repoId.repoPath().pipe(
+      e.Effect.provideService(modules.IToolState, toolState),
+      e.Effect.catchTag("NotInWorkspaceError", modules.BadPreconditionsError.fromNotInWorkspaceError)
     );
   });
 
-  const gitExistsAt = e.Effect.fn(function*(targetPath: string) {
-    return yield* fileSystem.exists(path.join(targetPath, ".git")).pipe(
-      e.Effect.catchAll(() => e.Effect.succeed(false)),
+  const orgPath = e.Effect.fn(function*(repoId: RepoIdentifier) {
+    return yield* repoId.orgPath().pipe(
+      e.Effect.provideService(modules.IToolState, toolState),
+      e.Effect.catchTag("NotInWorkspaceError", modules.BadPreconditionsError.fromNotInWorkspaceError)
     );
   });
 
-  function httpsRepoUrl(org: string, repo: string): string {
-    return `https://github.com/${org}/${repo}.git`;
-  }
-
-  function sshRepoUrl(org: string, repo: string): string {
-    return `git@github.com:${org}/${repo}.git`;
-  }
-
-  function credentialHelperExecutablePath(): string {
-    return path.join(path.dirname(process.execPath), GIT_CREDENTIAL_HELPER_NAME);
-  }
-
-  function shellQuote(value: string): string {
-    return `'${value.replace(/'/g, `'\\''`)}'`;
-  }
-
-  function sshCommand(identityFile: string): string {
-    return `ssh -i ${shellQuote(identityFile)} -o IdentitiesOnly=yes`;
-  }
-
-  const runGit = e.Effect.fn(function*(args: string[], cwd: string, io: SpawnIo) {
-    const command: HostShellCommand = {
-      command: "git",
-      args,
-      cwd: e.Option.some(cwd),
-      env: {},
-      stdin: io === "inherit" ? "inherit" : "ignore",
-      stdout: io,
-      stderr: io,
-      shell: e.Option.none(),
-    };
-
-    return yield* hostShell.run(command).pipe(
-      e.Effect.map((result) => e.Option.some(result)),
-      e.Effect.catchAll(() => e.Effect.succeed(e.Option.none())),
+  const listLocalOrgs = e.Effect.gen(function*() {
+    const { workspaceRoot } = yield* e.pipe(
+      toolState.assertInWorkspace,
+      e.Effect.catchTag("NotInWorkspaceError", modules.BadPreconditionsError.fromNotInWorkspaceError)
     );
+    const entries = yield* e.pipe(
+      fileSystem.readDirectory(workspaceRoot),
+      e.Effect.catchTag("BadArgument", "SystemError", ({name, message}) => new modules.BadPreconditionsError({
+        cause: `Failed to read workspace root ${workspaceRoot} as directory due to unexpected ${name}`,
+        fix: `Report bug to ${TOOL_NAME} maintainers; internal error: ${message}`
+      }))
+    );
+    const orgs: string[] = [];
+    for (const entry of entries.sort()) {
+      if (!entry.startsWith("@")) {
+        continue;
+      }
+      const orgDir = path.resolve(workspaceRoot, entry)
+      const entryIsDirectory = yield* e.pipe(
+        orgDir,
+        isDirectory,
+        e.Effect.catchTag("BadArgument", "SystemError", ({name, message}) => new modules.BadPreconditionsError({
+          cause: `Failed to determine if potential org at ${orgDir} is a directory due to unexpected ${name}`,
+          fix: `Report bug to ${TOOL_NAME} maintainers; internal error: ${message}`
+        }))
+      );
+      if (entryIsDirectory) {
+        orgs.push(entry.slice(1));
+      }
+    }
+    return orgs;
   });
 
-  const isDirty = e.Effect.fn(function*(repoPath: string) {
-    const status = yield* runGit(["status", "--porcelain"], repoPath, "pipe");
-    if (e.Option.isNone(status) || status.value.exitCode !== 0) return true;
-    return status.value.stdout.trim().length > 0;
+  const listLocalRepos = e.Effect.fn(function*(org: string) {
+    const dummyRepoId = new RepoIdentifier(org, "fake-repo");
+    const orgDoesNotExistError = new modules.BadArgumentError({
+      argument: "org",
+      reason: `Org ${dummyRepoId.orgName()} does not exist in this workspace`
+    });
+    const orgDir = yield* orgPath(dummyRepoId);
+    const orgIsDirectory = yield* e.pipe(
+      orgDir.absolute,
+      isDirectory,
+      e.Effect.catchTag("BadArgument", "SystemError", ({name, message}) => new modules.BadPreconditionsError({
+        cause: `Failed to determine if potential org at ${orgDir} is a directory due to unexpected ${name}`,
+        fix: `Report bug to ${TOOL_NAME} maintainers; internal error: ${message}`
+      }))
+    );
+    if (!orgIsDirectory) {
+      return yield* orgDoesNotExistError;
+    }
+    const repos = yield* e.pipe(
+      fileSystem.readDirectory(orgDir.absolute),
+      e.Effect.catchTag("BadArgument", "SystemError", ({name, message}) => new modules.BadPreconditionsError({
+        cause: `Failed to read org at ${orgDir} due to unexpected ${name}`,
+        fix: `Report bug to ${TOOL_NAME} maintainers; internal error: ${message}`
+      }))
+    );
+    const repoIds: RepoIdentifier[] = 
+      repos.sort()
+      .map(repo => new RepoIdentifier(org, repo));
+    return repoIds;
   });
 
-  const currentBranchName = e.Effect.fn(function*(repoPath: string) {
-    const branchResult = yield* runGit(["rev-parse", "--abbrev-ref", "HEAD"], repoPath, "pipe");
-    if (e.Option.isNone(branchResult) || branchResult.value.exitCode !== 0) return e.Option.none<string>();
+  const getSubmodules = e.Effect.fn(function*() {
+    yield* toolState.assertInWorkspace;
+    const {stdout, stderr} = yield* hostShell.run("git", "submodule status", IN.WorkspaceRoot()).captureOutput;
+    const submodules = yield* e.Effect.all(stdout
+      .split("\n")
+      .map(line => line.split(" "))
+      .map(([commitSha, relPath]) => relPath ?? "")
+      .filter(relPath => relPath.length)
+      .map(RepoIdentifier.fromRelativePath));
+    return submodules;
+  }, e.flow(
+    e.Effect.catchTag("NotInWorkspaceError", modules.BadPreconditionsError.fromNotInWorkspaceError)
+  ));
 
-    const branch = branchResult.value.stdout.trim();
-    return branch ? e.Option.some(branch) : e.Option.none<string>();
+  const submoduleExists = e.Effect.fn(function*(repoId: RepoIdentifier) {
+    yield* toolState.assertInWorkspace;
+    // First verify org as dir
+    const orgLocation = yield* orgPath(repoId);
+    const orgIsDir = yield* e.pipe(
+      orgLocation.absolute,
+      isDirectory,
+      e.Effect.catchTag("BadArgument", "SystemError", ({name, message}) => new modules.BadPreconditionsError({
+        cause: `Failed to determine if potential org at ${orgLocation} is a directory due to unexpected ${name}`,
+        fix: `Report bug to ${TOOL_NAME} maintainers; internal error: ${message}`
+      }))
+    );
+    if (!orgIsDir) {
+      return false;
+    }
+    // Next verify repo as dir
+    const repoLocation = yield* repoPath(repoId);
+    const repoIsDir = yield* e.pipe(
+      repoLocation.absolute,
+      isDirectory,
+      e.Effect.catchTag("BadArgument", "SystemError", ({name, message}) => new modules.BadPreconditionsError({
+        cause: `Failed to determine if potential repo at ${repoLocation} is a directory due to unexpected ${name}`,
+        fix: `Report bug to ${TOOL_NAME} maintainers; internal error: ${message}`
+      }))
+    );
+    if (!repoIsDir) {
+      return false;
+    }
+    // Finally verify that it is a submodule
+    const submodules = yield* getSubmodules();
+    return submodules.filter(RepoIdentifier.prototype.equals).length > 0;
+  }, e.flow(
+    e.Effect.catchTag("NotInWorkspaceError", modules.BadPreconditionsError.fromNotInWorkspaceError)
+  ));
+
+  const configureGitRepo = e.Effect.fn(function*({org, repo, relative}: {org: string; repo: string; relative: string;}, user: CurrentUser) {
+    // TODO: ensure this path is an actual git repo.
+    const gitConfig = e.Effect.fn(function*(config: Record<string, string>) {
+      for (const [k, v] of Object.entries(config)) {
+        yield* hostShell.run("git", `config --local ${k} ${v}`, IN.RelativeDirectory({relative})).inheritIO;
+      }
+    });
+    yield* gitConfig({
+      "user.name": user.username,
+      "user.email": user.email,
+      "credential.helper": credentialHelperExecutablePath(),
+      "credential.useHttpPath": "true",
+      "gpg.format": "ssh",
+      "commit.gpgSign": "true",
+      "core.sshCommand": sshCommand(user.sshKey.location),
+      "user.signingKey": user.sshKey.location
+    });
+    yield* hostShell.run("git", `remote set-url origin ${httpsRepoUrl({org, repo})}`, IN.RelativeDirectory({relative})).inheritIO;
+    yield* hostShell.run("git", `remote set-url --push origin ${sshRepoUrl({org, repo})}`, IN.RelativeDirectory({relative})).inheritIO;
+  });
+
+  const configureSubmodule = e.Effect.fn(function*(repo: RepoIdentifier, user: CurrentUser) {
+    const exists = yield* submoduleExists(repo);
+    if (!exists) {
+      return yield* new modules.BadArgumentError({
+        argument: "repo",
+        reason: `Repo ${repo.packageName()} is not a submodule`
+      });
+    }
+    const {relative} = yield* repoPath(repo);
+    yield* configureGitRepo({relative, org: repo.org, repo: repo.repo}, user);
   });
 
   return {
-    requiredCLICommands: ["git"],
-    localOrgs: e.Effect.fn(function*() {
-      if (e.Option.isNone(toolState.workspaceRoot)) return [] as string[];
-
-      const entries = yield* listDirectoryNames(toolState.workspaceRoot.value);
-      const orgs: string[] = [];
-
-      for (const entry of entries) {
-        if (!entry.startsWith("@")) continue;
-
-        const entryPath = path.join(toolState.workspaceRoot.value, entry);
-        const directory = yield* isDirectory(entryPath);
-        if (directory) orgs.push(entry.slice(1));
-      }
-
-      return orgs;
-    })(),
-    localRepos: e.Effect.fn(function*(org: string) {
-      if (e.Option.isNone(toolState.workspaceRoot)) return [] as string[];
-
-      const orgDir = path.join(toolState.workspaceRoot.value, `@${org}`);
-      const orgExists = yield* fileSystem.exists(orgDir).pipe(
-        e.Effect.catchAll(() => e.Effect.succeed(false)),
-      );
-      if (!orgExists) return [] as string[];
-
-      const entries = yield* listDirectoryNames(orgDir);
-      const repos: string[] = [];
-
-      for (const entry of entries) {
-        const entryPath = path.join(orgDir, entry);
-        const directory = yield* isDirectory(entryPath);
-        if (directory) repos.push(entry);
-      }
-
-      return repos;
+    localOrgs: listLocalOrgs,
+    localRepos: listLocalRepos,
+    submoduleExists,
+    cloneAsSubmodule: e.Effect.fn(function*(repo: RepoIdentifier, user: CurrentUser) {
+      const { relative } = yield* repoPath(repo);
+      yield* hostShell.run("git", [
+        `-c credential.helper=${credentialHelperExecutablePath()}`,
+        `-c credential.useHttpPath=true`,
+        `submodule add ${httpsRepoUrl(repo)} ${relative}`,
+      ].join(" "), IN.WorkspaceRoot()).inheritIO;
+      yield* configureSubmodule(repo, user);
     }),
-    submoduleExists: e.Effect.fn(function*(org: string, repo: string) {
-      const repoPath = yield* resolveRepoPath(org, repo);
-      if (e.Option.isNone(repoPath)) return false;
-      return yield* gitExistsAt(repoPath.value);
-    }),
-    addSubmodule: e.Effect.fn(function*(org: string, repo: string) {
-      if (e.Option.isNone(toolState.workspaceRoot)) return false;
-
-      const submodulePath = `@${org}/${repo}`;
-      const addResult = yield* runGit(
-        [
-          "-c",
-          `credential.helper=${credentialHelperExecutablePath()}`,
-          "-c",
-          "credential.useHttpPath=true",
-          "submodule",
-          "add",
-          "--",
-          httpsRepoUrl(org, repo),
-          submodulePath,
-        ],
-        toolState.workspaceRoot.value,
-        "inherit",
-      );
-      if (e.Option.isNone(addResult) || addResult.value.exitCode !== 0) return false;
-      return true;
-    }),
-    removeSubmodule: e.Effect.fn(function*(org: string, repo: string) {
-      if (e.Option.isNone(toolState.workspaceRoot)) return false;
-
-      const submodulePath = `@${org}/${repo}`;
-      const deinitResult = yield* runGit(["submodule", "deinit", "-f", "--", submodulePath], toolState.workspaceRoot.value, "ignore");
-      if (e.Option.isNone(deinitResult)) return false;
-
-      const rmResult = yield* runGit(["rm", "-f", "--", submodulePath], toolState.workspaceRoot.value, "inherit");
-      if (e.Option.isNone(rmResult) || rmResult.value.exitCode !== 0) return false;
-
-      const gitModulesPath = path.join(toolState.workspaceRoot.value, ".git", "modules", `@${org}`, repo);
-      yield* fileSystem.remove(gitModulesPath, { recursive: true, force: true }).pipe(
-        e.Effect.catchAll(() => e.Effect.void),
-      );
-
-      return true;
-    }),
-    updateSubmoduleIfAllowed: e.Effect.fn(function*(org: string, repo: string, defaultBranch: e.Option.Option<string>) {
-      const repoPath = yield* resolveRepoPath(org, repo);
-      if (e.Option.isNone(repoPath)) return { _tag: "Missing" } as const satisfies SubmoduleUpdateResult;
-
-      const dirty = yield* isDirty(repoPath.value);
-      if (dirty) return { _tag: "SkippedDirty" } as const satisfies SubmoduleUpdateResult;
-
-      if (e.Option.isNone(defaultBranch)) {
-        return { _tag: "SkippedUnknownDefaultBranch" } as const satisfies SubmoduleUpdateResult;
+    configureWorkspace: e.Effect.fn(function*(user) { 
+      const { workspaceRoot } = yield* toolState.assertInWorkspace;
+      const args = "config --get remote.origin.url";
+      const { stderr, stdout } = yield* hostShell.run("git", args, IN.WorkspaceRoot()).captureOutput;
+      const [firstLine] = stdout.split("\n");
+      if (!firstLine) {
+        return yield* new modules.BadPreconditionsError({
+          cause: `Invalid root workspace at ${workspaceRoot}. \`git ${args}\` returned no results`,
+          fix: `Configure the "origin" remote in this git repo`
+        });
       }
-
-      const currentBranch = yield* currentBranchName(repoPath.value);
-      if (e.Option.isNone(currentBranch) || currentBranch.value !== defaultBranch.value) {
-        return {
-          _tag: "SkippedOffDefaultBranch",
-          currentBranch: e.Option.getOrElse(currentBranch, () => "(detached)"),
-          defaultBranch: defaultBranch.value,
-        } as const satisfies SubmoduleUpdateResult;
+      // It could be either an ssh or http remote.
+      const {owner, name} = parseGitRemote(firstLine);
+      if (!owner) {
+        return yield* new modules.BadPreconditionsError({
+          cause: `Invalid org in origin remote for root workspace ${workspaceRoot}. Remote was ${firstLine}`,
+          fix: `Reconfigure the "origin" remote in this repo to something valid`
+        });
       }
-
-      const pullResult = yield* runGit(
-        ["pull", "--ff-only", "origin", defaultBranch.value],
-        repoPath.value,
-        "inherit",
-      );
-      if (e.Option.isNone(pullResult) || pullResult.value.exitCode !== 0) {
-        return { _tag: "SkippedPullFailed" } as const satisfies SubmoduleUpdateResult;
+      if (!name) {
+        return yield* new modules.BadPreconditionsError({
+          cause: `Invalid repo name in origin remote for root workspace ${workspaceRoot}. Remote was ${firstLine}`,
+          fix: `Reconfigure the "origin" remote in this repo to something valid`
+        });
       }
-
-      return { _tag: "Updated" } as const satisfies SubmoduleUpdateResult;
+      yield* configureGitRepo({org: owner, repo: name, relative: ""}, user);
+    }, e.flow(
+      e.Effect.catchTag("NotInWorkspaceError", modules.BadPreconditionsError.fromNotInWorkspaceError)
+    )),
+    configureSubmodule,
+    removeSubmodule: e.Effect.fn(function*(repo: RepoIdentifier) {
+      const {absolute, relative} = yield* repoPath(repo);
+      yield* hostShell.run("git", `submodule deinit -f ${relative}`, IN.WorkspaceRoot()).inheritIO;
+      yield* hostShell.run("git", `rm -f ${relative}`, IN.WorkspaceRoot()).inheritIO;
+      yield* hostShell.run("rm", `-rf .git/modules/${relative}`, IN.WorkspaceRoot(), {usingBunShell: true}).inheritIO;
+      // TODO: it might be necessary to rm -rf the absolute folder.
+      // TODO: I noticed that .git/modules can become out of sync with where the submodules actually are.
+      //       There should ideally be a cleanup task run on configure, remove, and clone.
+      // TODO: should we be committing the jive repo after the unload is done? Seems like maybe.
     }),
-    configureRepoRemoteAndUser: e.Effect.fn(function*(org: string, repo: string, identity: GitIdentity) {
-      const repoPath = yield* resolveRepoPath(org, repo);
-      if (e.Option.isNone(repoPath)) return false;
-
-      const setFetchRemote = yield* runGit(["remote", "set-url", "origin", httpsRepoUrl(org, repo)], repoPath.value, "ignore");
-      const setPushRemote = yield* runGit(["remote", "set-url", "--push", "origin", sshRepoUrl(org, repo)], repoPath.value, "ignore");
-      const setName = yield* runGit(["config", "--local", "user.name", identity.userName], repoPath.value, "ignore");
-      const setEmail = yield* runGit(["config", "--local", "user.email", identity.userEmail], repoPath.value, "ignore");
-      const setCredentialHelper = yield* runGit(
-        ["config", "--local", "credential.helper", credentialHelperExecutablePath()],
-        repoPath.value,
-        "ignore",
-      );
-      const setUseHttpPath = yield* runGit(
-        ["config", "--local", "credential.useHttpPath", "true"],
-        repoPath.value,
-        "ignore",
-      );
-      if (e.Option.isNone(setFetchRemote) || setFetchRemote.value.exitCode !== 0) return false;
-      if (e.Option.isNone(setPushRemote) || setPushRemote.value.exitCode !== 0) return false;
-      if (e.Option.isNone(setName) || setName.value.exitCode !== 0) return false;
-      if (e.Option.isNone(setEmail) || setEmail.value.exitCode !== 0) return false;
-      if (e.Option.isNone(setCredentialHelper) || setCredentialHelper.value.exitCode !== 0) return false;
-      if (e.Option.isNone(setUseHttpPath) || setUseHttpPath.value.exitCode !== 0) return false;
-
-      if (!identity.sshPrivateKeyPath) {
-        const unsetSshCommand = yield* runGit(["config", "--local", "--unset-all", "core.sshCommand"], repoPath.value, "ignore");
-        void unsetSshCommand;
-        return true;
-      }
-
-      const setSshCommand = yield* runGit(
-        ["config", "--local", "core.sshCommand", sshCommand(identity.sshPrivateKeyPath)],
-        repoPath.value,
-        "ignore",
-      );
-      const setGpgFormat = yield* runGit(["config", "--local", "gpg.format", "ssh"], repoPath.value, "ignore");
-      const setSigningKey = yield* runGit(["config", "--local", "user.signingkey", identity.sshPrivateKeyPath], repoPath.value, "ignore");
-      const setSignCommits = yield* runGit(["config", "--local", "commit.gpgsign", "true"], repoPath.value, "ignore");
-
-      return e.Option.isSome(setSshCommand)
-        && setSshCommand.value.exitCode === 0
-        && e.Option.isSome(setGpgFormat)
-        && setGpgFormat.value.exitCode === 0
-        && e.Option.isSome(setSigningKey)
-        && setSigningKey.value.exitCode === 0
-        && e.Option.isSome(setSignCommits)
-        && setSignCommits.value.exitCode === 0;
-    }),
-    runInRepo: e.Effect.fn(function*(org: string, repo: string, command: readonly string[]) {
-      const repoPath = yield* resolveRepoPath(org, repo);
-      if (e.Option.isNone(repoPath)) return false;
-      if (command.length === 0) return false;
-
-      const [executable, ...args] = command;
-      if (!executable) return false;
-
-      const result = yield* hostShell.run({
-        command: executable,
-        args,
-        cwd: e.Option.some(repoPath.value),
-        env: {},
-        stdin: "inherit",
-        stdout: "inherit",
-        stderr: "inherit",
-        shell: e.Option.none(),
-      }).pipe(
-        e.Effect.map((value) => e.Option.some(value)),
-        e.Effect.catchAll(() => e.Effect.succeed(e.Option.none())),
-      );
-
-      return e.Option.isSome(result) && result.value.exitCode === 0;
+    getSubmodules: e.Effect.gen(function*() {
+      return yield* getSubmodules();
     }),
   };
 }));

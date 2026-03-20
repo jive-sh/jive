@@ -1,110 +1,126 @@
 import * as e from "effect";
-import * as modules from "../index";
+import * as modules from "@/modules";
+import type { VerifiedCommand } from "@/modules/host-shell/interface";
 import { IYubiKey, type ConnectedYubiKey } from "./interface";
 
-const YKMAN_COMMAND = "ykman" as const;
-const PIN_PREFIX = "PIN:" as const;
+const YKMAN_COMMAND = "ykman";
+const PIN_PREFIX = "PIN:";
 
 export const YubiKeyImpl = e.Layer.effect(IYubiKey, e.Effect.gen(function*() {
   const hostShell = yield* modules.IHostShell;
+  const hostEnv = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
 
-  const run = e.Effect.fn(function*(args: readonly string[]) {
-    const verifiedYkman = yield* hostShell.getCommand(YKMAN_COMMAND).pipe(
-      e.Effect.map(e.Option.some),
-      e.Effect.catchTag("CommandNotFoundError", () => e.Effect.succeed(e.Option.none())),
-    );
-    if (e.Option.isNone(verifiedYkman)) return e.Option.none<{ exitCode: number; stderr: string; stdout: string }>();
-
-    return yield* hostShell.run({
-      args,
-      env: {},
-    })(verifiedYkman.value).pipe(
-      e.Effect.map((result) => e.Option.some(result)),
-      e.Effect.catchAll(() => e.Effect.succeed(e.Option.none())),
+  const getYkman = e.Effect.gen(function*() {
+    return yield* e.pipe(
+      hostShell.getCommand(YKMAN_COMMAND),
+      e.Effect.map(command => e.Option.some(command)),
+      e.Effect.catchTag("CommandNotFoundError", error =>
+        e.Effect.gen(function*() {
+          yield* e.Effect.logWarning(error.installInstructions);
+          return e.Option.none<VerifiedCommand>();
+        }),
+      ),
     );
   });
 
+  const runYkman = e.Effect.fn(function*(args: readonly string[]) {
+    const maybeYkman = yield* getYkman;
+    if (e.Option.isNone(maybeYkman)) {
+      return e.Option.none<{ exitCode: number; stderr: string; stdout: string }>();
+    }
+    return yield* e.pipe(
+      hostShell.run({
+        args,
+        env: hostEnv,
+      })(maybeYkman.value),
+      e.Effect.map(result => e.Option.some(result)),
+      e.Effect.catchTag("BadArgument", "SystemError", () =>
+        e.Effect.succeed(e.Option.none<{ exitCode: number; stderr: string; stdout: string }>()),
+      ),
+    );
+  });
+
+  const runYkmanInteractive = e.Effect.fn(function*(args: readonly string[]) {
+    const maybeYkman = yield* getYkman;
+    if (e.Option.isNone(maybeYkman)) {
+      return false;
+    }
+    const { exitCode } = yield* e.pipe(
+      hostShell.runInheritIO({
+        args,
+        env: hostEnv,
+      })(maybeYkman.value),
+      e.Effect.catchTag("BadArgument", "SystemError", error => e.Effect.die(error)),
+    );
+    return exitCode === 0;
+  });
+
   return {
-    listConnectedDevices: e.Effect.fn(function*() {
-      const listed = yield* run(["list"]);
-      const serials = yield* run(["list", "--serials"]);
+    listConnectedDevices: e.Effect.gen(function*() {
+      const listedDevices = yield* runYkman(["list"]);
+      const listedSerials = yield* runYkman(["list", "--serials"]);
+      if (e.Option.isNone(listedDevices) || listedDevices.value.exitCode !== 0) {
+        return [] as ConnectedYubiKey[];
+      }
+      if (e.Option.isNone(listedSerials) || listedSerials.value.exitCode !== 0) {
+        return [] as ConnectedYubiKey[];
+      }
 
-      if (e.Option.isNone(listed) || listed.value.exitCode !== 0) return [] as ConnectedYubiKey[];
-      if (e.Option.isNone(serials) || serials.value.exitCode !== 0) return [] as ConnectedYubiKey[];
-
-      const labels = listed.value.stdout
+      const displayLines = listedDevices.value.stdout
         .split("\n")
-        .map((line: string) => line.trim())
+        .map(line => line.trim())
         .filter(Boolean);
-      const values = serials.value.stdout
+      const serialLines = listedSerials.value.stdout
         .split("\n")
-        .map((line: string) => line.trim())
+        .map(line => line.trim())
         .filter(Boolean);
 
-      return values.map((serial: string, index: number) => ({
+      return serialLines.map((serial, index) => ({
         serial,
-        label: labels[index] ?? `YubiKey ${serial}`,
+        name: displayLines[index] ? e.Option.some(displayLines[index]!) : e.Option.none<string>(),
       }));
-    })(),
+    }),
     ensurePinConfigured: e.Effect.fn(function*(serial: string) {
-      yield* e.Effect.log("Checking the selected YubiKey FIDO PIN setup...");
-
-      const info = yield* run(["--device", serial, "fido", "info"]);
-
+      const info = yield* runYkman(["--device", serial, "fido", "info"]);
       if (e.Option.isNone(info) || info.value.exitCode !== 0) {
-        const errorOutput = e.Option.isSome(info) ? info.value.stderr.trim() : "";
-        if (errorOutput) {
-          yield* e.Effect.logWarning(`Could not inspect the selected YubiKey FIDO status: ${errorOutput}`);
-        } else {
-          yield* e.Effect.logWarning("Could not inspect the selected YubiKey FIDO status.");
-        }
+        const stderr = e.Option.isSome(info) ? info.value.stderr.trim() : "";
+        yield* e.Effect.logWarning(
+          stderr || `Could not inspect YubiKey ${serial} FIDO PIN status.`,
+        );
         return false;
       }
 
       const pinStatus = readPinStatus(info.value.stdout);
       if (pinStatus === "Not set") {
-        yield* e.Effect.log("This YubiKey does not have a FIDO PIN yet. Set one now.");
-
-        const verifiedYkman = yield* hostShell.getCommand(YKMAN_COMMAND).pipe(
-          e.Effect.map(e.Option.some),
-          e.Effect.catchTag("CommandNotFoundError", () => e.Effect.succeed(e.Option.none())),
-        );
-        if (e.Option.isNone(verifiedYkman)) return false;
-
-        const changed = yield* hostShell.runInheritIO({
-          args: ["--device", serial, "fido", "access", "change-pin"],
-          env: {},
-        })(verifiedYkman.value).pipe(
-          e.Effect.map((result) => e.Option.some(result)),
-          e.Effect.catchAll(() => e.Effect.succeed(e.Option.none())),
-        );
-
-        return e.Option.isSome(changed) && changed.value.exitCode === 0;
+        yield* e.Effect.log(`YubiKey ${serial} does not have a FIDO PIN yet. Set one now.`);
+        return yield* runYkmanInteractive(["--device", serial, "fido", "access", "change-pin"]);
       }
-
       if (pinStatus === "Blocked") {
-        yield* e.Effect.logError("The selected YubiKey FIDO PIN is blocked.");
+        yield* e.Effect.logError(`The FIDO PIN for YubiKey ${serial} is blocked.`);
+        return false;
+      }
+      if (pinStatus === "Disabled" || pinStatus === "Not supported" || !pinStatus) {
+        yield* e.Effect.logWarning(`YubiKey ${serial} cannot be used for resident SSH keys right now (PIN: ${pinStatus || "unknown"}).`);
         return false;
       }
 
-      if (pinStatus && pinStatus !== "Disabled" && pinStatus !== "Not supported") return true;
-
-      if (pinStatus) {
-        yield* e.Effect.logWarning(`The selected YubiKey cannot be used for resident SSH keys right now: PIN is ${pinStatus}.`);
-      } else {
-        yield* e.Effect.logWarning("Could not determine whether the selected YubiKey has a FIDO PIN configured.");
-      }
-      return false;
+      return true;
+    }),
+    setDeviceName: e.Effect.fn(function*(_serial: string, _name: string) {
+      return yield* e.Effect.dieMessage("yubikey.setDeviceName is not implemented");
     }),
   };
 }));
 
 function readPinStatus(output: string): string {
-  const line = output
+  const pinLine = output
     .split("\n")
-    .map((entry) => entry.trim())
-    .find((entry) => entry.startsWith(PIN_PREFIX));
-
-  if (!line) return "";
-  return line.slice(PIN_PREFIX.length).trim();
+    .map(line => line.trim())
+    .find(line => line.startsWith(PIN_PREFIX));
+  if (!pinLine) {
+    return "";
+  }
+  return pinLine.slice(PIN_PREFIX.length).trim();
 }

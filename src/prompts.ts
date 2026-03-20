@@ -2,6 +2,7 @@ import * as e from "effect";
 import { selectFromList } from "@ozyman42/interactive-cli-select";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
+import { magenta } from "./logging";
 
 // TODO: Move this raw-mode cleanup into @ozyman42/interactive-cli-select once that repo is back in scope.
 const restoreTerminalInputMode = (): e.Effect.Effect<void> =>
@@ -12,50 +13,49 @@ const restoreTerminalInputMode = (): e.Effect.Effect<void> =>
     input.resume();
   });
 
-export const selectOne = <T>(
+export const selectOne = (
   prompt: string,
-  options: T[],
-  getKey: (option: T) => string,
-  renderOption: (option: T, index: number) => string,
-): e.Effect.Effect<e.Option.Option<T>> =>
+  options: Record<string, string>,
+  onlyOneItemPrompt?: (item: string) => string
+): e.Effect.Effect<string> =>
   e.Effect.gen(function*() {
-    if (options.length === 0) return e.Option.none();
-
+    const entries = Object.entries(options);
+    const firstEntry = entries[0];
+    if (firstEntry === undefined) {
+      return yield* e.Effect.die(`GOT NON EMPTY OPTIONS ARRAY FOR PROMPT "${prompt}"`);
+    }
+    if (entries.length === 1) {
+      if (onlyOneItemPrompt) {
+        yield* e.Effect.log(onlyOneItemPrompt);
+      }
+      return firstEntry[0];
+    }
     yield* e.Effect.log(prompt);
-    const optionsWithIndex = options.map((option, index) => ({ option, index }));
-
-    const selected = yield* selectFromList({
-      options: optionsWithIndex,
-      getKey: ({ option }) => getKey(option),
-      renderOption: ({ option, index }) => renderOption(option, index),
+    const [k, v] = yield* selectFromList({
+      options: entries,
+      getKey: ([k, v]) => k,
+      renderOption: ([k, v]) => v,
     }).pipe(
-      e.Effect.map((selection) => e.Option.some(selection.option)),
-      e.Effect.catchAll(() =>
-        e.Effect.gen(function*() {
-          yield* e.Effect.logError("Selection cancelled.");
-          return e.Option.none<T>();
-        }),
-      ),
+      e.Effect.map((selection) => selection),
+      e.Effect.catchTag("NoEntriesError", err => e.Effect.die("IMPOSSIBLE NO ENTRIES ERROR")),
+      e.Effect.catchTag("DuplicateEntryError", err => e.Effect.die("IMPOSSIBLE DUPLICATE ENTRY ERROR"))
     );
-
     yield* restoreTerminalInputMode();
-    return selected;
+    // TODO: show prompt before choice but clear old selection using something like ink
+    yield* e.Effect.log(`${magenta(v)}`);
+    return k;
   });
 
 export const promptYesNo = (question: string): e.Effect.Effect<boolean> => {
-  const options = [
-    { id: "yes", label: "Yes" },
-    { id: "no", label: "No" },
-  ];
-
   return e.pipe(
     selectOne(
       question,
-      options,
-      (option) => option.id,
-      (option) => option.label,
+      {
+        yes: "Yes",
+        no: "No"
+      }
     ),
-    e.Effect.map((selected) => e.Option.isSome(selected) && selected.value.id === "yes"),
+    e.Effect.map((selected) => selected === "yes"),
   );
 };
 

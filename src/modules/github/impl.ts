@@ -1,45 +1,50 @@
 import * as e from "effect";
-import * as modules from "../index";
-import type { OAuthBrowserHost } from "../auth/oauth";
+import * as modules from "@/modules";
+import type { OAuthBrowserHost } from "./oauth";
 import {
-  beginGitHubReadOnlyLogin,
-  beginGitHubWriteLogin,
-  checkWorkspaceRepoAccess,
-  ensureGitHubAuthKey,
-  ensureGitHubSigningKey,
-  getVerifiedGitHubEmails,
-  isGitHubOAuthConfigured,
-  isReadScopeSatisfied,
-  isWriteCapableScope,
-  listGitHubJiveKeys,
+  canReadFromRemote,
+  getVerifiedEmails,
+  oauthLogin,
   remoteRepos,
-  renewWriteTokenFromRefresh,
-  repoDefaultBranch,
+  resolveAccessToken,
+  setSshKey,
+  sshKeyExists,
 } from "./service";
 
 export const GitHubImpl = e.Layer.effect(modules.IGitHub, e.Effect.gen(function*() {
   const hostShell = yield* modules.IHostShell;
 
-  const githubHostShell: OAuthBrowserHost = {
+  const browserHost: OAuthBrowserHost = {
     openUrl: hostShell.openUrl,
   };
 
   return {
-    requiredCLICommands: [],
-    isOAuthConfigured: isGitHubOAuthConfigured,
-    beginReadOnlyLogin: (options) => beginGitHubReadOnlyLogin(githubHostShell, options),
-    beginWriteLogin: (options) => beginGitHubWriteLogin(githubHostShell, options),
-    renewWriteTokenFromRefresh,
-    isWriteCapableScope,
-    isReadScopeSatisfied,
-    getVerifiedEmails: getVerifiedGitHubEmails,
-    listJiveKeys: listGitHubJiveKeys,
-    ensureAuthKey: (githubToken, keyName, publicKey, knownJiveInventory = e.Option.none()) =>
-      ensureGitHubAuthKey(githubToken, keyName, publicKey, knownJiveInventory),
-    ensureSigningKey: (githubToken, keyName, publicKey, knownJiveInventory = e.Option.none()) =>
-      ensureGitHubSigningKey(githubToken, keyName, publicKey, knownJiveInventory),
-    remoteRepos,
-    repoDefaultBranch,
-    checkWorkspaceRepoAccess,
+    resolveAccessToken: e.Effect.fn(function*(tokenState) {
+      return yield* resolveAccessToken(tokenState);
+    }),
+    oauthLogin: e.Effect.fn(function*(username?: string) {
+      return yield* oauthLogin(browserHost, username);
+    }),
+    getVerifiedEmails: e.Effect.fn(function*(accessToken) {
+      return yield* getVerifiedEmails(accessToken);
+    }),
+    sshKeyExists: e.Effect.fn(function*(accessToken, key) {
+      return yield* sshKeyExists(accessToken, key);
+    }),
+    setSshKey: e.Effect.fn(function*(writeToken, key) {
+      yield* setSshKey(writeToken, key);
+    }),
+    setupOrgs: e.Effect.fn(function*() {
+      return yield* e.Effect.dieMessage("github.setupOrgs is not implemented");
+    }),
+    remoteRepos: e.Effect.fn(function*(org, accessToken) {
+      return yield* remoteRepos(org, accessToken);
+    }),
+    canReadFromRemote: e.Effect.fn(function*(repo, accessToken) {
+      return yield* canReadFromRemote(repo, accessToken);
+    }),
+    setupRepo: e.Effect.fn(function*() {
+      return yield* e.Effect.dieMessage("github.setupRepo is not implemented");
+    }),
   };
 }));

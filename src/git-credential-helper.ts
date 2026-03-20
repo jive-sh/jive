@@ -2,9 +2,8 @@ import * as process from "node:process";
 import { CLI } from "@/temp-libs/cli";
 import * as e from "effect";
 import { GIT_CREDENTIAL_HELPER_NAME, TOOL_NAME } from "./constants";
-import { IToolState, ToolStateImpl } from "@/modules";
+import { GitHubImpl, HostShellImpl, IGitHub, IToolState, ToolStateImpl } from "@/modules";
 import * as epn from "@effect/platform-node";
-import { loadCredentials } from "./modules/auth/credentials";
 
 const readStdin = e.Effect.async<Record<string, string>>((resume) => {
   if (process.stdin.isTTY) return resume(e.Effect.succeed({}));
@@ -36,6 +35,7 @@ const readStdin = e.Effect.async<Record<string, string>>((resume) => {
 
 const program = e.Effect.gen(function*() {
   const toolState = yield* IToolState;
+  const github = yield* IGitHub;
   yield* CLI.new(GIT_CREDENTIAL_HELPER_NAME, CLI.DiscreteOptions({
     get: CLI.Handle(e.Effect.fn(function*() {
       const input = yield* readStdin;
@@ -45,36 +45,28 @@ const program = e.Effect.gen(function*() {
         return yield* e.Effect.dieMessage(`unsupported credential request: protocol=${protocol || "(missing)"} host=${host || "(missing)"}`);
       }
 
-      const repoOwner = parseGitHubOwner(typeof input.path === "string" ? input.path : "");
-      const isInJiveWorkspace = yield* toolState.inWorkspace;
-      if (!isInJiveWorkspace) {
+      if (!toolState.inWorkspace) {
         return yield* e.Effect.dieMessage(`not currently in a ${TOOL_NAME} workspace.`);
       }
-      const user = yield* toolState.readCurrentUserState;
-      if (e.Option.isNone(user)) {
+      const maybeCurrentUserState = yield* toolState.readCurrentUserState;
+      if (e.Option.isNone(maybeCurrentUserState)) {
         return yield* e.Effect.dieMessage(`no user currently signed-in, run \`${TOOL_NAME} login\`.`);
       }
-      const credentials = yield* loadCredentials(toolState);
-      const token = e.Option.map(credentials, (value) => ({
-        token: value.readOnlyToken,
-        gitUserName: value.gitUserName,
-        githubUsername: value.githubUsername,
-      }));
-      const orgScopedToken = repoOwner
-        ? yield* toolState.readOrgScopedCloneTokenState(user.value.email, repoOwner)
-        : e.Option.none();
-      const selectedToken = e.Option.isSome(orgScopedToken)
-        ? orgScopedToken.value
-        : e.Option.getOrElse(token, () => null);
-      if (!selectedToken) {
-        return yield* e.Effect.dieMessage(`signed in as ${user.value.email}, but no token currently exists, re-login.`);
-      }
+      const currentUserState = maybeCurrentUserState.value;
+      const { accessToken } = yield* e.pipe(
+        github.resolveAccessToken(currentUserState.accessTokenState),
+        e.Effect.catchTag("UnableToRefreshAccessTokenError", error =>
+          e.Effect.dieMessage(
+            error.expired ?
+              `signed in as ${currentUserState.email}, but the persisted GitHub session expired; run \`${TOOL_NAME} login\`.` :
+              `signed in as ${currentUserState.email}, but the persisted GitHub session could not be refreshed; run \`${TOOL_NAME} login\`.`,
+          ),
+        ),
+      );
 
-      const username = e.Option.isSome(token)
-        ? token.value.githubUsername || token.value.gitUserName || "oauth-token"
-        : "oauth-token";
+      const username = currentUserState.username || "oauth-token";
       process.stdout.write(`username=${username}\n`);
-      process.stdout.write(`password=${selectedToken.token}\n`);
+      process.stdout.write(`password=${accessToken.accessToken}\n`);
     })),
     store: CLI.Handle(e.Effect.fn(function*() {
       // We explicitly don't want to handle store
@@ -88,12 +80,16 @@ const program = e.Effect.gen(function*() {
   }));
 });
 
-e.pipe(
+const main = e.pipe(
   program,
+  e.Effect.provide(GitHubImpl),
+  e.Effect.provide(HostShellImpl),
   e.Effect.provide(ToolStateImpl),
+  e.Effect.provide(epn.NodeCommandExecutor.layer),
   e.Effect.provide(epn.NodeFileSystem.layer),
-  e.Effect.runPromiseExit,
-).then(exit => {
+);
+
+void e.Effect.runPromiseExit(main).then((exit) => {
   function exitLog(obj: any) {
     process.stderr.write(`${TOOL_NAME} credential helper failure: ${String(obj)}\n`);
     process.exit(1);
@@ -109,10 +105,3 @@ e.pipe(
     return exitLog(exit.cause);
   }
 });
-
-function parseGitHubOwner(pathname: string | undefined): string {
-  if (!pathname) return "";
-  const trimmed = pathname.trim().replace(/^\/+/, "");
-  const [owner] = trimmed.split("/", 1);
-  return owner ?? "";
-}

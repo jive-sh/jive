@@ -3,19 +3,20 @@ import { ModulesImpl } from "@/modules/runtime";
 import { program } from "@/program";
 import { CLI } from "./temp-libs/cli";
 
-e.pipe(
+const runnable: e.Effect.Effect<void, never, never> = e.pipe(
   program,
   e.Effect.provide(ModulesImpl),
-  e.Effect.catchTag("CommandNotFoundError", err => {
-    if (CLI.isAutocompleteRequest()) {
-      return e.Effect.succeed(undefined);
-    } else {
-      return e.Effect.fail(err);
+  e.Effect.catchTag("")
+);
+
+e.Effect
+  .runPromiseExit(runnable)
+  .then((exit) => {
+    if (e.Exit.isSuccess(exit)) {
+      return;
     }
-  }),
-  e.Effect.runPromiseExit
-).then((exit) => {
-  if (e.Exit.isFailure(exit)) {
-    process.exit(1);
-  }
-});
+    if (e.Exit.isFailure(exit)) {
+      console.log(exit);
+      process.exit(1);
+    }
+  });

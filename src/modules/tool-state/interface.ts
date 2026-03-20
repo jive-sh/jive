@@ -1,63 +1,81 @@
 import * as e from "effect";
-import type { SshKeySource } from "@/modules/ssh/types";
+import type { GithubAccessTokenType } from "@/modules/github/interface";
+import type { SshKey } from "@/modules/ssh/interface";
+import { BadArgumentError, BadPreconditionsError } from "@/modules";
+import { TOOL_NAME } from "@/constants";
+import { RepoIdentifier } from "./repo-identifier";
+export { RepoIdentifier } from "./repo-identifier";
 
 export interface CurrentUserState {
+  readonly username: string;
   readonly email: string;
+  readonly accessTokenState: TokenState;
+  readonly sshKey: e.Option.Option<SshKey>;
 }
 
-export interface IReadOnlyTokenState {
+export interface TokenState {
+  readonly tokenType: GithubAccessTokenType;
   readonly token: string;
   readonly scope: string;
-  readonly tokenType: string;
-  readonly gitUserName: string;
-  readonly githubAccountId: number;
-  readonly githubUsername: string;
-  readonly sshKeySource: SshKeySource;
-  readonly sshKeyFingerprint: string;
-  readonly sshKeyName: string;
-  readonly sshKeyPath: string;
-  readonly yubiKeySerial: string;
+  readonly expiration: e.Option.Option<TokenExpirationState>;
 }
 
-export interface IOrgScopedCloneTokenState {
-  readonly token: string;
-  readonly tokenType: string;
-}
-
-export class RepoIdentifier {
-  public constructor(
-    public readonly org: string,
-    public readonly repo: string
-  ) {}
-  public toString() {
-    return `@${this.org}/${this.repo}`;
-  }
+export interface TokenExpirationState {
+  readonly tokenExpiresAt: number;
+  readonly refreshToken: string;
+  readonly refreshTokenExpiresAt: number;
 }
 
 export type RepoIntegrityCompromisedReason = e.Data.TaggedEnum<{
-  RepoMissing: {},
-  SubmoduleMisconfiguration: {},
-  NotAPackage: {}
+  OrgMissing: {};
+  RepoMissing: {};
+  SubmoduleMisconfiguration: {};
+  NotAPackage: {};
 }>;
 export const RepoIntegrityCompromisedReason = e.Data.taggedEnum<RepoIntegrityCompromisedReason>();
 export class VerifyRepoIntegrityError extends e.Data.TaggedError("VerifyRepoIntegrityError")<{
-  reason: RepoIntegrityCompromisedReason
+  reason: RepoIntegrityCompromisedReason;
+  repo: RepoIdentifier;
+}> {
+  public static toToolError({reason, repo}: VerifyRepoIntegrityError): e.Effect.Effect<never, BadArgumentError | BadPreconditionsError> {
+    return e.pipe(
+      reason,
+      RepoIntegrityCompromisedReason.$match({
+        OrgMissing: () => new BadArgumentError({argument: "org", reason: `There is no org "${repo.org}" in this workspace`}),
+        RepoMissing: () => new BadArgumentError({argument: "repo", reason: `There is no repo "${repo.toString()}" in this workspace`}),
+        SubmoduleMisconfiguration: () => new BadPreconditionsError({
+          cause: `Malformed submodule configuration for repo ${repo.toString()}`,
+          fix: `Re-run \`${TOOL_NAME} load ${repo.org} ${repo.repo}\` to re-configure`
+        }),
+        NotAPackage: () => new BadPreconditionsError({
+          cause: `Missing package.json in repo ${repo.toString()}`,
+          fix: ""
+        })
+      })
+    )
+  }
+}
+export class NotInWorkspaceError extends e.Data.TaggedError("NotInWorkspaceError")<{
+  path: string;
 }> {}
 
 export class IToolState extends e.Context.Tag("IToolState")<IToolState, {
-  readonly getRepoPath: (repo: RepoIdentifier) => string;
-  readonly requiredCLICommands: readonly string[];
-  readonly workspaceRoot: e.Option.Option<string>;
-  readonly inWorkspace: e.Effect.Effect<boolean>;
+  readonly assertInWorkspace: e.Effect.Effect<{workspaceRoot: string}, NotInWorkspaceError>;
+  /**
+   * Tool state will create a temporary directory for another tool to operate out of.
+   */
+  readonly usingTempDirectory: <T, E> (doThing: (tempPath: string) => e.Effect.Effect<T, E>) => e.Effect.Effect<T, E>;
+  
+  // User state
   readonly readCurrentUserState: e.Effect.Effect<e.Option.Option<CurrentUserState>>;
   readonly clearCurrentUserState: e.Effect.Effect<void>;
-  readonly writeCurrentUserState: (state: CurrentUserState) => e.Effect.Effect<void>;
-  readonly readReadOnlyTokenState: (email: string) => e.Effect.Effect<e.Option.Option<IReadOnlyTokenState>>;
-  readonly writeReadOnlyTokenState: (email: string, state: IReadOnlyTokenState) => e.Effect.Effect<void>;
-  readonly readOrgScopedCloneTokenState: (email: string, owner: string) => e.Effect.Effect<e.Option.Option<IOrgScopedCloneTokenState>>;
-  readonly writeOrgScopedCloneTokenState: (email: string, owner: string, state: IOrgScopedCloneTokenState) => e.Effect.Effect<void>;
-  readonly readWriteRefreshToken: (email: string) => e.Effect.Effect<string>;
-  readonly writeWriteRefreshToken: (email: string, token: string) => e.Effect.Effect<void>;
-  readonly clearWriteRefreshToken: (email: string) => e.Effect.Effect<void>;
-  readonly verifyRepoIntegrity: (repo: RepoIdentifier) => e.Effect.Effect<{path: string}, VerifyRepoIntegrityError>;
+  /**
+   * Should clear out ssh key associated with user
+   */
+  readonly setUser: (opts: {email: string; username: string; accessToken: TokenState}) => e.Effect.Effect<CurrentUserState>;
+  // Moves the ssh key to the current user location (amongst other things)
+  readonly setSshKey: (sshKey: SshKey) => e.Effect.Effect<{ newUserState: CurrentUserState }>;
+  
+  // Repos
+  readonly verifyRepoIntegrity: (repo: RepoIdentifier) => e.Effect.Effect<{absolutePath: string; relativePath: string;}, BadPreconditionsError | BadArgumentError>;
 }>() {}

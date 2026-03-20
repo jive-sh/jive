@@ -1,15 +1,20 @@
 import * as e from "effect";
+import type { GithubAccessToken } from "@/modules/github/interface";
+import type { SshKey } from "@/modules/ssh/interface";
+import type { BadArgumentError, BadPreconditionsError } from "..";
 
 export interface CurrentUser {
-  readonly preferredEmail: e.Option.Option<string>;
-  readonly userName: string;
-  readonly userEmail: string;
-  readonly readonlyToken: string;
+  readonly username: string;
+  readonly email: string;
+  readonly githubAccessToken: GithubAccessToken;
+  readonly sshKey: SshKey;
 }
 
-export class NotLoggedInError extends e.Data.TaggedError("NotLoggedInError")<{}> {}
+export class NotLoggedInError extends e.Data.TaggedError("NotLoggedInError")<{
+  reason?: string;
+}> {}
 
 export class IAuth extends e.Context.Tag("IAuth")<IAuth, {
-  readonly assertLoggedIn: e.Effect.Effect<CurrentUser, NotLoggedInError>;
-  readonly ensureLoggedIn: (opts: {chooseNewUser: boolean;}) => e.Effect.Effect<CurrentUser>;
+  readonly assertLoggedIn: e.Effect.Effect<CurrentUser, BadPreconditionsError>;
+  readonly ensureLoggedIn: (opts: {chooseNewUser: boolean;}) => e.Effect.Effect<CurrentUser, BadArgumentError | BadPreconditionsError>;
 }>() {}

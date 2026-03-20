@@ -1,5 +1,5 @@
 import * as e from "effect";
-import * as ep from "@effect/platform";
+import type { BadArgumentError, BadPreconditionsError, RepoIdentifier } from "@/modules";
 
 export class CommandNotFoundError extends e.Data.TaggedError("CommandNotFoundError")<{
   missingCommand: string;
@@ -14,21 +14,27 @@ export type HostPlatform = e.Data.TaggedEnum<{
 }>;
 export const HostPlatform = e.Data.taggedEnum<HostPlatform>();
 
-export interface RunOptions {
-  readonly args: readonly string[];
-  readonly runInDir?: string;
-  readonly env?: Readonly<Record<string, string>>;
-}
-
-export interface VerifiedCommand {
-  command: string;
-  path: string;
-}
+export type IN = e.Data.TaggedEnum<{
+  Repo: {repo: RepoIdentifier;};
+  WorkspaceRoot: {};
+  AbsoluteDirectory: {absolute: string;};
+  RelativeDirectory: {relative: string;};
+}>;
+export const IN = e.Data.taggedEnum<IN>();
 
 export class IHostShell extends e.Context.Tag("IHostShell")<IHostShell, {
-  readonly getCommand: (command: string) => e.Effect.Effect<VerifiedCommand, CommandNotFoundError>;
+  readonly run: <R = never> (
+    cmd: string,
+    args: string,
+    at: IN,
+    opts?: {
+      usingBunShell?: boolean;
+      withEnv?: Record<string, string>;
+      withPathValidator?: (cmdPath: string, platform: HostPlatform) => e.Effect.Effect<void, CommandNotFoundError, R>;
+    }) => {
+    captureOutput: e.Effect.Effect<{stdout: string; stderr: string;}, BadArgumentError | BadPreconditionsError, R>;
+    inheritIO: e.Effect.Effect<void, BadArgumentError | BadPreconditionsError, R>;
+  }
   readonly platform: HostPlatform;
   readonly openUrl: (url: string) => e.Effect.Effect<boolean>;
-  readonly runInheritIO: (opts: RunOptions) => (verifiedCommand: VerifiedCommand) => e.Effect.Effect<{exitCode: number}, ep.Error.PlatformError>;
-  readonly run: (opts: RunOptions) => (verifiedCommand: VerifiedCommand) => e.Effect.Effect<{exitCode: number; stderr: string; stdout: string;}, ep.Error.PlatformError>;
 }>() {}

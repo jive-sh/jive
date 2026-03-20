@@ -5,16 +5,6 @@ import { TOOL_NAME } from "@/constants";
 import * as modules from "@/modules";
 import { pluralize, prettyList } from "./logging";
 
-export class BadArgumentError extends e.Data.TaggedError("BadArgumentError")<{
-  readonly argument: string;
-  readonly reason: string;
-}> {}
-
-export class BadPreconditionsError extends e.Data.TaggedError("BadPreconditionsError")<{
-  readonly cause: string;
-  readonly fix: string;
-}> {}
-
 /* TODO:
  * 1. On-device renaming should be supported if the YubiKey appears to have a default name on load.
  * 2. (Partially addressed) Commit signing and SSH auth now share one selected SSH key. Jive stores workspace-managed
@@ -28,23 +18,23 @@ export class BadPreconditionsError extends e.Data.TaggedError("BadPreconditionsE
  *    the selected workspace-managed SSH key into local git signing and push-auth config.
  */
 
-export const program = e.Effect.gen(function*() {
-  const auth = yield* modules.IAuth;
-  const bun = yield* modules.IBun;
-  const daemon = yield* modules.IDaemon;
-  const git = yield* modules.IGit;
-  const github = yield* modules.IGitHub;
-  const templates = yield* modules.ITemplates;
-  const toolState = yield* modules.IToolState;
-  const hostShell = yield* modules.IHostShell;
+export const program = e.pipe(
+  e.Effect.gen(function*() {
+    const auth = yield* modules.IAuth;
+    const bun = yield* modules.IBun;
+    const daemon = yield* modules.IDaemon;
+    const git = yield* modules.IGit;
+    const github = yield* modules.IGitHub;
+    const templates = yield* modules.ITemplates;
+    const toolState = yield* modules.IToolState;
+    const hostShell = yield* modules.IHostShell;
 
-  const cli = e.pipe(
-    CLI.new(TOOL_NAME, CLI.DiscreteOptions({
+    const test = CLI.new(TOOL_NAME, CLI.DiscreteOptions({
       load: CLI.AsyncOptions(
         () => git.localOrgs,
         (org) =>
           CLI.AsyncOptions(
-            () => github.remoteRepos(org),
+            () => github.remoteRepos(org, e.Option.none()),
             (repo) =>
               CLI.Handle(
                 e.Effect.fn(function*() {
@@ -118,7 +108,14 @@ export const program = e.Effect.gen(function*() {
         () => git.localOrgs,
         (org) =>
           CLI.AsyncOptions(
-            () => git.localRepos(org),
+            () => e.pipe(
+              git.localRepos(org),
+              e.Effect.map(e.flow(
+                repoIdentifiers => repoIdentifiers.map(
+                  ({repo}) => repo
+                )
+              ))
+            ),
             (repo) =>
               CLI.Handle(
                 e.Effect.fn(function*([templateName]) {
@@ -136,11 +133,8 @@ export const program = e.Effect.gen(function*() {
       whoami: CLI.Handle(() => e.Effect.gen(function*() {
         yield* e.pipe(
           auth.assertLoggedIn,
-          e.Effect.catchTag("NotLoggedInError", err => e.Effect.fail(new BadPreconditionsError({
-            cause: "You are not signed in.",
-            fix: `Run \`${TOOL_NAME} login\``
-          }))),
-          e.Effect.flatMap(user => e.Effect.log(user.userEmail))
+          e.Effect.mapError(modules.BadPreconditionsError.fromNotLoggedInError),
+          e.Effect.flatMap(user => e.Effect.log(user.email))
         );
       })),
 
@@ -172,14 +166,6 @@ export const program = e.Effect.gen(function*() {
       version: CLI.Handle(
         () => e.Effect.log(version),
       ),
-    })),
-    e.Effect.catchTag("CommandNotFoundError", ({missingCommand}) => e.Effect.fail(new BadPreconditionsError({
-      cause: `The command ${prettyList([missingCommand])} is required for this operation but could not be found.`,
-      fix: "Install it then retry."
-    }))),
-    // These shouldn't happen.
-    e.Effect.catchTag("BadArgument", err => e.Effect.die(err)),
-    e.Effect.catchTag("SystemError", err => e.Effect.die(err)), // TODO: maybe discern bad permissions. That could be transformed into BadPreconditions
-  ) satisfies e.Effect.Effect<void, BadArgumentError | BadPreconditionsError, any>;
-  yield* cli;
-});
+    }));
+  })
+) satisfies e.Effect.Effect<void, modules.BadArgumentError | modules.BadPreconditionsError, any>;
