@@ -1,7 +1,6 @@
 import * as e from "effect";
 import * as path from "node:path";
-import { IToolState } from "./interface";
-import { BadArgumentError } from "@/modules";
+import { BadArgumentError, modules } from "@/modules";
 
 export class RepoIdentifier {
   public constructor(
@@ -13,27 +12,6 @@ export class RepoIdentifier {
   }
   public orgName() {
     return `@${this.org}`;
-  }
-  public orgPath() {
-    return e.Effect.gen(this, function*() {
-      const toolState = yield* IToolState;
-      const { workspaceRoot } = yield* toolState.assertInWorkspace;
-      const subdir = this.orgName();
-      return {
-        relative: subdir,
-        absolute: path.join(workspaceRoot, this.orgName())
-      };
-    })
-  }
-  public repoPath() {
-    return e.Effect.gen(this, function*() {
-      const {relative, absolute} = yield* this.orgPath();
-      const subdir = path.join(relative, this.repo);
-      return {
-        relative: subdir,
-        absolute: path.join(absolute, this.repo)
-      };
-    });
   }
   public equals(other: RepoIdentifier) {
     return other.packageName() === this.packageName();

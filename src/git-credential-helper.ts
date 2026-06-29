@@ -45,21 +45,20 @@ const program = e.Effect.gen(function*() {
         return yield* e.Effect.dieMessage(`unsupported credential request: protocol=${protocol || "(missing)"} host=${host || "(missing)"}`);
       }
 
-      if (!toolState.inWorkspace) {
-        return yield* e.Effect.dieMessage(`not currently in a ${TOOL_NAME} workspace.`);
-      }
+      yield* e.pipe(
+        toolState.assertInWorkspace,
+        e.Effect.catchTag("NotInWorkspaceError", () => e.Effect.dieMessage(`not currently in a ${TOOL_NAME} workspace.`)),
+      );
       const maybeCurrentUserState = yield* toolState.readCurrentUserState;
       if (e.Option.isNone(maybeCurrentUserState)) {
         return yield* e.Effect.dieMessage(`no user currently signed-in, run \`${TOOL_NAME} login\`.`);
       }
       const currentUserState = maybeCurrentUserState.value;
       const { accessToken } = yield* e.pipe(
-        github.resolveAccessToken(currentUserState.accessTokenState),
-        e.Effect.catchTag("UnableToRefreshAccessTokenError", error =>
+        github.resolveAccessToken(currentUserState),
+        e.Effect.catchTag("BadArgumentError", error =>
           e.Effect.dieMessage(
-            error.expired ?
-              `signed in as ${currentUserState.email}, but the persisted GitHub session expired; run \`${TOOL_NAME} login\`.` :
-              `signed in as ${currentUserState.email}, but the persisted GitHub session could not be refreshed; run \`${TOOL_NAME} login\`.`,
+            `signed in as ${currentUserState.email}, but the persisted GitHub session is unusable because the ${error.argument} is invalid: ${error.reason}; run \`${TOOL_NAME} login\`.`,
           ),
         ),
       );

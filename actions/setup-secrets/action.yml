@@ -1,27 +1,20 @@
-name: Jive Build
-description: Calls the Package's "build" script. Expects a "build" directory to be generated
+name: Jive Setup Secrets
+description: Looks up the secrets required by the pipeline (per package.json's "jive.requiredSecrets") and writes them to GITHUB_ENV.
 
 inputs:
   secrets:
-    description: Any secrets necessary for the "build" script to run 
+    description: All secrets available to the workflow, as a JSON string
     required: true
 
 runs:
   using: composite
   steps:
-    - name: Setup Bun
-      uses: oven-sh/setup-bun@v2
-    # TODO: setup token for reading from private packages
-    - name: Install Dependencies
-      shell: bash
-      run: bun install --frozen-lockfile
     - name: Add Secrets to Env
       shell: bash
       env:
         SECRETS_JSON: ${{ inputs.secrets }}
       run: |
         bun run - <<'BUN'
-          const STEP = "build";
           // TODO: move action to its own CLI rather than using composite
           if (typeof process.env.SECRETS_JSON === "string") {
             console.log(`::add-mask::${process.env.SECRETS_JSON}`);
@@ -30,9 +23,10 @@ runs:
           for (const value of Object.values(secrets)) {
             if (value) console.log(`::add-mask::${value}`);
           }
-          const requiredSecrets = require('./package.json')?.jive?.requiredSecrets?.[STEP] ?? [];
+          const requiredSecrets = require('./package.json')?.jive?.cicd?.requiredSecrets ?? [];
           const secretsToPass = {};
           const missingSecrets = [];
+          console.log(`Setting secrets ${requiredSecrets.join(", ")}`);
           for (const requiredSecret of requiredSecrets) {
             if (requiredSecret in secrets) {
               secretsToPass[requiredSecret] = secrets[requiredSecret];
@@ -41,18 +35,10 @@ runs:
             }
           }
           if (missingSecrets.length > 0) {
-            console.log(`Missing the following secrets (required for ${STEP}: ${missingSecrets.join(", ")}`);
+            console.log(`Missing the following secrets (required by package.json's jive.requiredSecrets): ${missingSecrets.join(", ")}`);
             process.exit(1);
           }
           for (const [key, value] of Object.entries(secretsToPass)) {
             require("fs").appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`);
           }
         BUN
-    - name: Build Package
-      shell: bash
-      run: |
-        bun run build
-        if [ ! -d "build" ]; then
-          echo "Expected ./build directory to exist after running build script." >&2
-          exit 1
-        fi

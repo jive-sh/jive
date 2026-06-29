@@ -39,6 +39,29 @@ interface CurrentUserStateJson {
 export const ToolStateImpl = e.Layer.effect(modules.IToolState, e.Effect.gen(function*() {
   const fileSystem = yield* ep.FileSystem.FileSystem;
 
+
+  public orgPath() {
+      return e.Effect.gen(this, function*() {
+        const toolState = yield* modules.toolState;
+        const { workspaceRoot } = yield* toolState.assertInWorkspace;
+        const subdir = this.orgName();
+        return {
+          relative: subdir,
+          absolute: path.join(workspaceRoot, this.orgName())
+        };
+      })
+    }
+    public repoPath() {
+      return e.Effect.gen(this, function*() {
+        const {relative, absolute} = yield* this.orgPath();
+        const subdir = path.join(relative, this.repo);
+        return {
+          relative: subdir,
+          absolute: path.join(absolute, this.repo)
+        };
+      });
+    }
+
   const ignorePathError = <A>(effect: e.Effect.Effect<A, ep.Error.PlatformError>) =>
     e.pipe(
       effect,

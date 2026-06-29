@@ -1,11 +1,22 @@
 import * as e from "effect";
 import * as ep from "@effect/platform";
-import { CommandNotFoundError, HostPlatform, IHostShell, IN } from "./interface";
-import { BadArgumentError, BadPreconditionsError, IToolState } from "@/modules";
+import { CommandNotFoundError, HostPlatform, type IHostShell, IN } from "./interface";
+import { BadArgumentError, BadPreconditionsError, modules } from "@/modules";
 import { TOOL_NAME } from "@/constants";
 import * as path from "node:path";
 import { magenta } from "@/logging";
 import { $ } from "bun";
+import { Implementing } from "@/temp-libs/effective-modules";
+
+export class HostShellImpl extends Implementing(modules.hostShell).Uses(modules.toolState, ep.CommandExecutor.CommandExecutor, ep.FileSystem.FileSystem) implements IHostShell {
+  cliArgEncode(argument: string): string {
+    return `"${JSON.stringify(argument)}"`;
+  }
+  run: <R = never>(cmd: string, args: string, at: IN, opts?: { usingBunShell?: boolean; withEnv?: Record<string, string>; withPathValidator?: (cmdPath: string, platform: HostPlatform) => e.Effect.Effect<void, CommandNotFoundError, R>; }) => { captureOutput: e.Effect.Effect<{ stdout: string; stderr: string; }, BadArgumentError | BadPreconditionsError, R>; inheritIO: e.Effect.Effect<void, BadArgumentError | BadPreconditionsError, R>; };
+  platform: { readonly _tag: "MacOs"; } | { readonly _tag: "Windows"; } | { readonly _tag: "Linux"; } | { readonly _tag: "Other"; };
+  openUrl: (url: string) => e.Effect.Effect<void, BadPreconditionsError>;
+
+}
 
 function getPlatform(platform: string): HostPlatform {
   switch (platform) {
@@ -30,7 +41,7 @@ function openUrlSpec(platform: HostPlatform, url: string): e.Option.Option<{ com
   );
 }
 
-export const HostShellImpl = e.Layer.effect(IHostShell, e.Effect.gen(function*() {
+export const HostShellImplOld = e.Layer.effect(IHostShell, e.Effect.gen(function*() {
   const toolState = yield* IToolState;
   const commandExecutor = yield* ep.CommandExecutor.CommandExecutor;
   const platform = getPlatform(process.platform);
@@ -39,6 +50,12 @@ export const HostShellImpl = e.Layer.effect(IHostShell, e.Effect.gen(function*()
   return {
     platform,
     openUrl: e.Effect.fn(function*(url: string) {
+      const execSpec = openUrlSpec(platform, url);
+      if (e.Option.isNone(execSpec)) {
+        return yield* BadPreconditionsError.withoutFix(
+          `Unable to determine command to open url. Unsupported platform ${process.platform}`
+        );
+      }
       return yield* e.Effect.die(undefined);
       /*const spec = openUrlSpec(platform, url);
       if (e.Option.isNone(spec)) return false;
@@ -197,10 +214,10 @@ export const HostShellImpl = e.Layer.effect(IHostShell, e.Effect.gen(function*()
           );
         }
       }, e.flow(
-        e.Effect.catchTag("BadArgument", "SystemError", ({name, message}) => new BadPreconditionsError({
-          cause: `Unexpected ${name} running ${execString}`,
-          fix: `Report bug to ${TOOL_NAME} maintainers; internal error: ${message}`
-        }))
+        e.Effect.catchTag("BadArgument", "SystemError", ({name, message}) => BadPreconditionsError.withoutFix(
+          `Unexpected ${name} running ${execString}`,
+          message
+        ))
       ));
 
       return {
@@ -209,20 +226,18 @@ export const HostShellImpl = e.Layer.effect(IHostShell, e.Effect.gen(function*()
           if (opts?.usingBunShell) { 
             const {exitCode} = yield* e.pipe(
               e.Effect.tryPromise(() => $`${cmd} ${args}`),
-              e.Effect.catchTag("UnknownException", ({name, message}) => new BadPreconditionsError({
-                cause: `Failed to execute ${execString} due to unexpected ${name}`,
-                fix: `Report bug to ${TOOL_NAME} maintainers; internal error: ${message}`
-              }))
+              e.Effect.catchTag("UnknownException", ({name, message}) => BadPreconditionsError.withoutFix(
+                `Failed to execute ${execString} due to unexpected ${name}`, message
+              ))
             );
             if (exitCode !== 0) return yield* e.Effect.dieMessage(`${execString} exited with code ${exitCode}`);
           } else {
             const exitCode = yield* e.pipe(
               getProcess(true),
               e.Effect.flatMap(proc => proc.exitCode),
-              e.Effect.catchTag("BadArgument", "SystemError", ({name, message}) => new BadPreconditionsError({
-                cause: `Unexpected ${name} running ${execString}`,
-                fix: `Report bug to ${TOOL_NAME} maintainers; internal error: ${message}`
-              }))
+              e.Effect.catchTag("BadArgument", "SystemError", ({name, message}) => BadPreconditionsError.withoutFix(
+                `Unexpected ${name} running ${execString}`, message
+              ))
             );
             if (exitCode !== 0) return yield* e.Effect.dieMessage(`${execString} exited with code ${exitCode}`);
           }
@@ -233,6 +248,7 @@ export const HostShellImpl = e.Layer.effect(IHostShell, e.Effect.gen(function*()
             const stdoutCapture = new Response();
             const stderrCapture = new Response();
             const {exitCode, stdout, stderr} = yield* e.pipe(
+              // From what directory?
               e.Effect.tryPromise(() => $`${cmd} ${args} < ${null} > ${stdoutCapture} 2> ${stderrCapture}`.quiet()),
               e.Effect.flatMap(e.Effect.fn(function*({exitCode}) {
                 const stdout = yield* e.Effect.tryPromise(() => stdoutCapture.text());
@@ -243,10 +259,9 @@ export const HostShellImpl = e.Layer.effect(IHostShell, e.Effect.gen(function*()
                   exitCode
                 }
               })),
-              e.Effect.catchTag("UnknownException", ({name, message}) => new BadPreconditionsError({
-                cause: `Failed to execute ${execString} due to unexpected ${name}`,
-                fix: `Report bug to ${TOOL_NAME} maintainers; internal error: ${message}`
-              }))
+              e.Effect.catchTag("UnknownException", ({name, message}) => BadPreconditionsError.withoutFix(
+                `Failed to execute ${execString} due to unexpected ${name}`, message
+              ))
             );
             if (exitCode !== 0) {
               yield* e.Effect.log(stdout);
@@ -276,10 +291,9 @@ export const HostShellImpl = e.Layer.effect(IHostShell, e.Effect.gen(function*()
             };
           }
         }, e.flow(
-          e.Effect.catchTag("BadArgument", "SystemError", ({name, message}) => new BadPreconditionsError({
-            cause: `Unexpected ${name} running ${execString}`,
-            fix: `Report bug to ${TOOL_NAME} maintainers; internal error: ${message}`
-          }))
+          e.Effect.catchTag("BadArgument", "SystemError", ({name, message}) => BadPreconditionsError.withoutFix(
+            `Unexpected ${name} running ${execString}`, message
+          ))
         ))())
       }
     }

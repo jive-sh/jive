@@ -22,7 +22,8 @@ export type IN = e.Data.TaggedEnum<{
 }>;
 export const IN = e.Data.taggedEnum<IN>();
 
-export class IHostShell extends e.Context.Tag("IHostShell")<IHostShell, {
+export interface IHostShell {
+  cliArgEncode(argument: string): string;
   readonly run: <R = never> (
     cmd: string,
     args: string,
@@ -36,5 +37,5 @@ export class IHostShell extends e.Context.Tag("IHostShell")<IHostShell, {
     inheritIO: e.Effect.Effect<void, BadArgumentError | BadPreconditionsError, R>;
   }
   readonly platform: HostPlatform;
-  readonly openUrl: (url: string) => e.Effect.Effect<boolean>;
-}>() {}
+  readonly openUrl: (url: string) => e.Effect.Effect<void, BadPreconditionsError>;
+}

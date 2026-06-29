@@ -1,5 +1,5 @@
 {
-  "name": "@chaine-dance/jive",
+  "name": "@jive-sh/jive",
   "module": "src/index.ts",
   "type": "module",
   "description": "The Jive CLI",
@@ -31,7 +31,10 @@
     "command-exists": "^1.2.9",
     "effect": "^3.18.4",
     "git-url-parse": "^16.1.0",
-    "omelette": "^0.4.17"
+    "javascript-time-ago": "^2.6.4",
+    "oauth2-cli": "^2.0.0",
+    "omelette": "^0.4.17",
+    "effective-modules": "^0.3.1"
   },
   "workspaces": [
     "./effect/packages/*",

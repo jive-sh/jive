@@ -1,11 +1,11 @@
 import * as e from "effect";
-import * as modules from "@/modules";
+import { modules } from "@/modules";
+import { Implementing, type GenEffect } from "@/temp-libs/effective-modules";
+import type { IDaemon } from "./interface";
 
-export const DaemonImpl = e.Layer.effect(modules.IDaemon, e.Effect.gen(function*() {
-  return {
-    requiredCLICommands: [],
-    start: e.Effect.fn(function*() {
-      yield* e.Effect.log("Daemon not yet implemented.");
-    })(),
-  };
-}));
+export class DaemonImpl extends Implementing(modules.daemon) implements IDaemon {
+  *start(): GenEffect<void> {
+    
+  }
+  
+}

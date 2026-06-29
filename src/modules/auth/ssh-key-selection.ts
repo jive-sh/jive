@@ -1,90 +1,99 @@
-import * as e from "effect";
-import * as modules from "@/modules";
+import { Data } from "effect";
+import { Module, modules } from "@/modules";
 import { type SshKey } from "@/modules/ssh/interface";
 import { selectOne } from "@/prompts";
 import type { ConnectedYubiKey } from "../yubikey/interface";
+import { type EffectGen } from "effective-modules";
 
-enum YubikeyVsLocal {
-  yubikey = "yubikey",
-  local = "local"
-}
+type SshKeyStorageSelection = Data.TaggedEnum<{
+  Yubikey: {};
+  Local: {};
+}>;
+const SshKeyStorageSelection = Data.taggedEnum<SshKeyStorageSelection>();
+
+const sshKeyStorageSelectionOptions: Record<SshKeyStorageSelection["_tag"], string> = {
+  Yubikey: "yubikey (ideal for human users)",
+  Local: "local ssh key (ideal for agents without a secure hardware enclave)"
+};
+
+const parseSshKeyStorageSelection = (selection: string): e.Effect.Effect<SshKeyStorageSelection> => {
+  switch (selection) {
+    case "Yubikey":
+      return e.Effect.succeed(SshKeyStorageSelection.Yubikey());
+    case "Local":
+      return e.Effect.succeed(SshKeyStorageSelection.Local());
+    default:
+      return e.Effect.dieMessage(`IMPOSSIBLE CHOICE ${selection}`);
+  }
+};
 
 export class CreateSshKeyOnYubikeyError extends e.Data.TaggedError("CreateSshKeyOnYubikeyError")<{
   reason: string;
 }> {}
 
-export const selectSshKey: (email: string, tempPath: string) => e.Effect.Effect<SshKey, CreateSshKeyOnYubikeyError, modules.ISsh | modules.IYubiKey> = 
-  e.Effect.fn(function*(email, tempPath) {
-    const CHOICE_YUBIKEY_SSH = "yubikey (ideal for human users)";
-    const CHOICE_LOCAL_SSH = "local ssh key (ideal for agents without a secure hardware enclave)";
-    const localVsYubikey = yield* selectOne(
+export function* selectSshKey(email: string, tempPath: string): GenEffect<SshKey, CreateSshKeyOnYubikeyError, Module.ssh | Module.yubikey> {
+  const selection = yield* e.pipe(
+    selectOne(
       "For git pushes / commit signing, choose a SSH key storage location:",
-      {
-        [YubikeyVsLocal.yubikey]: CHOICE_YUBIKEY_SSH, 
-        [YubikeyVsLocal.local]: CHOICE_LOCAL_SSH
-      }
-    );
-    // TODO: tagged enum for selection
-    switch(localVsYubikey) {
-      case YubikeyVsLocal.local:
-        return yield* selectLocalSshKey(email, tempPath);
-      case YubikeyVsLocal.yubikey:
-        return yield* selectYubikeySshKey(email, tempPath);
-      default:
-        return yield* e.Effect.dieMessage(`IMPOSSIBLE CHOICE ${localVsYubikey}`);
-    }
-  });
+      sshKeyStorageSelectionOptions
+    ),
+    e.Effect.flatMap(parseSshKeyStorageSelection),
+  );
+  return yield* e.Match.value(selection).pipe(
+    e.Match.tag("Local", () => selectLocalSshKey(email, tempPath)),
+    e.Match.tag("Yubikey", () => selectYubikeySshKey(email, tempPath)),
+    e.Match.exhaustive,
+  );
+};
 
-const selectLocalSshKey: (email: string, tempPath: string) => e.Effect.Effect<SshKey, never, modules.ISsh> =
-  e.Effect.fn(function*(email, tempPath) {
-    const ssh = yield* modules.ISsh;
-    const {pathsScanned, keys} = yield* ssh.listLocalSshKeys();
-    const CREATE_NEW_KEY = "CREATE_OWN";
-    const CREATE_MY_OWN_KEY_MSG = "generate/use new local ssh key";
-    const keysAsMap: Record<string, SshKey> = {};
-    const keysDisplay: Record<string, string> = {};
-    for (const key of keys) {
-      keysAsMap[key.fingerprint] = key;
-      keysDisplay[key.fingerprint] = `${key.name} (filename=${key.location}, email=${key.email})`;
-    }
-    const sshKeyFingerprint = yield* selectOne(
-      `chose key from ${pathsScanned.join(", ")}:`,
-      {
-        ...keysDisplay,
-        [CREATE_NEW_KEY]: CREATE_MY_OWN_KEY_MSG
-      },
-      () => "No local ssh keys. Creating new one."
-    );
-    const choice = 
-      sshKeyFingerprint === CREATE_NEW_KEY ?
-        yield* ssh.createSshKey(email, tempPath) :
-        keysAsMap[sshKeyFingerprint]!;
-    return choice;
-  });
+function* selectLocalSshKey(email: string, tempPath: string): GenEffect<SshKey, never, Module.ssh> {
+  const ssh = yield* modules.ssh;
+  const {pathsScanned, keys} = yield* ssh.listLocalSshKeys();
+  const CREATE_NEW_KEY = "CREATE_OWN";
+  const CREATE_MY_OWN_KEY_MSG = "generate/use new local ssh key";
+  const keysAsMap: Record<string, SshKey> = {};
+  const keysDisplay: Record<string, string> = {};
+  for (const key of keys) {
+    keysAsMap[key.fingerprint] = key;
+    keysDisplay[key.fingerprint] = `${key.name} (filename=${key.location}, email=${key.email})`;
+  }
+  const sshKeyFingerprint = yield* selectOne(
+    `chose key from ${pathsScanned.join(", ")}:`,
+    {
+      ...keysDisplay,
+      [CREATE_NEW_KEY]: CREATE_MY_OWN_KEY_MSG
+    },
+    () => "No local ssh keys. Creating new one."
+  );
+  const choice = 
+    sshKeyFingerprint === CREATE_NEW_KEY ?
+      yield* ssh.createSshKey(email, tempPath) :
+      keysAsMap[sshKeyFingerprint]!;
+  return choice;
+}
 
-const selectYubikeySshKey: (email: string, tempPath: string) => e.Effect.Effect<SshKey, CreateSshKeyOnYubikeyError, modules.IYubiKey | modules.ISsh> =
-  e.Effect.fn(function*(email, tempPath) {
-    const createOrRestore = yield* selectOne(
-      "Create new ssh key on yubikey or use existing one?",
-      {
-        newKey: "create new key",
-        existing: "use existing key"
-      }
-    );
-    switch(createOrRestore) {
-      case "newKey":
-        return yield* createNewKeyOnYubikey(email, tempPath);
-      case "existing":
-        return yield* selectExistingKeyOnYubikey(email, tempPath);
-      default:
-        return yield* e.Effect.dieMessage("IMPOSSIBLE NOT EITHER NEW OR EXISTING KEY");
+function* selectYubikeySshKey(email: string, tempPath: string): GenEffect<SshKey, CreateSshKeyOnYubikeyError, Module.ssh | Module.yubikey> {
+  const createOrRestore = yield* selectOne(
+    "Create new ssh key on yubikey or use existing one?",
+    {
+      newKey: "create new key",
+      existing: "use existing key"
     }
-  });
+  );
+  switch(createOrRestore) {
+    case "newKey":
+      return yield* createNewKeyOnYubikey(email, tempPath);
+    case "existing":
+      return yield* selectExistingKeyOnYubikey(email, tempPath);
+    default:
+      return yield* e.Effect.dieMessage("IMPOSSIBLE NOT EITHER NEW OR EXISTING KEY");
+  }
+}
 
-const selectExistingKeyOnYubikey: (email: string, tempPath: string) => e.Effect.Effect<SshKey, CreateSshKeyOnYubikeyError, modules.IYubiKey | modules.ISsh> =
+const selectExistingKeyOnYubikey: (email: string, tempPath: string) => e.Effect.Effect<SshKey, CreateSshKeyOnYubikeyError, Module.yubikey | Module.ssh> =
   e.Effect.fn(function*(email, tempPath) {
-    const ssh = yield* modules.ISsh;
-    const yubikey = yield* modules.IYubiKey;
+    const ssh = yield* modules.ssh;
+    const yubikey = yield* modules.yubikey;
     // Restore
     const residentSshKeys = yield* ssh.restoreResidentSshKeys(tempPath);
     if (residentSshKeys.length === 0) {
@@ -121,10 +130,10 @@ const selectExistingKeyOnYubikey: (email: string, tempPath: string) => e.Effect.
     return fingerprintMap[fingerPrint]!;
   });
 
-const createNewKeyOnYubikey: (email: string, tempPath: string) => e.Effect.Effect<SshKey, CreateSshKeyOnYubikeyError, modules.IYubiKey | modules.ISsh> =
+const createNewKeyOnYubikey: (email: string, tempPath: string) => e.Effect.Effect<SshKey, CreateSshKeyOnYubikeyError, Module.ssh | Module.yubikey> =
   e.Effect.fn(function*(email, tempPath) {
     // Choose yubikey
-    const yubikey = yield* modules.IYubiKey;
+    const yubikey = yield* modules.yubikey;
     const connectedYubikeys = yield* yubikey.listConnectedDevices;
     if (connectedYubikeys.length === 0) {
       return yield* new CreateSshKeyOnYubikeyError({reason: "no yubikeys detected"});
@@ -145,7 +154,7 @@ const createNewKeyOnYubikey: (email: string, tempPath: string) => e.Effect.Effec
     );
     const chosenYubikey = yubikeysAsMap[choice]!;
     // Create resident key
-    const ssh = yield* modules.ISsh;
+    const ssh = yield* modules.ssh;
     const sshKey = yield* ssh.createSshKey(email, tempPath, chosenYubikey);
     return sshKey;
   });

@@ -15,6 +15,9 @@ jobs:
     uses: ./.github/workflows/reusable-pipeline.yml
     secrets: inherit
     with:
-      environments: Production
-      preview-deploys: true
-      publish: true
+      deploy-branches: |
+        {
+          "main": ["Production"]
+        }
+      run-on-pull-requests: true
+      enable-preview-deploys: false

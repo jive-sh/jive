@@ -1,7 +1,8 @@
-import * as e from "effect";
+import { Data } from "effect";
+import { type EffectGen } from "effective-modules";
 import type { GithubAccessToken } from "@/modules/github/interface";
 import type { SshKey } from "@/modules/ssh/interface";
-import type { BadArgumentError, BadPreconditionsError } from "..";
+import type { BadArgumentError, BadPreconditionsError } from "@/errors";
 
 export interface CurrentUser {
   readonly username: string;
@@ -10,11 +11,11 @@ export interface CurrentUser {
   readonly sshKey: SshKey;
 }
 
-export class NotLoggedInError extends e.Data.TaggedError("NotLoggedInError")<{
+export class NotLoggedInError extends Data.TaggedError("NotLoggedInError")<{
   reason?: string;
 }> {}
 
-export class IAuth extends e.Context.Tag("IAuth")<IAuth, {
-  readonly assertLoggedIn: e.Effect.Effect<CurrentUser, BadPreconditionsError>;
-  readonly ensureLoggedIn: (opts: {chooseNewUser: boolean;}) => e.Effect.Effect<CurrentUser, BadArgumentError | BadPreconditionsError>;
-}>() {}
+export interface IAuth {
+  assertLoggedIn(): EffectGen<CurrentUser, BadArgumentError | BadPreconditionsError>;
+  ensureLoggedIn(opts: {chooseNewUser: boolean;}): EffectGen<CurrentUser, BadArgumentError | BadPreconditionsError>;
+}

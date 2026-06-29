@@ -1,14 +1,14 @@
 import * as e from "effect";
-import * as modules from "@/modules";
-import { prettyList } from "@/logging";
+import { BadArgumentError, BadPreconditionsError, Module, modules } from "@/modules";
 import type { GithubAccessToken } from "@/modules/github/interface";
+import type { GenEffect } from "@/temp-libs/effective-modules";
 
-export const warnOnInaccessibleRepos = e.Effect.fn(function*(accessToken: GithubAccessToken) {
-  const git = yield* modules.IGit;
-  const github = yield* modules.IGitHub;
+export function* warnOnInaccessibleRepos(accessToken: GithubAccessToken): GenEffect<void, BadArgumentError | BadPreconditionsError, Module.git | Module.github> {
+  const git = yield* modules.git;
+  const github = yield* modules.github;
 
   const inaccessibleRepos: Record<string, {missingPermissions: string[];}> = {};
-  const repos = yield* git.getSubmodules;
+  const repos = yield* git.getSubmodules();
 
   for (const repo of repos) {
     const missingPermissions: string[] = [];
@@ -16,7 +16,9 @@ export const warnOnInaccessibleRepos = e.Effect.fn(function*(accessToken: Github
     const canWrite = yield* github.canWriteToRemote(repo, accessToken);
     if (!canRead) missingPermissions.push("read");
     if (!canWrite) missingPermissions.push("write");
-    inaccessibleRepos[repo.toString()] = {missingPermissions};
+    if (missingPermissions.length > 0) {
+      inaccessibleRepos[repo.toString()] = { missingPermissions };
+    }
   }
 
   const sortedKeys = Object.keys(inaccessibleRepos).sort();
@@ -29,4 +31,4 @@ export const warnOnInaccessibleRepos = e.Effect.fn(function*(accessToken: Github
     }
     yield* e.Effect.logWarning(`Missing permissions on the following locally-cloned repos:\n${list}`);
   }
-});
+}

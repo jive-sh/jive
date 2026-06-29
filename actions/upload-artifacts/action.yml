@@ -1,0 +1,14 @@
+name: Jive Upload Artifacts
+description: Runs the package's upload-artifacts script and uploads the working directory as a workflow artifact.
+
+runs:
+  using: composite
+  steps:
+    - name: Upload Artifacts Script
+      shell: bash
+      run: bun run jive:cicd:upload-artifacts
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-output
+        path: .

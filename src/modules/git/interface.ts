@@ -1,15 +1,15 @@
-import * as e from "effect";
 import type { RepoIdentifier } from "@/modules/tool-state/interface";
 import type { CurrentUser } from "@/modules/auth/interface";
 import type { BadArgumentError, BadPreconditionsError } from "@/modules";
+import type { GenEffect } from "@/temp-libs/effective-modules";
 
-export class IGit extends e.Context.Tag("IGit")<IGit, {
-  readonly localOrgs: e.Effect.Effect<string[], BadPreconditionsError>;
-  readonly localRepos: (org: string) => e.Effect.Effect<RepoIdentifier[], BadArgumentError | BadPreconditionsError>;
-  readonly configureWorkspace: (user: CurrentUser) => e.Effect.Effect<void, BadArgumentError | BadPreconditionsError>;
-  readonly submoduleExists: (repo: RepoIdentifier) => e.Effect.Effect<boolean, BadArgumentError | BadPreconditionsError>;
-  readonly cloneAsSubmodule: (repo: RepoIdentifier, user: CurrentUser) => e.Effect.Effect<void, BadArgumentError | BadPreconditionsError>;
-  readonly configureSubmodule: (repo: RepoIdentifier, user: CurrentUser) => e.Effect.Effect<void, BadArgumentError | BadPreconditionsError>;
-  readonly removeSubmodule: (repo: RepoIdentifier) => e.Effect.Effect<void, BadArgumentError | BadPreconditionsError>;
-  readonly getSubmodules: e.Effect.Effect<RepoIdentifier[], BadArgumentError | BadPreconditionsError>;
-}>() {}
+export interface IGit {
+  localOrgs(): GenEffect<string[], BadPreconditionsError>;
+  localRepos(org: string): GenEffect<RepoIdentifier[], BadArgumentError | BadPreconditionsError>;
+  configureWorkspace(user: CurrentUser): GenEffect<void, BadArgumentError | BadPreconditionsError>;
+  submoduleExists(repo: RepoIdentifier): GenEffect<boolean, BadArgumentError | BadPreconditionsError>;
+  cloneAsSubmodule(repo: RepoIdentifier, user: CurrentUser): GenEffect<void, BadArgumentError | BadPreconditionsError>;
+  configureSubmodule(repo: RepoIdentifier, user: CurrentUser): GenEffect<void, BadArgumentError | BadPreconditionsError>;
+  removeSubmodule(repo: RepoIdentifier): GenEffect<void, BadArgumentError | BadPreconditionsError>;
+  getSubmodules(): GenEffect<RepoIdentifier[], BadArgumentError | BadPreconditionsError>;
+}

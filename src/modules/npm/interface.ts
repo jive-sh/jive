@@ -5,7 +5,7 @@ export interface NpmUser {
   readonly username: string;
 }
 
-export class INpm extends e.Context.Tag("INpm")<INpm, {
+export interface INpm {
   /**
    * Signs in to npm if necessary and returns the current npm user.
    */
@@ -22,4 +22,4 @@ export class INpm extends e.Context.Tag("INpm")<INpm, {
    * Sets up npm trusted publishing for the package associated with a repo.
    */
   readonly setupTrustedPublishing: (repo: RepoIdentifier) => e.Effect.Effect<void>;
-}>() {}
+}

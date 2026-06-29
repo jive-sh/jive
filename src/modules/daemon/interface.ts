@@ -1,5 +1,6 @@
+import type { GenEffect } from "@/temp-libs/effective-modules";
 import * as e from "effect";
 
-export class IDaemon extends e.Context.Tag("IDaemon")<IDaemon, {
-  readonly start: e.Effect.Effect<void>;
-}>() {}
+export interface IDaemon {
+  start(): GenEffect<void>;
+}

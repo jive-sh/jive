@@ -3,59 +3,98 @@ name: Jive Reusable CI/CD Pipeline
 on:
   workflow_call:
     inputs:
-      environments:
+      runs-on:
         type: string
-        description: Comma delimited list of environments to deploy to, sequentially.
+        description: >-
+          JSON-encoded runs-on value to build and deploy on: a string, a string array, or a {group, labels} object
+          (the same shapes GHA's own "runs-on" key accepts for a job). Defaults to "ubuntu-latest".
+        required: false
+        default: '"ubuntu-latest"'
+      deploy-branches:
+        type: string
+        description: >-
+          JSON object mapping each deployable branch to its ordered list of environments to deploy to
+          (e.g. '{"main": ["Staging","Production"], "onebox": ["OneBox"]}').
         required: true
-      preview-deploys:
+      run-on-pull-requests:
         type: boolean
-        description: If true, preview deploys & integration tests against this deployment will be run on PRs 
+        description: If true, opening/pushing to a pull request runs the build & unit-test pipeline, and also the deploy pipeline if preview deploys are enabled.
         required: true
-      publish:
+      enable-preview-deploys:
         type: boolean
-        description: Whether to publish the package to npm when pushing to the default branch
+        description: >-
+          If true, a pull-request run or a workflow_dispatch on a branch not in deploy-branches also deploys
+          a "Preview" environment, in addition to running build & unit tests.
         required: true
 
 jobs:
-  common_pipeline:
-    name: Common Pipeline
-    # Only run on PRs or pushes to the repo's default branch
+  build:
+    name: Build & Unit Test
     if: >-
-      (
-        inputs.preview-deploys &&
-        (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
-      ) || 
-      (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch)
-    runs-on: ubuntu-latest
+      (inputs.run-on-pull-requests && github.event_name == 'pull_request')
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && fromJSON(inputs.deploy-branches)[github.ref_name] != null)
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     # For publishing
     permissions:
-      contents: read
-      id-token: write 
+      # commenting contents out to prove that it's needed for checkout step
+      # contents: read
+      id-token: write
+    outputs:
+      environments: ${{ steps.sequence-deploys.outputs.environments }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
-      - name: Build Package
-        uses: ./actions/build
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+      - name: Setup Secrets
+        uses: ./actions/setup-secrets
         with:
           secrets: ${{ toJSON(secrets) }}
+      - name: Install Dependencies
+        shell: bash
+        run: bun install --frozen-lockfile
+      - name: Build
+        shell: bash
+        run: bun run jive:cicd:build
       - name: Unit Tests
-        uses: ./actions/unit-tests
+        shell: bash
+        run: bun run jive:cicd:unit-tests
+      - name: Upload Artifacts
+        id: upload-artifacts
+        uses: ./actions/upload-artifacts
+      - name: Sequence Deploys
+        id: sequence-deploys
+        uses: ./actions/sequence-deploys
+        with:
+          enable-preview-deploys: ${{ inputs.enable-preview-deploys }}
+          deploy-environments: ${{ toJSON(fromJSON(inputs.deploy-branches)[github.ref_name]) }}
+
+  deploy:
+    name: Deploy (${{ matrix.environment }})
+    needs: build
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      max-parallel: 1
+      matrix:
+        environment: ${{ fromJSON(needs.build.outputs.environments) }}
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+      - name: Setup Secrets
+        uses: ./actions/setup-secrets
         with:
           secrets: ${{ toJSON(secrets) }}
-      - name: Preview Deploy & Integration Tests
-        # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions
-        if: >-
-          inputs.preview-deploys &&
-          (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
-        uses: ./actions/deploy
-        with:
-          publish: false
-          environments: Preview
-          secrets: ${{ toJSON(secrets) }}
-      - name: ${{ inputs.environments }} Deploy & Integration Tests
-        if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
-        uses: ./actions/deploy
-        with:
-          publish: ${{ inputs.publish }}
-          environments: ${{ inputs.environments }}
-          secrets: ${{ toJSON(secrets) }}
+      - name: Deploy
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          bun run jive:cicd:deploy "$ENVIRONMENT"

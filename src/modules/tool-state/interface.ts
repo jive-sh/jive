@@ -59,7 +59,7 @@ export class NotInWorkspaceError extends e.Data.TaggedError("NotInWorkspaceError
   path: string;
 }> {}
 
-export class IToolState extends e.Context.Tag("IToolState")<IToolState, {
+export interface IToolState {
   readonly assertInWorkspace: e.Effect.Effect<{workspaceRoot: string}, NotInWorkspaceError>;
   /**
    * Tool state will create a temporary directory for another tool to operate out of.
@@ -78,4 +78,6 @@ export class IToolState extends e.Context.Tag("IToolState")<IToolState, {
   
   // Repos
   readonly verifyRepoIntegrity: (repo: RepoIdentifier) => e.Effect.Effect<{absolutePath: string; relativePath: string;}, BadPreconditionsError | BadArgumentError>;
-}>() {}
+  orgPath(repoId: RepoIdentifier): e.Effect.Effect<{absolutePath: string; relativePath: string;}, BadPreconditionsError>;
+  repoPath(repoId: RepoIdentifier): e.Effect.Effect<{absolutePath: string; relativePath: string;}, BadPreconditionsError>;
+}

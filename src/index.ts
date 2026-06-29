@@ -6,7 +6,6 @@ import { CLI } from "./temp-libs/cli";
 const runnable: e.Effect.Effect<void, never, never> = e.pipe(
   program,
   e.Effect.provide(ModulesImpl),
-  e.Effect.catchTag("")
 );
 
 e.Effect

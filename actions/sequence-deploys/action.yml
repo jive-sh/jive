@@ -1,0 +1,40 @@
+name: Jive Sequence Deploys
+description: Resolves the ordered list of environments to deploy to for this run.
+
+inputs:
+  deploy-environments:
+    description: 'JSON array of environments to deploy to, in order (e.g. ["Staging","Production"]), already resolved for the current branch, or "null" if the branch has no entry in deploy-branches. Ignored on PR runs.'
+    required: true
+  enable-preview-deploys:
+    description: >-
+      If true, a pull-request run (or a "null" deploy-environments, e.g. workflow_dispatch on a branch not in
+      deploy-branches) resolves to a "Preview" environment. If false, those cases resolve to no deploy at all.
+    required: true
+
+outputs:
+  environments:
+    description: JSON array of environments to deploy to, in order. "Preview" if preview deploys are enabled for this run.
+    value: ${{ steps.sequence-deploys.outputs.environments }}
+
+runs:
+  using: composite
+  steps:
+    - name: Sequence Deploys
+      id: sequence-deploys
+      shell: bash
+      env:
+        DEPLOY_ENVIRONMENTS: ${{ inputs.deploy-environments }}
+        ENABLE_PREVIEW_DEPLOYS: ${{ inputs.enable-preview-deploys }}
+        IS_PR: ${{ github.event_name == 'pull_request' }}
+      run: |
+        bun run - <<'BUN' >> "$GITHUB_OUTPUT"
+          const enablePreviewDeploys = process.env.ENABLE_PREVIEW_DEPLOYS === "true";
+          const resolvedEnvironments = JSON.parse(process.env.DEPLOY_ENVIRONMENTS);
+          const environments = [];
+          if (resolvedEnvironments == null || process.env.IS_PR === "true") {
+            if (enablePreviewDeploys) environments.push("Preview");
+          } else if (resolvedEnvironments.length > 0) {
+            environments.push(...resolvedEnvironments);
+          }
+          console.log(`environments=${JSON.stringify(environments)}`);
+        BUN
