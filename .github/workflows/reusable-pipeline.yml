@@ -71,7 +71,7 @@ jobs:
           deploy-environments: ${{ toJSON(fromJSON(inputs.deploy-branches)[github.ref_name]) }}
 
   deploy:
-    name: Deploy (${{ matrix.environment }})
+    name: Deploy to ${{ matrix.environment }}
     needs: build
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     permissions:
