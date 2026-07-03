@@ -15,6 +15,9 @@ outputs:
   environments:
     description: JSON array of environments to deploy to, in order. "Preview" if preview deploys are enabled for this run.
     value: ${{ steps.sequence-deploys.outputs.environments }}
+  will-deploy:
+    description: "true if this run has at least one deployment environment."
+    value: ${{ steps.sequence-deploys.outputs['will-deploy'] }}
 
 runs:
   using: composite
@@ -37,4 +40,5 @@ runs:
             environments.push(...resolvedEnvironments);
           }
           console.log(`environments=${JSON.stringify(environments)}`);
+          console.log(`will-deploy=${environments.length > 0}`);
         BUN

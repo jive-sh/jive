@@ -1,13 +1,19 @@
 name: Jive Upload Artifacts
-description: Runs the package's upload-artifacts script and uploads the working directory as a workflow artifact.
+description: Runs the package's jive:cicd:upload-artifacts script and, if there will be a deploy, uploads the working directory as a workflow artifact.
+
+inputs:
+  will-deploy:
+    description: Whether one or more environments will be deployed to after the build job
+    required: true
 
 runs:
   using: composite
   steps:
     - name: Upload Artifacts Script
       shell: bash
-      run: bun run jive:cicd:upload-artifacts
+      run: bun run jive:cicd:upload-artifacts "${{ github.event_name }}"
     - name: Upload Artifacts
+      if: ${{ inputs['will-deploy'] == 'true' }}
       uses: actions/upload-artifact@v4
       with:
         name: build-output

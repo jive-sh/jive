@@ -42,6 +42,7 @@ jobs:
       id-token: write
     outputs:
       environments: ${{ steps.sequence-deploys.outputs.environments }}
+      will-deploy: ${{ steps.sequence-deploys.outputs['will-deploy'] }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -60,19 +61,22 @@ jobs:
       - name: Unit Tests
         shell: bash
         run: bun run jive:cicd:unit-tests
-      - name: Upload Artifacts
-        id: upload-artifacts
-        uses: jive-sh/jive/.github/actions/upload-artifacts@main
       - name: Sequence Deploys
         id: sequence-deploys
         uses: jive-sh/jive/.github/actions/sequence-deploys@main
         with:
           enable-preview-deploys: ${{ inputs.enable-preview-deploys }}
           deploy-environments: ${{ toJSON(fromJSON(inputs.deploy-branches)[github.ref_name]) }}
+      - name: Upload Artifacts
+        id: upload-artifacts
+        uses: jive-sh/jive/.github/actions/upload-artifacts@main
+        with:
+          will-deploy: ${{ steps.sequence-deploys.outputs['will-deploy'] }}
 
   deploy:
     name: Deploy to ${{ matrix.environment }}
     needs: build
+    if: ${{ needs.build.outputs['will-deploy'] == 'true' }}
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     permissions:
       contents: read
