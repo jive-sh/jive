@@ -3,7 +3,10 @@ description: Resolves the ordered list of environments to deploy to for this run
 
 inputs:
   deploy-environments:
-    description: 'JSON array of environments to deploy to, in order (e.g. ["Staging","Production"]), already resolved for the current branch, or "null" if the branch has no entry in deploy-branches. Ignored on PR runs.'
+    description: >-
+      JSON array of environments to deploy to, in order (e.g. ["Staging","Production"]),
+      already resolved for the current branch, or "null" if the branch has no entry in deploy-branches.
+      Ignored on PR runs.
     required: true
   enable-preview-deploys:
     description: >-
@@ -13,7 +16,7 @@ inputs:
 
 outputs:
   environments:
-    description: JSON array of environments to deploy to, in order. "Preview" if preview deploys are enabled for this run.
+    description: JSON array of {name, url} deployment environments, in order, including Preview when enabled.
     value: ${{ steps.sequence-deploys.outputs.environments }}
   will-deploy:
     description: "true if this run has at least one deployment environment."
@@ -29,8 +32,11 @@ runs:
         DEPLOY_ENVIRONMENTS: ${{ inputs.deploy-environments }}
         ENABLE_PREVIEW_DEPLOYS: ${{ inputs.enable-preview-deploys }}
         IS_PR: ${{ github.event_name == 'pull_request' }}
+        JIVE_CICD_INPUT: >-
+          {"environment":null,"context":{"provider":"github","data":${{ toJSON(github) }}}}
       run: |
         bun run - <<'BUN' >> "$GITHUB_OUTPUT"
+          const input = JSON.parse(process.env.JIVE_CICD_INPUT);
           const enablePreviewDeploys = process.env.ENABLE_PREVIEW_DEPLOYS === "true";
           const resolvedEnvironments = JSON.parse(process.env.DEPLOY_ENVIRONMENTS);
           const environments = [];
@@ -39,6 +45,21 @@ runs:
           } else if (resolvedEnvironments.length > 0) {
             environments.push(...resolvedEnvironments);
           }
-          console.log(`environments=${JSON.stringify(environments)}`);
+          const deployments = [];
+          for (const name of environments) {
+            const result = Bun.spawnSync(["bun", "run", "jive:cicd:deploy:url"], {
+              env: { ...process.env, JIVE_CICD_INPUT: JSON.stringify({ ...input, environment: name }) },
+              stdout: "pipe",
+              stderr: "inherit",
+            });
+            if (result.exitCode !== 0) process.exit(result.exitCode || 1);
+            const url = result.stdout.toString().trim();
+            if (!URL.canParse(url) || !["https:", "http:"].includes(new URL(url).protocol) || /\s/.test(url)) {
+              process.stderr.write(`jive:cicd:deploy:url must print one HTTP(S) URL for ${name}\n`);
+              process.exit(1);
+            }
+            deployments.push({ name, url });
+          }
+          console.log(`environments=${JSON.stringify(deployments)}`);
           console.log(`will-deploy=${environments.length > 0}`);
         BUN

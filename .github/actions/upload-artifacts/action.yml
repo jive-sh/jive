@@ -11,7 +11,10 @@ runs:
   steps:
     - name: Upload Artifacts Script
       shell: bash
-      run: bun run jive:cicd:upload-artifacts "${{ github.event_name }}"
+      env:
+        JIVE_CICD_INPUT: >-
+          {"environment":null,"context":{"provider":"github","data":${{ toJSON(github) }}}}
+      run: bun run jive:cicd:upload-artifacts
     - name: Upload Artifacts
       if: ${{ inputs['will-deploy'] == 'true' }}
       uses: actions/upload-artifact@v4

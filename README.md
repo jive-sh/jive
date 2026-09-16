@@ -2,6 +2,25 @@
 
 Jive is a workspace orchestration CLI for teams that want polyrepo ownership with monorepo-like local development ergonomics.
 
+## Current TODOs
+
+Resume TODOs:
+- [ ] startup and k8s
+
+Tooling TODOs:
+- [ ] Latest ozy/cli in
+- [ ] @jive-sh/dev-utils library with stuff like npm, git, github, etc
+- [ ] @jive-sh/cli-builder library
+- [ ] Publish jive-template-library
+- [ ] Switch ozy/cli and jive-template-library to jive-template-library
+- [ ] Switch @jive-sh/jive to jive-template-library
+- [ ] Move commands to @jive-sh/jive with updated logic
+- [ ] Background agent registration logic
+- [ ] Jive server deployed
+- [ ] Discord app and Github app accepting webhooks
+- [ ] Software factory online without packages
+- [ ] Software factory with packages
+
 ## What It Does
 
 - Loads repos into a shared workspace and wires local development across them
@@ -13,20 +32,23 @@ Jive is a workspace orchestration CLI for teams that want polyrepo ownership wit
 
 Commands with substantive behavior in the current codebase:
 
-- `jive load`
-- `jive unload`
-- `jive on`
-- `jive login`
-- `jive whoami`
-- `jive daemon`
-- `jive version`
+- `jive pkg load [github package]`
+- `jive pkg unload [npm package]`
+- `jive pkg on *npm`
+= `jive pkg save *`
+- `jive user login`
+- `jive user whoami`
+- `jive daemon` # we don't want this anymore it should be a separate entrypoint
+- `jive self version`
 
 Commands that are exposed but still mostly stub/TODO-shaped:
 
 - `jive init`
-- `jive create`
-- `jive templatize`
-- `jive update`
+- `jive pkg create [template] [github package]`
+- `jive pkg templatize [npm package] [template]`
+- `jive pkg update *`
+- `jive self update`
+- `jive pkg rename [npm package] [npm package]`
 
 ## Workspace Model
 
@@ -64,12 +86,12 @@ Jive treats the presence of `.jive/` as the workspace root. Workspace-managed st
 
 ## CI Conventions
 
-Jive ships reusable GitHub Actions pieces for package repos:
+Jive's [reusable pipeline](.github/workflows/reusable-pipeline.yml) invokes package-owned
+scripts for configuration, build, audit, artifact upload, URL resolution, and deployment.
+All hooks consume the same `JIVE_CICD_INPUT` JSON environment variable.
 
-- Workflow: `.github/workflows/reusable-pipeline.yml`
-- Composite actions: `actions/build`, `actions/deploy`, `actions/unit-tests`
-
-The current reusable pipeline handles build, unit tests, and deploy/integration-test sequencing.
+See [CI/CD Script API](CICD_API.md) for every hook's input, output, execution conditions,
+and examples, and the [input schema](.github/cicd-input.schema.json) for the shared boundary.
 
 ## Direction
 

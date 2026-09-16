@@ -1,40 +1,45 @@
 name: Jive Reusable CI/CD Pipeline
 
 on:
-  workflow_call:
-    inputs:
-      runs-on:
-        type: string
-        description: >-
-          JSON-encoded runs-on value to build and deploy on: a string, a string array, or a {group, labels} object
-          (the same shapes GHA's own "runs-on" key accepts for a job). Defaults to "ubuntu-latest".
-        required: false
-        default: '"ubuntu-latest"'
-      deploy-branches:
-        type: string
-        description: >-
-          JSON object mapping each deployable branch to its ordered list of environments to deploy to
-          (e.g. '{"main": ["Staging","Production"], "onebox": ["OneBox"]}').
-        required: true
-      run-on-pull-requests:
-        type: boolean
-        description: If true, opening/pushing to a pull request runs the build & unit-test pipeline, and also the deploy pipeline if preview deploys are enabled.
-        required: true
-      enable-preview-deploys:
-        type: boolean
-        description: >-
-          If true, a pull-request run or a workflow_dispatch on a branch not in deploy-branches also deploys
-          a "Preview" environment, in addition to running build & unit tests.
-        required: true
+  workflow_call: {}
+
+env:
+  JIVE_CICD_INPUT: >-
+    {"environment":null,"context":{"provider":"github","data":${{ toJSON(github) }}}}
 
 jobs:
+  config:
+    name: Load CI/CD Config
+    # Fixed runner: nothing is known about the caller's desired runner yet, since that's exactly
+    # what this job's job is to determine (it lives in the caller's own package.json, so it can
+    # only be read once the caller's repo is checked out).
+    runs-on: ubuntu-latest
+    outputs:
+      runs-on: ${{ steps.load.outputs.runs-on }}
+      deploy-verb: ${{ steps.load.outputs.deploy-verb }}
+      deploy-branches: ${{ steps.load.outputs.deploy-branches }}
+      run-on-pull-requests: ${{ steps.load.outputs.run-on-pull-requests }}
+      enable-preview-deploys: ${{ steps.load.outputs.enable-preview-deploys }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+      - name: Install Dependencies
+        shell: bash
+        run: bun install --frozen-lockfile
+      - name: Load CI/CD Config
+        id: load
+        uses: jive-sh/jive/.github/actions/load-cicd-config@main
+
   build:
     name: Build & Unit Test
+    needs: config
     if: >-
-      (inputs.run-on-pull-requests && github.event_name == 'pull_request')
+      (needs.config.outputs.run-on-pull-requests == 'true' && github.event_name == 'pull_request')
       || github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'push' && fromJSON(inputs.deploy-branches)[github.ref_name] != null)
-    runs-on: ${{ fromJSON(inputs.runs-on) }}
+      || (github.event_name == 'push' && fromJSON(needs.config.outputs.deploy-branches)[github.ref_name] != null)
+    runs-on: ${{ fromJSON(needs.config.outputs.runs-on) }}
     # For publishing
     permissions:
       # commenting contents out to prove that it's needed for checkout step
@@ -58,15 +63,15 @@ jobs:
       - name: Build
         shell: bash
         run: bun run jive:cicd:build
-      - name: Unit Tests
+      - name: Audit
         shell: bash
-        run: bun run jive:cicd:unit-tests
+        run: bun run jive:cicd:audit
       - name: Sequence Deploys
         id: sequence-deploys
         uses: jive-sh/jive/.github/actions/sequence-deploys@main
         with:
-          enable-preview-deploys: ${{ inputs.enable-preview-deploys }}
-          deploy-environments: ${{ toJSON(fromJSON(inputs.deploy-branches)[github.ref_name]) }}
+          enable-preview-deploys: ${{ needs.config.outputs.enable-preview-deploys }}
+          deploy-environments: ${{ toJSON(fromJSON(needs.config.outputs.deploy-branches)[github.ref_name]) }}
       - name: Upload Artifacts
         id: upload-artifacts
         uses: jive-sh/jive/.github/actions/upload-artifacts@main
@@ -74,10 +79,13 @@ jobs:
           will-deploy: ${{ steps.sequence-deploys.outputs['will-deploy'] }}
 
   deploy:
-    name: Deploy to ${{ matrix.environment }}
-    needs: build
+    name: ${{ needs.config.outputs.deploy-verb }} ${{ matrix.environment.name }}
+    needs: [config, build]
     if: ${{ needs.build.outputs['will-deploy'] == 'true' }}
-    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    runs-on: ${{ fromJSON(needs.config.outputs.runs-on) }}
+    environment:
+      name: deploy
+      url: ${{ matrix.environment.url }}
     permissions:
       contents: read
       id-token: write
@@ -86,6 +94,8 @@ jobs:
       matrix:
         environment: ${{ fromJSON(needs.build.outputs.environments) }}
     steps:
+      # TODO: In the future, use Jive-controlled runner with persistent state per workflow
+      #       such that there is no need to upload or download artifacts.
       - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
@@ -99,6 +109,6 @@ jobs:
       - name: Deploy
         shell: bash
         env:
-          ENVIRONMENT: ${{ matrix.environment }}
-        run: |
-          bun run jive:cicd:deploy "$ENVIRONMENT"
+          JIVE_CICD_INPUT: >-
+            {"environment":${{ toJSON(matrix.environment.name) }},"context":{"provider":"github","data":${{ toJSON(github) }}}}
+        run: bun run jive:cicd:deploy
