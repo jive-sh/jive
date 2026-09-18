@@ -1,0 +1,60 @@
+name: Jive Load Context
+description: >-
+  Emits the two JSON values the rest of the pipeline is driven by: this run's provider-neutral
+  pipeline context, and the package's own jive config as reported by jive:cicd:get-config.
+
+outputs:
+  pipeline-context:
+    description: >-
+      JSON describing this run, passed to hooks as JIVE_PIPELINE_CONTEXT. Computed here because it
+      is constant for the whole workflow.
+    value: ${{ steps.context.outputs['pipeline-context'] }}
+  package-config:
+    description: >-
+      The package's `jive` block as JSON. The get-config hook validates it against its template's
+      schema before printing, so this action passes it through without interpreting the fields.
+    value: ${{ steps.config.outputs['package-config'] }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute Pipeline Context
+      id: context
+      shell: bash
+      env:
+        GITHUB_CONTEXT: ${{ toJSON(github) }}
+      run: |
+        bun run - <<'BUN' >> "$GITHUB_OUTPUT"
+          const gh = JSON.parse(process.env.GITHUB_CONTEXT);
+          const [owner, name] = gh.repository.split("/");
+
+          // On a pull_request event `sha` is the merge commit GitHub synthesizes, which exists in no
+          // developer's history — the commit that was actually pushed is the PR head.
+          const pullRequest = gh.event?.pull_request;
+          const event = pullRequest
+            ? { type: "PULL_REQUEST", id: String(pullRequest.number), destinationBranch: gh.base_ref }
+            : gh.event_name === "push"
+              ? { type: "COMMIT" }
+              : { type: "DIRECT_WORKFLOW_RUN" };
+
+          const context = {
+            provider: "Github",
+            repository: { owner, name },
+            sourceBranch: pullRequest ? gh.head_ref : gh.ref_name,
+            sourceCommitSha: pullRequest ? pullRequest.head.sha : gh.sha,
+            event,
+          };
+          console.log(`pipeline-context=${JSON.stringify(context)}`);
+        BUN
+    - name: Load Package Config
+      id: config
+      shell: bash
+      run: |
+        CONFIG_JSON="$(bun run jive:cicd:get-config)"
+        export CONFIG_JSON
+        bun run - <<'BUN' >> "$GITHUB_OUTPUT"
+          // Parsed only to fail here rather than in every consumer's fromJSON, and re-serialized to
+          // collapse it onto the single line GITHUB_OUTPUT requires.
+          const config = JSON.parse(process.env.CONFIG_JSON);
+          console.log(`package-config=${JSON.stringify(config)}`);
+        BUN

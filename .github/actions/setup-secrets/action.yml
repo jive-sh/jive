@@ -16,9 +16,9 @@ runs:
       run: |
         bun run - <<'BUN'
           // TODO: move action to its own CLI rather than using composite
-          if (typeof process.env.SECRETS_JSON === "string") {
-            console.log(`::add-mask::${process.env.SECRETS_JSON}`);
-          }
+          // Mask each value, never the JSON blob itself: GitHub masks every line of a multi-line value
+          // separately, so masking the blob made a lone "{" a secret and silently dropped any job
+          // output containing one.
           const secrets = JSON.parse(process.env.SECRETS_JSON || "{}");
           for (const value of Object.values(secrets)) {
             if (value) console.log(`::add-mask::${value}`);
