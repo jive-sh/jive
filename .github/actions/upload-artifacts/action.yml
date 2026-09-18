@@ -5,6 +5,9 @@ inputs:
   will-deploy:
     description: Whether one or more environments will be deployed to after the build job
     required: true
+  pipeline-context:
+    description: JSON describing this run, passed to the hook as JIVE_PIPELINE_CONTEXT.
+    required: true
 
 runs:
   using: composite
@@ -12,12 +15,19 @@ runs:
     - name: Upload Artifacts Script
       shell: bash
       env:
-        JIVE_CICD_INPUT: >-
-          {"environment":null,"context":{"provider":"github","data":${{ toJSON(github) }}}}
+        JIVE_PIPELINE_CONTEXT: ${{ inputs['pipeline-context'] }}
       run: bun run jive:cicd:upload-artifacts
     - name: Upload Artifacts
       if: ${{ inputs['will-deploy'] == 'true' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: build-output
-        path: .
+        # node_modules is excluded and reinstalled by the deploy job instead: an artifact does not
+        # preserve file modes or symlinks, so an installed tree arrives unusable, and it is by far
+        # the largest thing here.
+        path: |
+          .
+          !node_modules
+          !node_modules/**
+        # Build output is sometimes a hidden directory (.next, .output), which is skipped by default.
+        include-hidden-files: true
