@@ -3,54 +3,47 @@ name: Jive Reusable CI/CD Pipeline
 on:
   workflow_call: {}
 
-env:
-  JIVE_CICD_INPUT: >-
-    {"environment":null,"context":{"provider":"github","data":${{ toJSON(github) }}}}
-
 jobs:
-  config:
-    name: Load CI/CD Config
+  context:
+    name: Load Context
     # Fixed runner: nothing is known about the caller's desired runner yet, since that's exactly
     # what this job's job is to determine (it lives in the caller's own package.json, so it can
     # only be read once the caller's repo is checked out).
     runs-on: ubuntu-latest
     outputs:
-      runs-on: ${{ steps.load.outputs.runs-on }}
-      deploy-verb: ${{ steps.load.outputs.deploy-verb }}
-      deploy-branches: ${{ steps.load.outputs.deploy-branches }}
-      run-on-pull-requests: ${{ steps.load.outputs.run-on-pull-requests }}
-      enable-preview-deploys: ${{ steps.load.outputs.enable-preview-deploys }}
+      pipeline-context: ${{ steps.load.outputs.pipeline-context }}
+      package-config: ${{ steps.load.outputs.package-config }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
       - name: Install Dependencies
         shell: bash
         run: bun install --frozen-lockfile
-      - name: Load CI/CD Config
+      - name: Load Context
         id: load
-        uses: jive-sh/jive/.github/actions/load-cicd-config@main
+        uses: jive-sh/jive/.github/actions/load-context@main
 
   build:
     name: Build & Unit Test
-    needs: config
+    needs: context
     if: >-
-      (needs.config.outputs.run-on-pull-requests == 'true' && github.event_name == 'pull_request')
+      (fromJSON(needs.context.outputs.package-config).cicd.runsOnPullRequests && github.event_name == 'pull_request')
       || github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'push' && fromJSON(needs.config.outputs.deploy-branches)[github.ref_name] != null)
-    runs-on: ${{ fromJSON(needs.config.outputs.runs-on) }}
+      || (github.event_name == 'push' && fromJSON(needs.context.outputs.package-config).cicd.deploy.branches[github.ref_name] != null)
+    runs-on: ${{ fromJSON(needs.context.outputs.package-config).cicd.runsOn }}
     # For publishing
-    permissions:
+    # permissions:
       # commenting contents out to prove that it's needed for checkout step
       # contents: read
-      id-token: write
+      # id-token: write
     outputs:
       environments: ${{ steps.sequence-deploys.outputs.environments }}
       will-deploy: ${{ steps.sequence-deploys.outputs['will-deploy'] }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
       - name: Setup Secrets
@@ -70,27 +63,34 @@ jobs:
         id: sequence-deploys
         uses: jive-sh/jive/.github/actions/sequence-deploys@main
         with:
-          enable-preview-deploys: ${{ needs.config.outputs.enable-preview-deploys }}
-          deploy-environments: ${{ toJSON(fromJSON(needs.config.outputs.deploy-branches)[github.ref_name]) }}
+          branch: ${{ github.ref_name }}
+          previews: ${{ fromJSON(needs.context.outputs.package-config).cicd.deploy.previews }}
+          deploy-environments: ${{ toJSON(fromJSON(needs.context.outputs.package-config).cicd.deploy.branches[github.ref_name]) }}
+          pipeline-context: ${{ needs.context.outputs.pipeline-context }}
+          sequential-deployments: ${{ fromJSON(needs.context.outputs.package-config).cicd.deploy.sequentially }}
       - name: Upload Artifacts
         id: upload-artifacts
         uses: jive-sh/jive/.github/actions/upload-artifacts@main
         with:
           will-deploy: ${{ steps.sequence-deploys.outputs['will-deploy'] }}
+          pipeline-context: ${{ needs.context.outputs.pipeline-context }}
 
   deploy:
-    name: ${{ needs.config.outputs.deploy-verb }} ${{ matrix.environment.name }}
-    needs: [config, build]
+    name: ${{ fromJSON(needs.context.outputs.package-config).cicd.deploy.verb }} ${{ matrix.environment.name }}
+    needs: [context, build]
     if: ${{ needs.build.outputs['will-deploy'] == 'true' }}
-    runs-on: ${{ fromJSON(needs.config.outputs.runs-on) }}
+    runs-on: ${{ fromJSON(needs.context.outputs.package-config).cicd.runsOn }}
     environment:
       name: deploy
       url: ${{ matrix.environment.url }}
-    permissions:
-      contents: read
-      id-token: write
+    # permissions:
+    #   contents: read
+    #   id-token: write
     strategy:
-      max-parallel: 1
+      # 256 is how we express "no limit": an expression can't omit the key, and a matrix holds at
+      # most 256 jobs, so this matches leaving max-parallel unset. Actual concurrency is still
+      # capped by runner availability and the plan's concurrent-job limit.
+      max-parallel: ${{ fromJSON(needs.context.outputs.package-config).cicd.deploy.sequentially && 1 || 256 }}
       matrix:
         environment: ${{ fromJSON(needs.build.outputs.environments) }}
     steps:
@@ -109,6 +109,6 @@ jobs:
       - name: Deploy
         shell: bash
         env:
-          JIVE_CICD_INPUT: >-
-            {"environment":${{ toJSON(matrix.environment.name) }},"context":{"provider":"github","data":${{ toJSON(github) }}}}
+          JIVE_DEPLOY_ENVIRONMENT: ${{ matrix.environment.name }}
+          JIVE_PIPELINE_CONTEXT: ${{ needs.context.outputs.pipeline-context }}
         run: bun run jive:cicd:deploy

@@ -2,16 +2,27 @@ name: Jive Sequence Deploys
 description: Resolves the ordered list of environments to deploy to for this run.
 
 inputs:
+  branch:
+    description: Name of the git branch the pipeline is running on.
+    required: true
   deploy-environments:
     description: >-
       JSON array of environments to deploy to, in order (e.g. ["Staging","Production"]),
-      already resolved for the current branch, or "null" if the branch has no entry in deploy-branches.
+      already resolved for the current branch, or "null" if the branch has no entry in deploy.branches.
       Ignored on PR runs.
     required: true
-  enable-preview-deploys:
+  pipeline-context:
+    description: JSON describing this run, passed to the URL hook as JIVE_PIPELINE_CONTEXT.
+    required: true
+  previews:
     description: >-
       If true, a pull-request run (or a "null" deploy-environments, e.g. workflow_dispatch on a branch not in
-      deploy-branches) resolves to a "Preview" environment. If false, those cases resolve to no deploy at all.
+      deploy.branches) resolves to a "Preview" environment. If false, those cases resolve to no deploy at all.
+    required: true
+  sequential-deployments:
+    description: >-
+      Whether deployments are sequential (one env must finish deploying before the next)
+      or parallel (all envs deployed at the same time).
     required: true
 
 outputs:
@@ -29,26 +40,43 @@ runs:
       id: sequence-deploys
       shell: bash
       env:
+        BRANCH: ${{ inputs.branch }}
         DEPLOY_ENVIRONMENTS: ${{ inputs.deploy-environments }}
-        ENABLE_PREVIEW_DEPLOYS: ${{ inputs.enable-preview-deploys }}
+        PREVIEWS: ${{ inputs.previews }}
         IS_PR: ${{ github.event_name == 'pull_request' }}
-        JIVE_CICD_INPUT: >-
-          {"environment":null,"context":{"provider":"github","data":${{ toJSON(github) }}}}
+        PIPELINE_CONTEXT: ${{ inputs['pipeline-context'] }}
+        SEQUENTIAL_DEPLOYMENTS: ${{ inputs['sequential-deployments'] }}
       run: |
         bun run - <<'BUN' >> "$GITHUB_OUTPUT"
-          const input = JSON.parse(process.env.JIVE_CICD_INPUT);
-          const enablePreviewDeploys = process.env.ENABLE_PREVIEW_DEPLOYS === "true";
+          // stdout is redirected into GITHUB_OUTPUT, so everything meant for the log goes to stderr.
+          const log = (message) => console.error(message);
+          const previews = process.env.PREVIEWS === "true";
+          const isPullRequest = process.env.IS_PR === "true";
+          const sequentialDeployments = process.env.SEQUENTIAL_DEPLOYMENTS === "true";
           const resolvedEnvironments = JSON.parse(process.env.DEPLOY_ENVIRONMENTS);
+          log(`cicd config specified the following deploy environments for branch ${process.env.BRANCH}: ${JSON.stringify(resolvedEnvironments)}`);
+          log(isPullRequest ? `is a pull request` : `is not a pull request`);
+          log(previews ? `previews deploys enabled` : `preview deploys disabled`);
           const environments = [];
-          if (resolvedEnvironments == null || process.env.IS_PR === "true") {
-            if (enablePreviewDeploys) environments.push("Preview");
-          } else if (resolvedEnvironments.length > 0) {
+          if (resolvedEnvironments == null || isPullRequest) {
+            // Is a PR or manual workflow run on a branch with no set deployment env
+            // so most we could do here is preview deploy the branch, but only if those are enabled.
+            if (previews) {
+              environments.push("Preview");
+            }
+          } else {
+            // Either a commit or a manual workflow run was done on a branch with some number of
+            // deploy environments. So we honor those listed deployments.
             environments.push(...resolvedEnvironments);
           }
           const deployments = [];
           for (const name of environments) {
             const result = Bun.spawnSync(["bun", "run", "jive:cicd:deploy:url"], {
-              env: { ...process.env, JIVE_CICD_INPUT: JSON.stringify({ ...input, environment: name }) },
+              env: {
+                ...process.env,
+                JIVE_DEPLOY_ENVIRONMENT: name,
+                JIVE_PIPELINE_CONTEXT: process.env.PIPELINE_CONTEXT,
+              },
               stdout: "pipe",
               stderr: "inherit",
             });
@@ -58,7 +86,14 @@ runs:
               process.stderr.write(`jive:cicd:deploy:url must print one HTTP(S) URL for ${name}\n`);
               process.exit(1);
             }
+            log(`${name} -> ${url}`);
             deployments.push({ name, url });
+          }
+          const concurrency = sequentialDeployments ? "sequentially" : "in parallel";
+          if (deployments.length > 0) {
+            log(`Deploying to ${deployments.join(",")} ${concurrency} (${deployments.length} total).`);
+          } else {
+            log(`Scheduling no deployments for this pipeline run.`);
           }
           console.log(`environments=${JSON.stringify(deployments)}`);
           console.log(`will-deploy=${environments.length > 0}`);
