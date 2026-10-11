@@ -1,0 +1,24 @@
+{
+  "name": "brain-caller",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/main.ts --compile --outfile dist/brain-caller.new && mv -f dist/brain-caller.new dist/brain-caller"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.2",
+    "@sourcegraph/scip-typescript": "^0.4.0",
+    "effect": "4.0.2"
+  },
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "5"
+  }
+}
