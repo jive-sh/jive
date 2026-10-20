@@ -78,9 +78,6 @@ jobs:
     needs: [context, build]
     if: ${{ needs.build.outputs['will-deploy'] == 'true' }}
     runs-on: ${{ fromJSON(needs.context.outputs.package-config).cicd.runsOn }}
-    environment:
-      name: ${{ matrix.environment.name }}
-      url: ${{ matrix.environment.url }}
     # ID token identifies the pipeline running the script. Jive and NPM both recognize these tokens to allow access to resources
     permissions:
       contents: read
@@ -89,7 +86,7 @@ jobs:
       # 256 is how we express "no limit": an expression can't omit the key, and a matrix holds at
       # most 256 jobs, so this matches leaving max-parallel unset. Actual concurrency is still
       # capped by runner availability and the plan's concurrent-job limit.
-      max-parallel: 256
+      max-parallel: ${{ fromJSON(needs.context.outputs.package-config).cicd.deploy.sequentially && 1 || 256 }}
       matrix:
         environment: ${{ fromJSON(needs.build.outputs.environments) }}
     steps:
