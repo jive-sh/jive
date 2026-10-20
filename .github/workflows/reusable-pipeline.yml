@@ -71,12 +71,10 @@ jobs:
           pipeline-context: ${{ needs.context.outputs.pipeline-context }}
 
   deploy:
+    name: ${{ fromJSON(needs.context.outputs.package-config).cicd.deploy.verb }} ${{ matrix.environment.name }}
     needs: [context, build]
     if: ${{ needs.build.outputs['will-deploy'] == 'true' }}
     runs-on: ubuntu-latest
-    environment:
-      name: ${{ matrix.environment.name }}
-      url: ${{ matrix.environment.url }}
     strategy:
       matrix:
         environment: ${{ fromJSON(needs.build.outputs.environments) }}
