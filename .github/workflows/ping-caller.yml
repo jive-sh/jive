@@ -3,4 +3,4 @@ on:
   workflow_dispatch:
 jobs:
   call:
-    uses: jive-sh/jive/.github/workflows/ping.yml@main
+    uses: jive-sh/jive/.github/workflows/test-nodeploy.yml@main
