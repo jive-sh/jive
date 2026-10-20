@@ -70,49 +70,12 @@ jobs:
           will-deploy: ${{ steps.sequence-deploys.outputs['will-deploy'] }}
           pipeline-context: ${{ needs.context.outputs.pipeline-context }}
 
-  # Long-term TODOS:
-  # 1. Branch allow list should probably be auto-set in GHA based on the package config
-  # 2. There should be an ability to set approval steps before a deployment
   deploy:
-    name: ${{ fromJSON(needs.context.outputs.package-config).cicd.deploy.verb }} ${{ matrix.environment.name }}
     needs: [context, build]
     if: ${{ needs.build.outputs['will-deploy'] == 'true' }}
-    runs-on: ${{ fromJSON(needs.context.outputs.package-config).cicd.runsOn }}
-    environment:
-      name: ${{ matrix.environment.name }}
-      url: ${{ matrix.environment.url }}
-    # ID token identifies the pipeline running the script. Jive and NPM both recognize these tokens to allow access to resources
-    permissions:
-      contents: read
-      id-token: write
+    runs-on: ubuntu-latest
     strategy:
-      # 256 is how we express "no limit": an expression can't omit the key, and a matrix holds at
-      # most 256 jobs, so this matches leaving max-parallel unset. Actual concurrency is still
-      # capped by runner availability and the plan's concurrent-job limit.
-      max-parallel: ${{ fromJSON(needs.context.outputs.package-config).cicd.deploy.sequentially && 1 || 256 }}
       matrix:
         environment: ${{ fromJSON(needs.build.outputs.environments) }}
     steps:
-      # TODO: In the future, use Jive-controlled runner with persistent state per workflow
-      #       such that there is no need to upload or download artifacts.
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-      # The artifact carries build output only, so the dependencies the deploy hook needs — including
-      # the template's own CLI — are reinstalled here rather than shipped through the artifact.
-      - name: Install Dependencies
-        shell: bash
-        run: bun install --frozen-lockfile
-      - name: Setup Secrets
-        uses: jive-sh/jive/.github/actions/setup-secrets@main
-        with:
-          secrets: ${{ toJSON(secrets) }}
-      - name: Deploy
-        shell: bash
-        env:
-          JIVE_DEPLOY_ENVIRONMENT: ${{ matrix.environment.name }}
-          JIVE_PIPELINE_CONTEXT: ${{ needs.context.outputs.pipeline-context }}
-        run: bun run jive:cicd:deploy
+      - run: echo ${{ matrix.environment.name }}
