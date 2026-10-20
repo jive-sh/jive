@@ -1,6 +1,0 @@
-name: Ping Caller
-on:
-  workflow_dispatch:
-jobs:
-  call:
-    uses: jive-sh/jive/.github/workflows/test-nodeploy.yml@main
