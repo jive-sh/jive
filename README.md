@@ -11,9 +11,9 @@ Tooling TODOs:
 - [ ] Latest ozy/cli in
 - [ ] @jive-sh/dev-utils library with stuff like npm, git, github, etc
 - [ ] @jive-sh/cli-builder library
-- [ ] Publish jive-template-library
-- [ ] Switch ozy/cli and jive-template-library to jive-template-library
-- [ ] Switch @jive-sh/jive to jive-template-library
+- [ ] Publish jive-abstract-library
+- [ ] Switch ozy/cli and jive-abstract-library to jive-abstract-library
+- [ ] Switch @jive-sh/jive to jive-abstract-library
 - [ ] Move commands to @jive-sh/jive with updated logic
 - [ ] Background agent registration logic
 - [ ] Jive server deployed
@@ -99,5 +99,5 @@ Jive’s broader direction is to automate more of the cross-repo coordination bu
 
 - workspace composition and linking
 - semver/version propagation
-- template-driven repo creation
+- repo creation from an abstract: `jive create <kind>` resolves `jive-abstract-<kind>` (`jive create library`, `jive create abstraction`, `jive create connector`)
 - coordinated release and dependency update flows
