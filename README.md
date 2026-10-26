@@ -87,7 +87,7 @@ Jive treats the presence of `.jive/` as the workspace root. Workspace-managed st
 ## CI Conventions
 
 Jive's [reusable pipeline](.github/workflows/reusable-pipeline.yml) invokes package-owned
-scripts for configuration, build, audit, artifact upload, URL resolution, and deployment.
+scripts for configuration, build, audit, artifact upload, deployment planning, and deployment.
 All hooks consume the same `JIVE_CICD_INPUT` JSON environment variable.
 
 See [CI/CD Script API](CICD_API.md) for every hook's input, output, execution conditions,

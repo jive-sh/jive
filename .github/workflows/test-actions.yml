@@ -1,0 +1,25 @@
+name: Test Actions
+
+# The reusable pipeline's actions run in every package that uses Jive, from this repo's main branch, so
+# their tests run on every change here rather than waiting for a package's pipeline to find a break.
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+jobs:
+  sequence-deploys:
+    name: Sequence Deploys
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .github/actions/sequence-deploys
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v7
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck and Test
+        run: bun run test
