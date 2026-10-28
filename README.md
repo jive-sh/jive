@@ -45,7 +45,6 @@ Commands that are exposed but still mostly stub/TODO-shaped:
 
 - `jive init`
 - `jive pkg create [template] [github package]`
-- `jive pkg templatize [npm package] [template]`
 - `jive pkg update *`
 - `jive self update`
 - `jive pkg rename [npm package] [npm package]`

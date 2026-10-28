@@ -104,28 +104,6 @@ export const program = e.pipe(
           ),
       ),
 
-      templatize: CLI.AsyncOptions(
-        () => git.localOrgs,
-        (org) =>
-          CLI.AsyncOptions(
-            () => e.pipe(
-              git.localRepos(org),
-              e.Effect.map(e.flow(
-                repoIdentifiers => repoIdentifiers.map(
-                  ({repo}) => repo
-                )
-              ))
-            ),
-            (repo) =>
-              CLI.Handle(
-                e.Effect.fn(function*([templateName]) {
-                  // TODO: extract template definition from existing repo instance
-                  yield* e.Effect.log(`Syncing ${org}/${repo} into template ${templateName}...`);
-                }),
-              ),
-          ),
-      ),
-
       login: CLI.Handle(() => e.Effect.gen(function* () {
         yield* auth.ensureLoggedIn({chooseNewUser: true});
       })),
