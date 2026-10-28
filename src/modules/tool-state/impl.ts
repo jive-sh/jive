@@ -1,20 +1,24 @@
 import * as e from "effect";
-import * as ep from "@effect/platform";
 import { randomUUID } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as modules from "@/modules";
+import { implementing, type EffectGen } from "effective-modules";
+import { BadArgumentError, BadPreconditionsError } from "@/errors";
+import { modules } from "@/modules";
 import { GithubAccessTokenType } from "@/modules/github/interface";
-import { MalformedKeyError, SshKey } from "@/modules/ssh/interface";
+import { SshKey } from "@/modules/ssh/ssh-key";
 import { WORKSPACE_DIR } from "./constants";
 import {
+  NotInWorkspaceError,
   RepoIntegrityCompromisedReason,
-  RepoIdentifier,
   VerifyRepoIntegrityError,
   type CurrentUserState,
+  type IToolState,
+  type RepoLocation,
   type TokenExpirationState,
   type TokenState,
 } from "./interface";
+import type { RepoIdentifier } from "./repo-identifier";
 
 const USERS_DIR = "users";
 const CURRENT_USER_FILE = "current.json";
@@ -36,215 +40,200 @@ interface CurrentUserStateJson {
   readonly sshKeyLocation: string | null;
 }
 
-export const ToolStateImpl = e.Layer.effect(modules.IToolState, e.Effect.gen(function*() {
-  const fileSystem = yield* ep.FileSystem.FileSystem;
-
-
-  public orgPath() {
-      return e.Effect.gen(this, function*() {
-        const toolState = yield* modules.toolState;
-        const { workspaceRoot } = yield* toolState.assertInWorkspace;
-        const subdir = this.orgName();
-        return {
-          relative: subdir,
-          absolute: path.join(workspaceRoot, this.orgName())
-        };
-      })
+/**
+ * The workspace is the nearest directory, from the current one upward, holding a `.jive` directory; its loaded
+ * repos live at `@<org>/<repo>` under it and its signed-in user's state under `.jive/users`.
+ */
+export class ToolStateImpl extends implementing(modules.toolState).uses(e.FileSystem.FileSystem) implements IToolState {
+  *assertInWorkspace(): EffectGen<{ workspaceRoot: string }, NotInWorkspaceError> {
+    const maybeWorkspaceRoot = yield* this.findWorkspaceRoot();
+    if (e.Option.isNone(maybeWorkspaceRoot)) {
+      return yield* new NotInWorkspaceError({ path: process.cwd() });
     }
-    public repoPath() {
-      return e.Effect.gen(this, function*() {
-        const {relative, absolute} = yield* this.orgPath();
-        const subdir = path.join(relative, this.repo);
-        return {
-          relative: subdir,
-          absolute: path.join(absolute, this.repo)
-        };
-      });
-    }
+    return { workspaceRoot: maybeWorkspaceRoot.value };
+  }
 
-  const ignorePathError = <A>(effect: e.Effect.Effect<A, ep.Error.PlatformError>) =>
-    e.pipe(
-      effect,
-      e.Effect.catchTag("BadArgument", "SystemError", () => e.Effect.void),
-    );
+  *usingTempDirectory<T, E, R>(doThing: (tempPath: string) => e.Effect.Effect<T, E, R>): EffectGen<T, E, R> {
+    const tempPath = path.join(os.tmpdir(), `jive-${randomUUID()}`);
+    yield* this.ensureDirectory(tempPath);
+    return yield* e.Effect.ensuring(doThing(tempPath), e.Effect.gen(() => this.removePathIfPresent(tempPath)));
+  }
 
-  const orDiePathError = <A>(effect: e.Effect.Effect<A, ep.Error.PlatformError>) =>
-    e.pipe(
-      effect,
-      e.Effect.catchTag("BadArgument", "SystemError", error => e.Effect.die(error)),
-    );
-
-  const pathExists = e.Effect.fn(function*(targetPath: string) {
-    return yield* e.pipe(
-      fileSystem.exists(targetPath),
-      e.Effect.catchTag("BadArgument", "SystemError", () => e.Effect.succeed(false)),
-    );
-  });
-
-  const readDirectory = e.Effect.fn(function*(targetPath: string) {
-    return yield* e.pipe(
-      fileSystem.readDirectory(targetPath),
-      e.Effect.catchTag("BadArgument", "SystemError", () => e.Effect.succeed([] as string[])),
-    );
-  });
-
-  const readFileString = e.Effect.fn(function*(targetPath: string) {
-    return yield* e.pipe(
-      fileSystem.readFileString(targetPath),
-      e.Effect.map(contents => e.Option.some(contents)),
-      e.Effect.catchTag("BadArgument", "SystemError", () => e.Effect.succeed(e.Option.none<string>())),
-    );
-  });
-
-  const statIsDirectory = e.Effect.fn(function*(targetPath: string) {
-    return yield* e.pipe(
-      fileSystem.stat(targetPath),
-      e.Effect.map(info => info.type === "Directory"),
-      e.Effect.catchTag("BadArgument", "SystemError", () => e.Effect.succeed(false)),
-    );
-  });
-
-  const findWorkspaceRoot = e.Effect.fn(function*() {
-    let currentPath = process.cwd();
-    while (true) {
-      if (yield* statIsDirectory(path.join(currentPath, WORKSPACE_DIR))) {
-        return e.Option.some(currentPath);
-      }
-      const parentPath = path.dirname(currentPath);
-      if (parentPath === currentPath) {
-        return e.Option.none<string>();
-      }
-      currentPath = parentPath;
-    }
-  });
-
-  const workspaceRoot = yield* findWorkspaceRoot();
-  const rootPath = e.Option.getOrElse(workspaceRoot, () => process.cwd());
-  const workspaceDirectoryPath = path.join(rootPath, WORKSPACE_DIR);
-  const usersDirectoryPath = path.join(workspaceDirectoryPath, USERS_DIR);
-  const currentUserFilePath = path.join(usersDirectoryPath, CURRENT_USER_FILE);
-
-  const getRepoPath = (repo: RepoIdentifier): string =>
-    path.join(rootPath, `@${repo.org}`, repo.repo);
-
-  const sanitizeUserDirectory = (email: string): string =>
-    email
-      .trim()
-      .toLowerCase()
-      .replace(/[\/\\]/g, "_");
-
-  const getUserDirectoryPath = (email: string): string =>
-    path.join(usersDirectoryPath, sanitizeUserDirectory(email));
-
-  const getManagedSshKeyPath = (email: string): string =>
-    path.join(getUserDirectoryPath(email), MANAGED_SSH_KEY_FILE);
-
-  const ensureDirectory = e.Effect.fn(function*(targetPath: string) {
-    yield* orDiePathError(fileSystem.makeDirectory(targetPath, { recursive: true }));
-  });
-
-  const removePathIfPresent = e.Effect.fn(function*(targetPath: string) {
-    yield* ignorePathError(fileSystem.remove(targetPath, { recursive: true, force: true }));
-  });
-
-  const readJsonObject = e.Effect.fn(function*(targetPath: string) {
-    const maybeContents = yield* readFileString(targetPath);
-    if (e.Option.isNone(maybeContents)) {
-      return e.Option.none<Record<string, unknown>>();
-    }
-    try {
-      const parsed = JSON.parse(maybeContents.value) as unknown;
-      if (parsed && typeof parsed === "object") {
-        return e.Option.some(parsed as Record<string, unknown>);
-      }
-    } catch {
-      return e.Option.none<Record<string, unknown>>();
-    }
-    return e.Option.none<Record<string, unknown>>();
-  });
-
-  const writeJsonObject = e.Effect.fn(function*(targetPath: string, data: object) {
-    yield* orDiePathError(fileSystem.writeFileString(targetPath, JSON.stringify(data, undefined, 2), { mode: 0o600 }));
-  });
-
-  const parseTokenExpiration = (value: unknown): e.Option.Option<TokenExpirationState> => {
-    if (!value || typeof value !== "object") {
-      return e.Option.none();
-    }
-    const expiration = value as Record<string, unknown>;
-    const tokenExpiresAt = typeof expiration.tokenExpiresAt === "number" ? expiration.tokenExpiresAt : NaN;
-    const refreshToken = typeof expiration.refreshToken === "string" ? expiration.refreshToken : "";
-    const refreshTokenExpiresAt =
-      typeof expiration.refreshTokenExpiresAt === "number" ?
-        expiration.refreshTokenExpiresAt :
-        NaN;
-    if (!Number.isFinite(tokenExpiresAt) || !refreshToken || !Number.isFinite(refreshTokenExpiresAt)) {
-      return e.Option.none();
-    }
-    return e.Option.some({
-      tokenExpiresAt,
-      refreshToken,
-      refreshTokenExpiresAt,
-    });
-  };
-
-  const parseTokenType = (value: unknown) =>
-    value === "GithubApp" ? GithubAccessTokenType.GithubApp() : GithubAccessTokenType.OAuthApp();
-
-  const parseTokenState = (value: unknown): e.Option.Option<TokenState> => {
-    if (!value || typeof value !== "object") {
-      return e.Option.none();
-    }
-    const tokenState = value as Record<string, unknown>;
-    const token = typeof tokenState.token === "string" ? tokenState.token : "";
-    const scope = typeof tokenState.scope === "string" ? tokenState.scope : "";
-    if (!token || !scope) {
-      return e.Option.none();
-    }
-    return e.Option.some({
-      tokenType: parseTokenType(tokenState.tokenType),
-      token,
-      scope,
-      expiration: parseTokenExpiration(tokenState.expiration),
-    });
-  };
-
-  const parseSshKey = e.Effect.fn(function*(value: unknown) {
-    if (typeof value !== "string" || !value) {
-      return e.Option.none<SshKey>();
-    }
-    return yield* e.pipe(
-      SshKey.make(value),
-      e.Effect.provideService(ep.FileSystem.FileSystem, fileSystem),
-      e.Effect.map(sshKey => e.Option.some(sshKey)),
-      e.Effect.catchTag("MalformedKeyError", () => e.Effect.succeed(e.Option.none<SshKey>())),
-    );
-  });
-
-  const readCurrentUserState = e.Effect.gen(function*() {
-    const currentUserJson = yield* readJsonObject(currentUserFilePath);
+  *readCurrentUserState(): EffectGen<e.Option.Option<CurrentUserState>> {
+    const currentUserJson = yield* this.readJsonObject(yield* this.currentUserFilePath());
     if (e.Option.isNone(currentUserJson)) {
-      return e.Option.none<CurrentUserState>();
+      return e.Option.none();
     }
 
-    const username = typeof currentUserJson.value.username === "string" ? currentUserJson.value.username : "";
-    const email = typeof currentUserJson.value.email === "string" ? currentUserJson.value.email : "";
-    const accessTokenState = parseTokenState(currentUserJson.value.accessTokenState);
+    const username = typeof currentUserJson.value["username"] === "string" ? currentUserJson.value["username"] : "";
+    const email = typeof currentUserJson.value["email"] === "string" ? currentUserJson.value["email"] : "";
+    const accessTokenState = parseTokenState(currentUserJson.value["accessTokenState"]);
     if (!username || !email || e.Option.isNone(accessTokenState)) {
-      return e.Option.none<CurrentUserState>();
+      return e.Option.none();
     }
 
-    const sshKey = yield* parseSshKey(currentUserJson.value.sshKeyLocation);
+    const sshKey = yield* this.parseSshKey(currentUserJson.value["sshKeyLocation"]);
     return e.Option.some({
       username,
       email,
       accessTokenState: accessTokenState.value,
       sshKey,
     });
-  });
+  }
 
-  const writeCurrentUserState = e.Effect.fn(function*(state: CurrentUserState) {
-    yield* ensureDirectory(usersDirectoryPath);
+  *clearCurrentUserState(): EffectGen<void> {
+    yield* this.removePathIfPresent(yield* this.currentUserFilePath());
+  }
+
+  *setUser({ email, username, accessToken }: { email: string; username: string; accessToken: TokenState }): EffectGen<CurrentUserState> {
+    const managedSshKeyPath = yield* this.managedSshKeyPath(email);
+    yield* this.ensureDirectory(path.dirname(managedSshKeyPath));
+    yield* this.removePathIfPresent(managedSshKeyPath);
+    yield* this.removePathIfPresent(`${managedSshKeyPath}.pub`);
+
+    const newUserState: CurrentUserState = {
+      username,
+      email,
+      accessTokenState: accessToken,
+      sshKey: e.Option.none(),
+    };
+    yield* this.writeCurrentUserState(newUserState);
+    return newUserState;
+  }
+
+  *setSshKey(sshKey: SshKey): EffectGen<{ newUserState: CurrentUserState }> {
+    const maybeCurrentUserState = yield* this.readCurrentUserState();
+    if (e.Option.isNone(maybeCurrentUserState)) {
+      return yield* e.Effect.die("IMPOSSIBLE TO SET SSH KEY WITH NO CURRENT USER");
+    }
+    const managedSshKey = yield* this.copyManagedSshKey(maybeCurrentUserState.value.email, sshKey);
+    const newUserState: CurrentUserState = {
+      ...maybeCurrentUserState.value,
+      sshKey: e.Option.some(managedSshKey),
+    };
+    yield* this.writeCurrentUserState(newUserState);
+    return { newUserState };
+  }
+
+  *verifyRepoIntegrity(repo: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError | BadArgumentError> {
+    const orgLocation = yield* this.orgPath(repo);
+    const repoLocation = yield* this.repoPath(repo);
+    const failWith = (reason: RepoIntegrityCompromisedReason) =>
+      VerifyRepoIntegrityError.toToolError(new VerifyRepoIntegrityError({ reason, repo }));
+    if (!(yield* this.pathExists(orgLocation.absolutePath))) {
+      return yield* failWith(RepoIntegrityCompromisedReason.OrgMissing());
+    }
+    if (!(yield* this.pathExists(repoLocation.absolutePath))) {
+      return yield* failWith(RepoIntegrityCompromisedReason.RepoMissing());
+    }
+    if (!(yield* this.pathExists(path.join(repoLocation.absolutePath, ".git")))) {
+      return yield* failWith(RepoIntegrityCompromisedReason.SubmoduleMisconfiguration());
+    }
+    if (!(yield* this.pathExists(path.join(repoLocation.absolutePath, "package.json")))) {
+      return yield* failWith(RepoIntegrityCompromisedReason.NotAPackage());
+    }
+    return repoLocation;
+  }
+
+  *orgPath(repoId: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError> {
+    const workspaceRoot = yield* this.workspaceRootOrFail();
+    return {
+      relativePath: repoId.orgName(),
+      absolutePath: path.join(workspaceRoot, repoId.orgName()),
+    };
+  }
+
+  *repoPath(repoId: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError> {
+    const { relativePath, absolutePath } = yield* this.orgPath(repoId);
+    return {
+      relativePath: path.join(relativePath, repoId.repo),
+      absolutePath: path.join(absolutePath, repoId.repo),
+    };
+  }
+
+  private *workspaceRootOrFail(): EffectGen<string, BadPreconditionsError> {
+    const maybeWorkspaceRoot = yield* this.findWorkspaceRoot();
+    if (e.Option.isNone(maybeWorkspaceRoot)) {
+      return yield* BadPreconditionsError.fromNotInWorkspaceError(new NotInWorkspaceError({ path: process.cwd() }));
+    }
+    return maybeWorkspaceRoot.value;
+  }
+
+  private *findWorkspaceRoot(): EffectGen<e.Option.Option<string>> {
+    let currentPath = process.cwd();
+    while (true) {
+      if (yield* this.isDirectory(path.join(currentPath, WORKSPACE_DIR))) {
+        return e.Option.some(currentPath);
+      }
+      const parentPath = path.dirname(currentPath);
+      if (parentPath === currentPath) {
+        return e.Option.none();
+      }
+      currentPath = parentPath;
+    }
+  }
+
+  /** User state is kept beside the workspace when there is one, and beside the current directory otherwise. */
+  private *usersDirectoryPath(): EffectGen<string> {
+    const rootPath = e.Option.getOrElse(yield* this.findWorkspaceRoot(), () => process.cwd());
+    return path.join(rootPath, WORKSPACE_DIR, USERS_DIR);
+  }
+
+  private *currentUserFilePath(): EffectGen<string> {
+    return path.join(yield* this.usersDirectoryPath(), CURRENT_USER_FILE);
+  }
+
+  private *managedSshKeyPath(email: string): EffectGen<string> {
+    const userDirectory = email.trim().toLowerCase().replace(/[\/\\]/g, "_");
+    return path.join(yield* this.usersDirectoryPath(), userDirectory, MANAGED_SSH_KEY_FILE);
+  }
+
+  private *pathExists(targetPath: string): EffectGen<boolean> {
+    return yield* e.pipe(
+      this.getDependency(e.FileSystem.FileSystem).exists(targetPath),
+      e.Effect.catchTag("PlatformError", () => e.Effect.succeed(false)),
+    );
+  }
+
+  private *isDirectory(targetPath: string): EffectGen<boolean> {
+    return yield* e.pipe(
+      this.getDependency(e.FileSystem.FileSystem).stat(targetPath),
+      e.Effect.map(info => info.type === "Directory"),
+      e.Effect.catchTag("PlatformError", () => e.Effect.succeed(false)),
+    );
+  }
+
+  private *ensureDirectory(targetPath: string): EffectGen<void> {
+    yield* e.Effect.orDie(this.getDependency(e.FileSystem.FileSystem).makeDirectory(targetPath, { recursive: true }));
+  }
+
+  private *removePathIfPresent(targetPath: string): EffectGen<void> {
+    yield* e.pipe(
+      this.getDependency(e.FileSystem.FileSystem).remove(targetPath, { recursive: true, force: true }),
+      e.Effect.catchTag("PlatformError", () => e.Effect.void),
+    );
+  }
+
+  private *readJsonObject(targetPath: string): EffectGen<e.Option.Option<Record<string, unknown>>> {
+    const maybeContents = yield* e.pipe(
+      this.getDependency(e.FileSystem.FileSystem).readFileString(targetPath),
+      e.Effect.map(e.Option.some),
+      e.Effect.catchTag("PlatformError", () => e.Effect.succeed(e.Option.none<string>())),
+    );
+    if (e.Option.isNone(maybeContents)) {
+      return e.Option.none();
+    }
+    try {
+      const parsed: unknown = JSON.parse(maybeContents.value);
+      return parsed !== null && typeof parsed === "object" ? e.Option.some(parsed as Record<string, unknown>) : e.Option.none();
+    } catch {
+      return e.Option.none();
+    }
+  }
+
+  private *writeCurrentUserState(state: CurrentUserState): EffectGen<void> {
+    const currentUserFilePath = yield* this.currentUserFilePath();
+    yield* this.ensureDirectory(path.dirname(currentUserFilePath));
     const serialized: CurrentUserStateJson = {
       username: state.username,
       email: state.email,
@@ -266,104 +255,72 @@ export const ToolStateImpl = e.Layer.effect(modules.IToolState, e.Effect.gen(fun
         onSome: sshKey => sshKey.location,
       }),
     };
-    yield* writeJsonObject(currentUserFilePath, serialized);
-  });
+    yield* e.Effect.orDie(this.getDependency(e.FileSystem.FileSystem).writeFileString(
+      currentUserFilePath,
+      JSON.stringify(serialized, undefined, 2),
+      { mode: 0o600 },
+    ));
+  }
 
-  const copyManagedSshKey = e.Effect.fn(function*(email: string, sshKey: SshKey) {
-    const targetPath = getManagedSshKeyPath(email);
-    yield* ensureDirectory(getUserDirectoryPath(email));
-
-    const privateKeyContents = yield* e.pipe(
-      fileSystem.readFileString(sshKey.location),
-      e.Effect.catchTag("BadArgument", "SystemError", error => e.Effect.die(error)),
+  private *parseSshKey(value: unknown): EffectGen<e.Option.Option<SshKey>> {
+    if (typeof value !== "string" || !value) {
+      return e.Option.none();
+    }
+    return yield* e.pipe(
+      SshKey.make(value),
+      e.Effect.provideService(e.FileSystem.FileSystem, this.getDependency(e.FileSystem.FileSystem)),
+      e.Effect.map(e.Option.some),
+      e.Effect.catchTag("MalformedKeyError", () => e.Effect.succeed(e.Option.none<SshKey>())),
     );
-    const publicKeyContents = yield* e.pipe(
-      fileSystem.readFileString(`${sshKey.location}.pub`),
-      e.Effect.catchTag("BadArgument", "SystemError", error => e.Effect.die(error)),
-    );
+  }
 
-    yield* orDiePathError(fileSystem.writeFileString(targetPath, privateKeyContents, { mode: 0o600 }));
-    yield* orDiePathError(fileSystem.writeFileString(`${targetPath}.pub`, publicKeyContents, { mode: 0o644 }));
+  private *copyManagedSshKey(email: string, sshKey: SshKey): EffectGen<SshKey> {
+    const fileSystem = this.getDependency(e.FileSystem.FileSystem);
+    const targetPath = yield* this.managedSshKeyPath(email);
+    yield* this.ensureDirectory(path.dirname(targetPath));
+
+    const privateKeyContents = yield* e.Effect.orDie(fileSystem.readFileString(sshKey.location));
+    const publicKeyContents = yield* e.Effect.orDie(fileSystem.readFileString(`${sshKey.location}.pub`));
+    yield* e.Effect.orDie(fileSystem.writeFileString(targetPath, privateKeyContents, { mode: 0o600 }));
+    yield* e.Effect.orDie(fileSystem.writeFileString(`${targetPath}.pub`, publicKeyContents, { mode: 0o644 }));
 
     return yield* e.pipe(
       SshKey.make(targetPath),
-      e.Effect.provideService(ep.FileSystem.FileSystem, fileSystem),
-      e.Effect.catchTag("MalformedKeyError", (error: MalformedKeyError) => e.Effect.die(error)),
+      e.Effect.provideService(e.FileSystem.FileSystem, fileSystem),
+      e.Effect.orDie,
     );
+  }
+}
+
+function parseTokenExpiration(value: unknown): e.Option.Option<TokenExpirationState> {
+  if (!value || typeof value !== "object") {
+    return e.Option.none();
+  }
+  const expiration = value as Record<string, unknown>;
+  const tokenExpiresAt = typeof expiration["tokenExpiresAt"] === "number" ? expiration["tokenExpiresAt"] : NaN;
+  const refreshToken = typeof expiration["refreshToken"] === "string" ? expiration["refreshToken"] : "";
+  const refreshTokenExpiresAt =
+    typeof expiration["refreshTokenExpiresAt"] === "number" ? expiration["refreshTokenExpiresAt"] : NaN;
+  if (!Number.isFinite(tokenExpiresAt) || !refreshToken || !Number.isFinite(refreshTokenExpiresAt)) {
+    return e.Option.none();
+  }
+  return e.Option.some({ tokenExpiresAt, refreshToken, refreshTokenExpiresAt });
+}
+
+function parseTokenState(value: unknown): e.Option.Option<TokenState> {
+  if (!value || typeof value !== "object") {
+    return e.Option.none();
+  }
+  const tokenState = value as Record<string, unknown>;
+  const token = typeof tokenState["token"] === "string" ? tokenState["token"] : "";
+  const scope = typeof tokenState["scope"] === "string" ? tokenState["scope"] : "";
+  if (!token || !scope) {
+    return e.Option.none();
+  }
+  return e.Option.some({
+    tokenType: tokenState["tokenType"] === "GithubApp" ? GithubAccessTokenType.GithubApp() : GithubAccessTokenType.OAuthApp(),
+    token,
+    scope,
+    expiration: parseTokenExpiration(tokenState["expiration"]),
   });
-
-  return {
-    getRepoPath,
-    inWorkspace: e.Option.isSome(workspaceRoot),
-    usingTempDirectory: <T, E>(doThing: (tempPath: string) => e.Effect.Effect<T, E>) => e.Effect.gen(function*() {
-      const tempPath = path.join(os.tmpdir(), `jive-${randomUUID()}`);
-      yield* ensureDirectory(tempPath);
-      return yield* e.Effect.ensuring(
-        doThing(tempPath),
-        removePathIfPresent(tempPath),
-      );
-    }),
-    readCurrentUserState,
-    clearCurrentUserState: e.Effect.gen(function*() {
-      yield* removePathIfPresent(currentUserFilePath);
-    }),
-    setUser: e.Effect.fn(function*({
-      email,
-      username,
-      accessToken,
-    }: {
-      readonly email: string;
-      readonly username: string;
-      readonly accessToken: TokenState;
-    }) {
-      const managedSshKeyPath = getManagedSshKeyPath(email);
-      yield* ensureDirectory(getUserDirectoryPath(email));
-      yield* removePathIfPresent(managedSshKeyPath);
-      yield* removePathIfPresent(`${managedSshKeyPath}.pub`);
-
-      const newUserState: CurrentUserState = {
-        username,
-        email,
-        accessTokenState: accessToken,
-        sshKey: e.Option.none(),
-      };
-      yield* writeCurrentUserState(newUserState);
-      return newUserState;
-    }),
-    setSshKey: e.Effect.fn(function*(sshKey: SshKey) {
-      const maybeCurrentUserState = yield* readCurrentUserState;
-      if (e.Option.isNone(maybeCurrentUserState)) {
-        return yield* e.Effect.dieMessage("IMPOSSIBLE TO SET SSH KEY WITH NO CURRENT USER");
-      }
-      const managedSshKey = yield* copyManagedSshKey(maybeCurrentUserState.value.email, sshKey);
-      const newUserState: CurrentUserState = {
-        ...maybeCurrentUserState.value,
-        sshKey: e.Option.some(managedSshKey),
-      };
-      yield* writeCurrentUserState(newUserState);
-      return { newUserState };
-    }),
-    verifyRepoIntegrity: e.Effect.fn(function*(repo: RepoIdentifier) {
-      const repoPath = getRepoPath(repo);
-      if (!(yield* pathExists(repoPath))) {
-        return yield* new VerifyRepoIntegrityError({
-          reason: RepoIntegrityCompromisedReason.RepoMissing(),
-        });
-      }
-      if (!(yield* pathExists(path.join(repoPath, ".git")))) {
-        return yield* new VerifyRepoIntegrityError({
-          reason: RepoIntegrityCompromisedReason.SubmoduleMisconfiguration(),
-        });
-      }
-      if (!(yield* pathExists(path.join(repoPath, "package.json")))) {
-        return yield* new VerifyRepoIntegrityError({
-          reason: RepoIntegrityCompromisedReason.NotAPackage(),
-        });
-      }
-      return { path: repoPath };
-    }),
-    addRepo: e.Effect.fn(function*(repo: RepoIdentifier) {
-      yield* ensureDirectory(path.dirname(getRepoPath(repo)));
-    }),
-  };
-}));
+}

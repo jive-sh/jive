@@ -1,5 +1,5 @@
-import * as e from "effect";
+import type { EffectGen } from "effective-modules";
 
 export interface ITemplates {
-  readonly availableTemplates: e.Effect.Effect<string[]>;
+  availableTemplates(): EffectGen<string[]>;
 }

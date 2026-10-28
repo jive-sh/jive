@@ -1,44 +1,113 @@
 import * as e from "effect";
-import * as ep from "@effect/platform";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as modules from "@/modules";
-import { ISsh, type SshKey } from "./interface";
-import { SshKey as SshKeyImpl } from "./ssh-key";
+import { implementing, type EffectGen } from "effective-modules";
+import { OSPlatform } from "jive-abstract-library";
+import { modules } from "@/modules";
+import type { ConnectedYubiKey } from "@/modules/yubikey/interface";
+import type { ISsh } from "./interface";
+import { SshKey } from "./ssh-key";
 
-export const SshImpl = e.Layer.effect(ISsh, e.Effect.gen(function*() {
-  const fileSystem = yield* ep.FileSystem.FileSystem;
-  const hostShell = yield* modules.IHostShell;
-  const yubikey = yield* modules.IYubiKey;
-  const localSshDirectory = path.join(os.homedir(), ".ssh");
-  const hostEnv = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
-  );
+const SSH_KEYGEN_COMMAND = "ssh-keygen";
 
-  const ensureDirectory = e.Effect.fn(function*(targetPath: string) {
-    yield* e.pipe(
-      fileSystem.makeDirectory(targetPath, { recursive: true }),
-      e.Effect.catchTag("BadArgument", "SystemError", error => e.Effect.die(error)),
+export class SshImpl extends implementing(modules.ssh).uses(e.FileSystem.FileSystem, OSPlatform, modules.yubikey) implements ISsh {
+  private readonly localSshDirectory = path.join(os.homedir(), ".ssh");
+
+  *restoreResidentSshKeys(inDirectory: string): EffectGen<SshKey[]> {
+    yield* this.ensureResidentKeySupport();
+    yield* this.ensureDirectory(inDirectory);
+
+    const restoreExitCode = yield* this.runSshKeygen(["-K"], inDirectory);
+    if (restoreExitCode !== 0) {
+      return [];
+    }
+    return yield* this.loadKeysFromDirectory(inDirectory);
+  }
+
+  *listLocalSshKeys(): EffectGen<{ pathsScanned: string[]; keys: SshKey[] }> {
+    return {
+      pathsScanned: [this.localSshDirectory],
+      keys: yield* this.loadKeysFromDirectory(this.localSshDirectory),
+    };
+  }
+
+  *createSshKey(email: string, inDirectory: string, onYubikey?: ConnectedYubiKey): EffectGen<SshKey> {
+    yield* this.ensureDirectory(inDirectory);
+
+    const targetPath =
+      onYubikey ?
+        path.join(inDirectory, `id_ed25519_sk_${onYubikey.serial}`) :
+        path.join(inDirectory, "id_ed25519");
+
+    if (onYubikey) {
+      yield* this.ensureResidentKeySupport();
+      const yubikey = this.dependencies.yubikey;
+
+      const connectedYubiKeys = yield* yubikey.listConnectedDevices();
+      if (!connectedYubiKeys.some(connectedYubiKey => connectedYubiKey.serial === onYubikey.serial)) {
+        return yield* e.Effect.die(`YubiKey ${onYubikey.serial} is not currently connected`);
+      }
+      if (connectedYubiKeys.length > 1) {
+        yield* e.Effect.logError(
+          `Multiple YubiKeys are connected. Disconnect all but serial ${onYubikey.serial} before creating a resident SSH key.`,
+        );
+        return yield* e.Effect.die("multiple YubiKeys connected during resident SSH key creation");
+      }
+
+      const pinConfigured = yield* yubikey.ensurePinConfigured(onYubikey.serial);
+      if (!pinConfigured) {
+        return yield* e.Effect.die(`YubiKey ${onYubikey.serial} is not ready for resident SSH keys`);
+      }
+
+      const createExitCode = yield* this.runSshKeygen(
+        ["-t", "ed25519-sk", "-O", "resident", "-C", email, "-f", targetPath, "-N", ""],
+        inDirectory,
+      );
+      if (createExitCode !== 0) {
+        return yield* e.Effect.die(`failed to create resident SSH key on YubiKey ${onYubikey.serial}`);
+      }
+    } else {
+      const createExitCode = yield* this.runSshKeygen(
+        ["-t", "ed25519", "-C", email, "-f", targetPath, "-N", ""],
+        inDirectory,
+      );
+      if (createExitCode !== 0) {
+        return yield* e.Effect.die("failed to create local SSH key");
+      }
+    }
+
+    return yield* e.pipe(
+      SshKey.make(targetPath),
+      e.Effect.provideService(e.FileSystem.FileSystem, this.getDependency(e.FileSystem.FileSystem)),
+      e.Effect.orDie,
     );
-  });
+  }
 
-  const ensureResidentKeySupport = e.Effect.gen(function*() {
-    if (hostShell.platform._tag !== "MacOs") {
+  /** macOS's own /usr/bin/ssh-keygen cannot make or restore resident keys, so a full OpenSSH must come first on PATH. */
+  private *ensureResidentKeySupport(): EffectGen<void> {
+    const { os: platform } = yield* this.dependencies.OSPlatform.getCurrentPlatform();
+    if (platform !== "darwin") {
       return;
     }
-    if (sshKeygen.path !== "/usr/bin/ssh-keygen") {
+    const maybeSshKeygen = yield* this.dependencies.OSPlatform.findExecutable(SSH_KEYGEN_COMMAND);
+    if (e.Option.isSome(maybeSshKeygen) && maybeSshKeygen.value !== "/usr/bin/ssh-keygen") {
       return;
     }
     yield* e.Effect.logError(
       "macOS /usr/bin/ssh-keygen does not support the resident-key workflow Jive needs. Install full OpenSSH and retry.",
     );
-    return yield* e.Effect.dieMessage("resident SSH keys require a full OpenSSH install");
-  });
+    return yield* e.Effect.die("resident SSH keys require a full OpenSSH install");
+  }
 
-  const loadKeysFromDirectory = e.Effect.fn(function*(directoryPath: string) {
+  private *ensureDirectory(targetPath: string): EffectGen<void> {
+    yield* e.Effect.orDie(this.getDependency(e.FileSystem.FileSystem).makeDirectory(targetPath, { recursive: true }));
+  }
+
+  private *loadKeysFromDirectory(directoryPath: string): EffectGen<SshKey[]> {
+    const fileSystem = this.getDependency(e.FileSystem.FileSystem);
     const entries = yield* e.pipe(
       fileSystem.readDirectory(directoryPath),
-      e.Effect.catchTag("BadArgument", "SystemError", () => e.Effect.succeed([] as string[])),
+      e.Effect.catchTag("PlatformError", () => e.Effect.succeed([] as string[])),
     );
 
     const keys: SshKey[] = [];
@@ -47,96 +116,26 @@ export const SshImpl = e.Layer.effect(ISsh, e.Effect.gen(function*() {
         continue;
       }
       const maybeKey = yield* e.pipe(
-        SshKeyImpl.make(path.join(directoryPath, entry.slice(0, -".pub".length))),
-        e.Effect.provideService(ep.FileSystem.FileSystem, fileSystem),
-        e.Effect.map(key => e.Option.some(key)),
-        e.Effect.catchTag("MalformedKeyError", () => e.Effect.succeed(e.Option.none<SshKey>())),
+        SshKey.make(path.join(directoryPath, entry.slice(0, -".pub".length))),
+        e.Effect.provideService(e.FileSystem.FileSystem, fileSystem),
+        e.Effect.option,
       );
       if (e.Option.isSome(maybeKey)) {
         keys.push(maybeKey.value);
       }
     }
     return keys;
-  });
+  }
 
-  const runSshKeygen = e.Effect.fn(function*(args: readonly string[], runInDir: string) {
-    const { exitCode } = yield* e.pipe(
-      hostShell.runInheritIO({
-        args,
-        runInDir,
-        env: hostEnv,
-      })(sshKeygen),
-      e.Effect.catchTag("BadArgument", "SystemError", error => e.Effect.die(error)),
-    );
+  private *runSshKeygen(args: ReadonlyArray<string>, inDirectory: string): EffectGen<number> {
+    const { exitCode } = yield* e.Effect.orDie(e.Effect.gen(() => this.dependencies.OSPlatform.spawnProcess({
+      command: SSH_KEYGEN_COMMAND,
+      args,
+      cwd: inDirectory,
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    })));
     return exitCode;
-  });
-
-  return {
-    restoreResidentSshKeys: e.Effect.fn(function*(inDirectory: string) {
-      yield* ensureResidentKeySupport;
-      yield* ensureDirectory(inDirectory);
-
-      const restoreExitCode = yield* runSshKeygen(["-K"], inDirectory);
-      if (restoreExitCode !== 0) {
-        return [] as SshKey[];
-      }
-      return yield* loadKeysFromDirectory(inDirectory);
-    }),
-    listLocalSshKeys: e.Effect.fn(function*() {
-      return {
-        pathsScanned: [localSshDirectory],
-        keys: yield* loadKeysFromDirectory(localSshDirectory),
-      };
-    }),
-    createSshKey: e.Effect.fn(function*(email: string, inDirectory: string, onYubikey) {
-      yield* ensureDirectory(inDirectory);
-
-      const targetPath =
-        onYubikey ?
-          path.join(inDirectory, `id_ed25519_sk_${onYubikey.serial}`) :
-          path.join(inDirectory, "id_ed25519");
-
-      if (onYubikey) {
-        yield* ensureResidentKeySupport;
-
-        const connectedYubiKeys = yield* yubikey.listConnectedDevices;
-        if (!connectedYubiKeys.some(connectedYubiKey => connectedYubiKey.serial === onYubikey.serial)) {
-          return yield* e.Effect.dieMessage(`YubiKey ${onYubikey.serial} is not currently connected`);
-        }
-        if (connectedYubiKeys.length > 1) {
-          yield* e.Effect.logError(
-            `Multiple YubiKeys are connected. Disconnect all but serial ${onYubikey.serial} before creating a resident SSH key.`,
-          );
-          return yield* e.Effect.dieMessage("multiple YubiKeys connected during resident SSH key creation");
-        }
-
-        const pinConfigured = yield* yubikey.ensurePinConfigured(onYubikey.serial);
-        if (!pinConfigured) {
-          return yield* e.Effect.dieMessage(`YubiKey ${onYubikey.serial} is not ready for resident SSH keys`);
-        }
-
-        const createExitCode = yield* runSshKeygen(
-          ["-t", "ed25519-sk", "-O", "resident", "-C", email, "-f", targetPath, "-N", ""],
-          inDirectory,
-        );
-        if (createExitCode !== 0) {
-          return yield* e.Effect.dieMessage(`failed to create resident SSH key on YubiKey ${onYubikey.serial}`);
-        }
-      } else {
-        const createExitCode = yield* runSshKeygen(
-          ["-t", "ed25519", "-C", email, "-f", targetPath, "-N", ""],
-          inDirectory,
-        );
-        if (createExitCode !== 0) {
-          return yield* e.Effect.dieMessage("failed to create local SSH key");
-        }
-      }
-
-      return yield* e.pipe(
-        SshKeyImpl.make(targetPath),
-        e.Effect.provideService(ep.FileSystem.FileSystem, fileSystem),
-        e.Effect.catchTag("MalformedKeyError", error => e.Effect.die(error)),
-      );
-    }),
-  };
-}));
+  }
+}

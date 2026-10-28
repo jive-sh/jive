@@ -1,20 +1,20 @@
 import * as e from "effect";
-import type { RepoIdentifier } from "@/modules/tool-state/interface";
-import { INpm } from "./interface";
+import { implementing, type EffectGen } from "effective-modules";
+import { modules } from "@/modules";
+import type { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
+import type { INpm, NpmUser } from "./interface";
 
-export const NpmImpl = e.Layer.effect(INpm, e.Effect.gen(function*() {
-  return {
-    ensureSignedIn: e.Effect.fn(function*() {
-      return yield* e.Effect.dieMessage("npm.ensureSignedIn is not implemented");
-    }),
-    createOrg: e.Effect.fn(function*(_org: string) {
-      return yield* e.Effect.dieMessage("npm.createOrg is not implemented");
-    }),
-    ensureOrgExists: e.Effect.fn(function*(_org: string) {
-      return yield* e.Effect.dieMessage("npm.ensureOrgExists is not implemented");
-    }),
-    setupTrustedPublishing: e.Effect.fn(function*(_repo: RepoIdentifier) {
-      return yield* e.Effect.dieMessage("npm.setupTrustedPublishing is not implemented");
-    }),
-  };
-}));
+export class NpmImpl extends implementing(modules.npm) implements INpm {
+  *ensureSignedIn(): EffectGen<NpmUser> {
+    return yield* e.Effect.die("npm.ensureSignedIn is not implemented");
+  }
+  *createOrg(_org: string): EffectGen<void> {
+    return yield* e.Effect.die("npm.createOrg is not implemented");
+  }
+  *ensureOrgExists(_org: string): EffectGen<void> {
+    return yield* e.Effect.die("npm.ensureOrgExists is not implemented");
+  }
+  *setupTrustedPublishing(_repo: RepoIdentifier): EffectGen<void> {
+    return yield* e.Effect.die("npm.setupTrustedPublishing is not implemented");
+  }
+}

@@ -1,6 +1,5 @@
 import * as e from "effect";
-import * as path from "node:path";
-import { BadArgumentError, modules } from "@/modules";
+import { BadArgumentError } from "@/errors";
 
 export class RepoIdentifier {
   public constructor(
@@ -15,6 +14,9 @@ export class RepoIdentifier {
   }
   public equals(other: RepoIdentifier) {
     return other.packageName() === this.packageName();
+  }
+  public toString() {
+    return this.packageName();
   }
   public static fromRelativePath(relativePath: string): e.Effect.Effect<RepoIdentifier, BadArgumentError> {
     if (!relativePath.startsWith("@")) {

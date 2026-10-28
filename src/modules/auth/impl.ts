@@ -1,27 +1,33 @@
-import { Option, Effect, pipe } from "effect";
-import { modules } from "@/modules";
+import * as e from "effect";
+import { implementing, type EffectGen } from "effective-modules";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
-import { NotLoggedInError, type CurrentUser, type IAuth } from "./interface";
+import { modules } from "@/modules";
 import { type GithubWriteToken } from "@/modules/github/interface";
+import { NotLoggedInError, type CurrentUser, type IAuth } from "./interface";
 import { selectSshKey } from "./ssh-key-selection";
 import { warnOnInaccessibleRepos } from "./warn-on-inaccessible-repos";
-import { effunct, Implementing } from "effective-modules";
 
-export class AuthImpl extends Implementing(modules.auth).Uses(modules.git, modules.github, modules.toolState, modules.ssh, modules.yubikey) implements IAuth {
-  *assertLoggedIn(): Effect.fn.Return<CurrentUser, BadArgumentError | BadPreconditionsError> {
+export class AuthImpl extends implementing(modules.auth).uses(
+  modules.git,
+  modules.github,
+  modules.toolState,
+  modules.ssh,
+  modules.yubikey,
+  e.Terminal.Terminal,
+  e.FileSystem.FileSystem,
+  e.Path.Path,
+) implements IAuth {
+  *assertLoggedIn(): EffectGen<CurrentUser, BadArgumentError | BadPreconditionsError> {
     const { toolState, github } = this.dependencies;
-    yield* pipe(
-      toolState.assertInWorkspace,
-      Effect.catchTag("NotInWorkspaceError", BadPreconditionsError.fromNotInWorkspaceError)
-    );
-    const maybeCurrentUserState = yield* toolState.readCurrentUserState;
-    if (Option.isNone(maybeCurrentUserState)) {
+    yield* this.assertInWorkspace();
+    const maybeCurrentUserState = yield* toolState.readCurrentUserState();
+    if (e.Option.isNone(maybeCurrentUserState)) {
       return yield* BadPreconditionsError.fromNotLoggedInError(new NotLoggedInError({}));
     }
     const currentUserState = maybeCurrentUserState.value;
-    const {accessToken} = yield* github.resolveAccessToken(currentUserState);
-    if (Option.isNone(currentUserState.sshKey)) {
-      return yield* BadPreconditionsError.fromNotLoggedInError(new NotLoggedInError({reason: "no ssh key found"}));
+    const { accessToken } = yield* github.resolveAccessToken(currentUserState);
+    if (e.Option.isNone(currentUserState.sshKey)) {
+      return yield* BadPreconditionsError.fromNotLoggedInError(new NotLoggedInError({ reason: "no ssh key found" }));
     }
     const sshKey = currentUserState.sshKey.value;
     const registeredSshKey = yield* github.sshKeyExists(accessToken, sshKey);
@@ -33,7 +39,7 @@ export class AuthImpl extends Implementing(modules.auth).Uses(modules.git, modul
         ].filter(Boolean).join(" and ")}`,
       }));
     }
-    // For validating that the yubikey is plugged in which contains the chosen ssh-key, we let this failure 
+    // For validating that the yubikey is plugged in which contains the chosen ssh-key, we let this failure
     // happen when user tries to sign something (otherwise, to check the yubikey, it would require user PIN).
     // We don't want that since assertLogin is used in cases where we are doing non-signin behaviors.
     return {
@@ -44,59 +50,47 @@ export class AuthImpl extends Implementing(modules.auth).Uses(modules.git, modul
     };
   }
 
-  *ensureLoggedIn({ chooseNewUser }: { chooseNewUser: boolean }): Effect.fn.Return<CurrentUser, BadArgumentError | BadPreconditionsError> {
+  *ensureLoggedIn({ chooseNewUser }: { chooseNewUser: boolean }): EffectGen<CurrentUser, BadArgumentError | BadPreconditionsError> {
     const { toolState, github } = this.dependencies;
-    yield* pipe(
-      toolState.assertInWorkspace,
-      Effect.catchTag("NotInWorkspaceError", BadPreconditionsError.fromNotInWorkspaceError)
-    );
-    if (chooseNewUser || (yield* effunct(this.tokenUnusable)())) {
-      yield* Effect.log(`Starting fresh session`);
-      yield* toolState.clearCurrentUserState;
+    yield* this.assertInWorkspace();
+    if (chooseNewUser || (yield* this.tokenUnusable())) {
+      yield* e.Effect.log(`Starting fresh session`);
+      yield* toolState.clearCurrentUserState();
     }
-    const {user, maybeWriteToken} = yield* pipe(
-      toolState.readCurrentUserState,
-      Effect.flatMap(Option.match({
-        onSome: user => Effect.succeed({
-          user,
-          maybeWriteToken: Option.none()
-        }),
-        onNone: Effect.fn(function*() {
-          const {accessTokenState, writeToken, email, username} = yield* github.oauthLogin();
-          const newUserState = yield* toolState.setUser({email, username, accessToken: accessTokenState});
-          return {user: newUserState, maybeWriteToken: Option.some(writeToken)};
-        })
-      })
-    ));
-    const {accessToken} = yield* github.resolveAccessToken(user);
+    const maybeExistingUser = yield* toolState.readCurrentUserState();
+    const { user, maybeWriteToken } = e.Option.isSome(maybeExistingUser) ?
+      { user: maybeExistingUser.value, maybeWriteToken: e.Option.none<GithubWriteToken>() } :
+      yield* e.Effect.gen(function*() {
+        const { accessTokenState, writeToken, email, username } = yield* github.oauthLogin();
+        const newUserState = yield* toolState.setUser({ email, username, accessToken: accessTokenState });
+        return { user: newUserState, maybeWriteToken: e.Option.some(writeToken) };
+      });
+    const { accessToken } = yield* github.resolveAccessToken(user);
     const { context } = this;
-    const sshKey = yield* toolState.usingTempDirectory(Effect.fn(function*(tempPath) {
-      const sshKey = yield* pipe(
-        effunct(selectSshKey)(user.email, tempPath),
-        Effect.catchTag("CreateSshKeyOnYubikeyError", Effect.fn(function*({reason}) {
-          yield* Effect.logError(`Failed to create ssh key on yubikey (${reason})`);
-          return yield* Effect.die(undefined);
-        })),
-        Effect.provide(context)
+    const sshKey = yield* toolState.usingTempDirectory(e.Effect.fn(function*(tempPath: string) {
+      const sshKey = yield* e.pipe(
+        e.Effect.gen(() => selectSshKey(user.email, tempPath)),
+        e.Effect.catchTag("CreateSshKeyOnYubikeyError", ({ reason }) => e.Effect.andThen(
+          e.Effect.logError(`Failed to create ssh key on yubikey (${reason})`),
+          e.Effect.die(reason),
+        )),
+        e.Effect.provide(context),
       );
       // We need to move the ssh key from the temp folder to the current user location before the temp folder is cleared
-      const {newUserState} = yield* toolState.setSshKey(sshKey);
-      return yield* pipe(
-        newUserState.sshKey,
-        Option.match({
-          onNone: () => Effect.dieMessage("IMPOSSIBLE TO NOT HAVE SSH KEY SET"),
-          onSome: newKey => Effect.succeed(newKey)
-        })
-      );
-    }))
+      const { newUserState } = yield* toolState.setSshKey(sshKey);
+      if (e.Option.isNone(newUserState.sshKey)) {
+        return yield* e.Effect.die("IMPOSSIBLE TO NOT HAVE SSH KEY SET");
+      }
+      return newUserState.sshKey.value;
+    }));
     const registeredSshKey = yield* github.sshKeyExists(accessToken, sshKey);
     if (!registeredSshKey.authn || !registeredSshKey.signing) {
       yield* github.setSshKey(yield* this.getWriteTokenIfMissing(user.username, maybeWriteToken), sshKey);
     }
     // We want to warn the user of all repos which they don't have access to
     yield* e.pipe(
-      warnOnInaccessibleRepos(accessToken),
-      e.Effect.provide(context)
+      e.Effect.gen(() => warnOnInaccessibleRepos(accessToken)),
+      e.Effect.provide(context),
     );
     return {
       email: user.email,
@@ -105,28 +99,30 @@ export class AuthImpl extends Implementing(modules.auth).Uses(modules.git, modul
       sshKey
     };
   }
-  private *tokenUnusable(): GenEffect<boolean> {
-    const maybeUserState = yield* this.dependencies.toolState.readCurrentUserState;
-    const usable = yield* e.pipe(
-      maybeUserState,
-      e.Option.match({
-        onNone: () => e.Effect.succeed(false),
-        onSome: e.flow(
-          effunct(this.dependencies.github.resolveAccessToken),
-          e.Effect.tapErrorTag("BadArgumentError", e.Effect.fn(function*({argument, reason}) {
-            yield* e.Effect.log(`Existing access token is unusable due to invalid ${argument}: ${reason}`);
-          })),
-          e.Effect.option,
-          e.Effect.map(e.Option.isSome),
-        )
-      }),
+
+  private *assertInWorkspace(): EffectGen<void, BadPreconditionsError> {
+    yield* e.pipe(
+      e.Effect.gen(() => this.dependencies.toolState.assertInWorkspace()),
+      e.Effect.mapError(BadPreconditionsError.fromNotInWorkspaceError),
     );
-    return !usable;
   }
 
-  private *getWriteTokenIfMissing(username: string, maybeWriteToken: e.Option.Option<GithubWriteToken>): GenEffect<GithubWriteToken> {
+  private *tokenUnusable(): EffectGen<boolean> {
+    const maybeUserState = yield* this.dependencies.toolState.readCurrentUserState();
+    if (e.Option.isNone(maybeUserState)) {
+      return true;
+    }
+    const resolved = yield* e.pipe(
+      e.Effect.gen(() => this.dependencies.github.resolveAccessToken(maybeUserState.value)),
+      e.Effect.tapError(({ argument, reason }) => e.Effect.log(`Existing access token is unusable due to invalid ${argument}: ${reason}`)),
+      e.Effect.option,
+    );
+    return e.Option.isNone(resolved);
+  }
+
+  private *getWriteTokenIfMissing(username: string, maybeWriteToken: e.Option.Option<GithubWriteToken>): EffectGen<GithubWriteToken> {
     if (e.Option.isSome(maybeWriteToken)) return maybeWriteToken.value;
-    const {writeToken} = yield* this.dependencies.github.oauthLogin(username);
+    const { writeToken } = yield* this.dependencies.github.oauthLogin(username);
     return writeToken;
   }
 }

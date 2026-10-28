@@ -1,21 +1,17 @@
 import * as e from "effect";
-import { ModulesImpl } from "@/modules/runtime";
-import { program } from "@/program";
-import { CLI } from "./temp-libs/cli";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
+import { Cli } from "jive-abstract-library";
+import { version } from "../package.json";
+import { ModulesLayer } from "@/modules/runtime";
+import { jive } from "@/program";
 
-const runnable: e.Effect.Effect<void, never, never> = e.pipe(
-  program,
-  e.Effect.provide(ModulesImpl),
-);
-
-e.Effect
-  .runPromiseExit(runnable)
-  .then((exit) => {
-    if (e.Exit.isSuccess(exit)) {
-      return;
-    }
-    if (e.Exit.isFailure(exit)) {
-      console.log(exit);
-      process.exit(1);
-    }
-  });
+BunRuntime.runMain(e.pipe(
+  Cli.run(jive, { version }),
+  e.Effect.catchTags({
+    BadArgumentError: error => error.report(),
+    BadPreconditionsError: error => error.report(),
+  }),
+  e.Effect.provide(ModulesLayer),
+  e.Effect.provide(Cli.terminalLogger),
+  e.Effect.provide(BunServices.layer),
+));

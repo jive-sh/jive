@@ -1,10 +1,9 @@
-import * as e from "effect";
-import * as modules from "@/modules";
+import { implementing, type EffectGen } from "effective-modules";
+import { modules } from "@/modules";
+import type { ITemplates } from "./interface";
 
-export const TemplatesImpl = e.Layer.effect(modules.ITemplates, e.Effect.gen(function*() {
-  return {
-    availableTemplates: e.Effect.gen(function*() {
-      return [] as string[];
-    }),
-  };
-}));
+export class TemplatesImpl extends implementing(modules.templates) implements ITemplates {
+  *availableTemplates(): EffectGen<string[]> {
+    return [];
+  }
+}

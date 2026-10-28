@@ -1,5 +1,5 @@
 import * as e from "effect";
-import type { BadPreconditionsError } from "@/modules";
+import type { BadPreconditionsError } from "@/errors";
 
 export interface RefreshTokenStore {
   load: () => e.Effect.Effect<e.Option.Option<string>>;

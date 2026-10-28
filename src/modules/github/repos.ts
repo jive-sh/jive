@@ -4,11 +4,11 @@ import type { GithubAccessToken } from "./interface";
 import { fetchResponse, githubHeaders, parseJson } from "./shared";
 
 const RepoWritePermissionsSchema = e.Schema.Struct({
-  permissions: e.Schema.optional(
+  permissions: e.Schema.optionalKey(
     e.Schema.Struct({
-      admin: e.Schema.optional(e.Schema.Boolean),
-      maintain: e.Schema.optional(e.Schema.Boolean),
-      push: e.Schema.optional(e.Schema.Boolean),
+      admin: e.Schema.optionalKey(e.Schema.Boolean),
+      maintain: e.Schema.optionalKey(e.Schema.Boolean),
+      push: e.Schema.optionalKey(e.Schema.Boolean),
     }),
   ),
 });
@@ -88,10 +88,9 @@ export const canWriteToRemote = (
 
     const maybePermissions = yield* e.pipe(
       e.Effect.tryPromise(() => maybeResponse.value.text()),
-      e.Effect.flatMap(payload => e.Schema.decode(e.Schema.parseJson(RepoWritePermissionsSchema))(payload)),
+      e.Effect.flatMap(payload => e.Schema.decodeUnknownEffect(e.Schema.fromJsonString(RepoWritePermissionsSchema))(payload)),
       e.Effect.map((permissions): e.Option.Option<RepoWritePermissions> => e.Option.some(permissions)),
-      e.Effect.catchTag("UnknownException", () => e.Effect.succeed(e.Option.none<RepoWritePermissions>())),
-      e.Effect.catchTag("ParseError", () => e.Effect.succeed(e.Option.none<RepoWritePermissions>())),
+      e.Effect.catchTag(["UnknownError", "SchemaError"], () => e.Effect.succeed(e.Option.none<RepoWritePermissions>())),
     );
     if (e.Option.isNone(maybePermissions) || !maybePermissions.value.permissions) {
       return false;

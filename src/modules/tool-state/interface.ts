@@ -1,7 +1,8 @@
 import * as e from "effect";
 import type { GithubAccessTokenType } from "@/modules/github/interface";
 import type { SshKey } from "@/modules/ssh/interface";
-import { BadArgumentError, BadPreconditionsError } from "@/modules";
+import type { EffectGen } from "effective-modules";
+import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { TOOL_NAME } from "@/constants";
 import { RepoIdentifier } from "./repo-identifier";
 export { RepoIdentifier } from "./repo-identifier";
@@ -37,7 +38,7 @@ export class VerifyRepoIntegrityError extends e.Data.TaggedError("VerifyRepoInte
   reason: RepoIntegrityCompromisedReason;
   repo: RepoIdentifier;
 }> {
-  public static toToolError({reason, repo}: VerifyRepoIntegrityError): e.Effect.Effect<never, BadArgumentError | BadPreconditionsError> {
+  public static toToolError({reason, repo}: VerifyRepoIntegrityError): BadArgumentError | BadPreconditionsError {
     return e.pipe(
       reason,
       RepoIntegrityCompromisedReason.$match({
@@ -59,25 +60,32 @@ export class NotInWorkspaceError extends e.Data.TaggedError("NotInWorkspaceError
   path: string;
 }> {}
 
+export interface RepoLocation {
+  readonly absolutePath: string;
+  /** Relative to the workspace root, which is where git commands on the workspace's submodules run. */
+  readonly relativePath: string;
+}
+
 export interface IToolState {
-  readonly assertInWorkspace: e.Effect.Effect<{workspaceRoot: string}, NotInWorkspaceError>;
+  assertInWorkspace(): EffectGen<{ workspaceRoot: string }, NotInWorkspaceError>;
   /**
    * Tool state will create a temporary directory for another tool to operate out of.
    */
-  readonly usingTempDirectory: <T, E> (doThing: (tempPath: string) => e.Effect.Effect<T, E>) => e.Effect.Effect<T, E>;
-  
+  usingTempDirectory<T, E, R>(doThing: (tempPath: string) => e.Effect.Effect<T, E, R>): EffectGen<T, E, R>;
+
   // User state
-  readonly readCurrentUserState: e.Effect.Effect<e.Option.Option<CurrentUserState>>;
-  readonly clearCurrentUserState: e.Effect.Effect<void>;
+  readCurrentUserState(): EffectGen<e.Option.Option<CurrentUserState>>;
+  clearCurrentUserState(): EffectGen<void>;
   /**
    * Should clear out ssh key associated with user
    */
-  readonly setUser: (opts: {email: string; username: string; accessToken: TokenState}) => e.Effect.Effect<CurrentUserState>;
-  // Moves the ssh key to the current user location (amongst other things)
-  readonly setSshKey: (sshKey: SshKey) => e.Effect.Effect<{ newUserState: CurrentUserState }>;
-  
+  setUser(opts: { email: string; username: string; accessToken: TokenState }): EffectGen<CurrentUserState>;
+  /** Moves the ssh key to the current user location (amongst other things) */
+  setSshKey(sshKey: SshKey): EffectGen<{ newUserState: CurrentUserState }>;
+
   // Repos
-  readonly verifyRepoIntegrity: (repo: RepoIdentifier) => e.Effect.Effect<{absolutePath: string; relativePath: string;}, BadPreconditionsError | BadArgumentError>;
-  orgPath(repoId: RepoIdentifier): e.Effect.Effect<{absolutePath: string; relativePath: string;}, BadPreconditionsError>;
-  repoPath(repoId: RepoIdentifier): e.Effect.Effect<{absolutePath: string; relativePath: string;}, BadPreconditionsError>;
+  /** Where a loaded repo is, failing when it is not a configured submodule with a package.json. */
+  verifyRepoIntegrity(repo: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError | BadArgumentError>;
+  orgPath(repoId: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError>;
+  repoPath(repoId: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError>;
 }

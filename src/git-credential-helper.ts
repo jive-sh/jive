@@ -1,11 +1,15 @@
-import * as process from "node:process";
-import { CLI } from "@/temp-libs/cli";
 import * as e from "effect";
+import * as process from "node:process";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
+import { Cli } from "jive-abstract-library";
+import { version } from "../package.json";
 import { GIT_CREDENTIAL_HELPER_NAME, TOOL_NAME } from "./constants";
-import { GitHubImpl, HostShellImpl, IGitHub, IToolState, ToolStateImpl } from "@/modules";
-import * as epn from "@effect/platform-node";
+import { modules } from "@/modules";
+import { GithubImpl } from "@/modules/github/impl";
+import { ToolStateImpl } from "@/modules/tool-state/impl";
 
-const readStdin = e.Effect.async<Record<string, string>>((resume) => {
+/** Git's credential request: `key=value` lines on stdin. A terminal on stdin means no request was piped in. */
+const readStdin = e.Effect.callback<Record<string, string>>((resume) => {
   if (process.stdin.isTTY) return resume(e.Effect.succeed({}));
   let buffer = "";
   process.stdin.setEncoding("utf8");
@@ -13,51 +17,49 @@ const readStdin = e.Effect.async<Record<string, string>>((resume) => {
     buffer += chunk;
   });
   process.stdin.on("end", () => {
-    const obj = Object.fromEntries(
-      buffer
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => {
-          const [key, ...valueParts] = line.split("=");
-          if (!key) return e.Option.none<readonly [string, string]>();
-          return e.Option.some([key, valueParts.join("=")] as const);
-        })
-        .filter(e.Option.isSome)
-        .map((entry) => entry.value),
-    ) as Record<string, string>;
-    resume(e.Effect.succeed(obj));
+    const entries = buffer
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .flatMap((line): Array<[string, string]> => {
+        const [key, ...valueParts] = line.split("=");
+        return key ? [[key, valueParts.join("=")]] : [];
+      });
+    resume(e.Effect.succeed(Object.fromEntries(entries)));
   });
   process.stdin.on("error", (err) => {
-    resume(e.Effect.dieMessage(err.message));
+    resume(e.Effect.die(err.message));
   });
 });
 
-const program = e.Effect.gen(function*() {
-  const toolState = yield* IToolState;
-  const github = yield* IGitHub;
-  yield* CLI.new(GIT_CREDENTIAL_HELPER_NAME, CLI.DiscreteOptions({
-    get: CLI.Handle(e.Effect.fn(function*() {
+// Git only ever asks a credential helper to `get`, `store` or `erase`; jive keeps no credentials of git's.
+const ignoredByJive = Cli.command({ *run() {} });
+
+const credentialHelper = Cli.make(GIT_CREDENTIAL_HELPER_NAME, {
+  get: Cli.command({
+    *run() {
+      const toolState = yield* modules.toolState;
+      const github = yield* modules.github;
       const input = yield* readStdin;
-      const protocol = input.protocol ?? "";
-      const host = input.host ?? "";
+      const protocol = input["protocol"] ?? "";
+      const host = input["host"] ?? "";
       if (protocol !== "https" || host !== "github.com") {
-        return yield* e.Effect.dieMessage(`unsupported credential request: protocol=${protocol || "(missing)"} host=${host || "(missing)"}`);
+        return yield* e.Effect.die(`unsupported credential request: protocol=${protocol || "(missing)"} host=${host || "(missing)"}`);
       }
 
       yield* e.pipe(
-        toolState.assertInWorkspace,
-        e.Effect.catchTag("NotInWorkspaceError", () => e.Effect.dieMessage(`not currently in a ${TOOL_NAME} workspace.`)),
+        e.Effect.gen(() => toolState.assertInWorkspace()),
+        e.Effect.catchTag("NotInWorkspaceError", () => e.Effect.die(`not currently in a ${TOOL_NAME} workspace.`)),
       );
-      const maybeCurrentUserState = yield* toolState.readCurrentUserState;
+      const maybeCurrentUserState = yield* toolState.readCurrentUserState();
       if (e.Option.isNone(maybeCurrentUserState)) {
-        return yield* e.Effect.dieMessage(`no user currently signed-in, run \`${TOOL_NAME} login\`.`);
+        return yield* e.Effect.die(`no user currently signed-in, run \`${TOOL_NAME} login\`.`);
       }
       const currentUserState = maybeCurrentUserState.value;
       const { accessToken } = yield* e.pipe(
-        github.resolveAccessToken(currentUserState),
+        e.Effect.gen(() => github.resolveAccessToken(currentUserState)),
         e.Effect.catchTag("BadArgumentError", error =>
-          e.Effect.dieMessage(
+          e.Effect.die(
             `signed in as ${currentUserState.email}, but the persisted GitHub session is unusable because the ${error.argument} is invalid: ${error.reason}; run \`${TOOL_NAME} login\`.`,
           ),
         ),
@@ -66,41 +68,16 @@ const program = e.Effect.gen(function*() {
       const username = currentUserState.username || "oauth-token";
       process.stdout.write(`username=${username}\n`);
       process.stdout.write(`password=${accessToken.accessToken}\n`);
-    })),
-    store: CLI.Handle(e.Effect.fn(function*() {
-      // We explicitly don't want to handle store
-    })),
-    erase: CLI.Handle(e.Effect.fn(function*() {
-      // We explicitly don't want to handle erase
-    })),
-    capability: CLI.Handle(e.Effect.fn(function*() {
-      // We explicitly don't want to handle capability
-    })),
-  }));
+    },
+  }),
+  store: ignoredByJive,
+  erase: ignoredByJive,
+  capability: ignoredByJive,
 });
 
-const main = e.pipe(
-  program,
-  e.Effect.provide(GitHubImpl),
-  e.Effect.provide(HostShellImpl),
-  e.Effect.provide(ToolStateImpl),
-  e.Effect.provide(epn.NodeCommandExecutor.layer),
-  e.Effect.provide(epn.NodeFileSystem.layer),
-);
-
-void e.Effect.runPromiseExit(main).then((exit) => {
-  function exitLog(obj: any) {
-    process.stderr.write(`${TOOL_NAME} credential helper failure: ${String(obj)}\n`);
-    process.exit(1);
-  }
-  if (e.Exit.isFailure(exit)) {
-    if (exit.cause._tag === "Die") {
-      const defect = exit.cause.defect as any;
-      if (defect._tag === "RuntimeException") {
-        return exitLog(defect.message);
-      }
-      return exitLog(defect);
-    }
-    return exitLog(exit.cause);
-  }
-});
+BunRuntime.runMain(e.pipe(
+  Cli.run(credentialHelper, { version }),
+  e.Effect.provide(e.pipe(GithubImpl.Layer, e.Layer.provideMerge(ToolStateImpl.Layer))),
+  e.Effect.provide(Cli.terminalLogger),
+  e.Effect.provide(BunServices.layer),
+));

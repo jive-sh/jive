@@ -20,14 +20,14 @@ const authorizeForScopes = (
     });
     const tokenResponse = yield* e.pipe(
       e.Effect.tryPromise(() => client.authorize()),
-      e.Effect.catchAll(error => e.Effect.dieMessage(`${browserLabel} failed: ${getErrorMessage(error)}`)),
+      e.Effect.catch(error => e.Effect.die(`${browserLabel} failed: ${getErrorMessage(error.cause)}`)),
     );
     const maybeSession = yield* fetchSessionFromTokenResponse(tokenResponse, scopes);
     if (e.Option.isNone(maybeSession)) {
-      return yield* e.Effect.dieMessage(`${browserLabel} did not return a usable GitHub session.`);
+      return yield* e.Effect.die(`${browserLabel} did not return a usable GitHub session.`);
     }
     if (expectedUsername && maybeSession.value.username !== expectedUsername) {
-      return yield* e.Effect.dieMessage(
+      return yield* e.Effect.die(
         `Expected GitHub user ${expectedUsername} but got ${maybeSession.value.username}.`,
       );
     }
@@ -46,7 +46,7 @@ export const oauthLogin = (username?: string): e.Effect.Effect<{
     const readSession = yield* authorizeForScopes(READ_SCOPES, "GitHub read authorization", writeSession.username);
     const email = readSession.email || writeSession.email;
     if (!email) {
-      return yield* e.Effect.dieMessage("GitHub login completed without a usable verified email.");
+      return yield* e.Effect.die("GitHub login completed without a usable verified email.");
     }
 
     return {

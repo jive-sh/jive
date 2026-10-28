@@ -1,17 +1,36 @@
-import { BadArgumentError, BadPreconditionsError, modules } from "@/modules";
-import { IN } from "@/modules/host-shell/interface";
-import { Implementing, type GenEffect } from "@/temp-libs/effective-modules";
+import * as e from "effect";
+import { implementing, type EffectGen } from "effective-modules";
+import { OSPlatform } from "jive-abstract-library";
+import { BadArgumentError, BadPreconditionsError } from "@/errors";
+import { modules } from "@/modules";
+import type { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
 import type { IBun } from "./interface";
-import type { RepoIdentifier } from "../tool-state/repo-identifier";
 
-export class BumImpl extends Implementing(modules.bun).Uses(modules.hostShell) implements IBun {
-  *install(repo: RepoIdentifier): GenEffect<void, BadArgumentError | BadPreconditionsError> {
-    yield* this.dependencies.hostShell.run("bun", "install", IN.Repo({repo})).inheritIO;
+export class BunImpl extends implementing(modules.bun).uses(modules.toolState, OSPlatform) implements IBun {
+  *install(repo: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError> {
+    yield* this.bunInRepo("install", repo);
   }
-  *link(repo: RepoIdentifier): GenEffect<void, BadArgumentError | BadPreconditionsError> {
-    yield* this.dependencies.hostShell.run("bun", "link", IN.Repo({repo})).inheritIO;
+  *link(repo: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError> {
+    yield* this.bunInRepo("link", repo);
   }
-  *unlink(repo: RepoIdentifier): GenEffect<void, BadArgumentError | BadPreconditionsError> {
-    yield* this.dependencies.hostShell.run("bun", "unlink", IN.Repo({repo})).inheritIO;
+  *unlink(repo: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError> {
+    yield* this.bunInRepo("unlink", repo);
+  }
+
+  private *bunInRepo(subcommand: string, repo: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError> {
+    const { absolutePath } = yield* this.dependencies.toolState.verifyRepoIntegrity(repo);
+    yield* e.Effect.log(`Running bun ${subcommand} in ${repo.packageName()}`);
+    const { exitCode } = yield* e.pipe(
+      e.Effect.gen(() => this.dependencies.OSPlatform.spawnProcess({
+        command: "bun", args: [subcommand], cwd: absolutePath, stdout: "inherit", stderr: "inherit",
+      })),
+      e.Effect.mapError(message => BadPreconditionsError.withoutFix(`Failed to run bun ${subcommand}`, message)),
+    );
+    if (exitCode !== 0) {
+      return yield* new BadPreconditionsError({
+        cause: `bun ${subcommand} in ${repo.packageName()} exited with code ${exitCode}`,
+        fix: "Fix what bun reported, then run the command again",
+      });
+    }
   }
 }

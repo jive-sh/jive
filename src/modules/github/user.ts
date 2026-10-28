@@ -119,7 +119,7 @@ export const fetchSessionFromTokenResponse = (
     const maybeTokenResponse = yield* e.pipe(
       decodeGitHubTokenResponse(response),
       e.Effect.map(tokenResponse => e.Option.some(tokenResponse)),
-      e.Effect.catchTag("ParseError", () => e.Effect.succeed(e.Option.none())),
+      e.Effect.catchTag("SchemaError", () => e.Effect.succeed(e.Option.none())),
     );
     if (e.Option.isNone(maybeTokenResponse) || !maybeTokenResponse.value.access_token) {
       return e.Option.none<GitHubSession>();

@@ -1,4 +1,5 @@
-import * as e from "effect";
+import type * as e from "effect";
+import type { EffectGen } from "effective-modules";
 
 export interface ConnectedYubiKey {
   readonly serial: string;
@@ -6,7 +7,7 @@ export interface ConnectedYubiKey {
 }
 
 export interface IYubiKey {
-  readonly listConnectedDevices: e.Effect.Effect<ConnectedYubiKey[]>;
-  readonly ensurePinConfigured: (serial: string) => e.Effect.Effect<boolean>;
-  readonly setDeviceName: (serial: string, name: string) => e.Effect.Effect<void>;
+  listConnectedDevices(): EffectGen<ConnectedYubiKey[]>;
+  ensurePinConfigured(serial: string): EffectGen<boolean>;
+  setDeviceName(serial: string, name: string): EffectGen<void>;
 }

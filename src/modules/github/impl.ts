@@ -1,20 +1,21 @@
 import * as e from "effect";
-import { BadArgumentError, BadPreconditionsError, modules } from "@/modules";
+import { implementing, type EffectGen } from "effective-modules";
+import { BadArgumentError } from "@/errors";
+import { modules } from "@/modules";
 import { setSshKey, sshKeyExists } from "./authzn-keys";
 import { oauthLogin } from "./oauth/oauth-impl";
 import "javascript-time-ago/locale/en";
 import TimeAgo from "javascript-time-ago";
 import { refreshAccessToken } from "./oauth/refresh-access-token";
-import { canReadFromRemote, canWriteToRemote, remoteRepos } from "./repos";
+import { canReadFromRemote, canWriteToRemote } from "./repos";
 import { getVerifiedEmails } from "./user";
 import type { GithubAccessToken, GithubWriteToken, IGitHub } from "./interface";
-import { effunct, Implementing, type GenEffect } from "@/temp-libs/effective-modules";
 import type { SshKey } from "../ssh/ssh-key";
-import type { CurrentUserState } from "../tool-state/interface";
+import type { CurrentUserState, TokenState } from "../tool-state/interface";
 import type { RepoIdentifier } from "../tool-state/repo-identifier";
 
-export class GithubImpl extends Implementing(modules.github).Uses(modules.toolState) implements IGitHub {
-  *resolveAccessToken(userState: CurrentUserState): GenEffect<{accessToken: GithubAccessToken}, BadArgumentError> {
+export class GithubImpl extends implementing(modules.github).uses(modules.toolState) implements IGitHub {
+  *resolveAccessToken(userState: CurrentUserState): EffectGen<{accessToken: GithubAccessToken}, BadArgumentError> {
     const { toolState } = this.dependencies;
     const tokenState = userState.accessTokenState;
     const existingToken: {accessToken: GithubAccessToken} = {
@@ -73,25 +74,25 @@ export class GithubImpl extends Implementing(modules.github).Uses(modules.toolSt
 
     return existingToken;
   }
-  *oauthLogin(username?: string): GenEffect<{accessTokenState: TokenState; writeToken: GithubWriteToken; username: string; email: string;}> {
+  *oauthLogin(username?: string): EffectGen<{accessTokenState: TokenState; writeToken: GithubWriteToken; username: string; email: string;}> {
     return yield* oauthLogin(username);
   }
-  *getVerifiedEmails(accessToken: GithubAccessToken): GenEffect<string[]> {
+  *getVerifiedEmails(accessToken: GithubAccessToken): EffectGen<string[]> {
     return yield* getVerifiedEmails(accessToken);
   }
-  *sshKeyExists(accessToken: GithubAccessToken, key: SshKey): GenEffect<{authn: boolean; signing: boolean}> {
+  *sshKeyExists(accessToken: GithubAccessToken, key: SshKey): EffectGen<{authn: boolean; signing: boolean}> {
     return yield* sshKeyExists(accessToken, key);
   }
-  *setSshKey(writeToken: GithubWriteToken, key: SshKey): GenEffect<void> {
+  *setSshKey(writeToken: GithubWriteToken, key: SshKey): EffectGen<void> {
     yield* setSshKey(writeToken, key);
   }
-  *remoteRepos(org: string, accessToken: e.Option.Option<GithubAccessToken>): GenEffect<string[]> {
+  *remoteRepos(_org: string, _accessToken: e.Option.Option<GithubAccessToken>): EffectGen<string[]> {
     return []; 
   }
-  *canReadFromRemote(repo: RepoIdentifier, accessToken: GithubAccessToken): GenEffect<boolean> {
+  *canReadFromRemote(repo: RepoIdentifier, accessToken: GithubAccessToken): EffectGen<boolean> {
     return yield* canReadFromRemote(repo, accessToken);
   }
-  *canWriteToRemote(repo: RepoIdentifier, accessToken: GithubAccessToken): GenEffect<boolean> {
+  *canWriteToRemote(repo: RepoIdentifier, accessToken: GithubAccessToken): EffectGen<boolean> {
     return yield* canWriteToRemote(repo, accessToken);
   }
   remoteUrls(repo: RepoIdentifier): { ssh: string; https: string; } {
@@ -100,10 +101,10 @@ export class GithubImpl extends Implementing(modules.github).Uses(modules.toolSt
       https: `https://github.com/${repo.org}/${repo.repo}.git`
     };
   }
-  *setupOrgs(writeToken: GithubWriteToken): GenEffect<void> {
-    return yield* e.Effect.dieMessage("github.setupOrgs is not implemented");
+  *setupOrgs(_writeToken: GithubWriteToken): EffectGen<void> {
+    return yield* e.Effect.die("github.setupOrgs is not implemented");
   }
-  *setupRemoteRepo(repo: RepoIdentifier, writeToken: GithubWriteToken, cicdSecrets: Record<string, string>): GenEffect<void> {
-    return yield* e.Effect.dieMessage("github.setupRepo is not implemented");
+  *setupRemoteRepo(_repo: RepoIdentifier, _writeToken: GithubWriteToken, _cicdSecrets: Record<string, string>): EffectGen<void> {
+    return yield* e.Effect.die("github.setupRepo is not implemented");
   }
 }

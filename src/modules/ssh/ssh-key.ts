@@ -1,5 +1,4 @@
 import * as e from "effect";
-import * as ep from "@effect/platform";
 import { createHash } from "node:crypto";
 import * as path from "node:path";
 
@@ -27,7 +26,7 @@ export const MalformedKeyReason = e.Data.taggedEnum<MalformedKeyReason>();
 
 export class MalformedKeyError extends e.Data.TaggedError("MalformedKeyError")<{
   reason: MalformedKeyReason;
-  platformError?: ep.Error.PlatformError
+  platformError?: e.PlatformError.PlatformError
 }> {}
 
 export class SshKey {
@@ -46,15 +45,15 @@ export class SshKey {
     this.fingerprint = fingerprint;
     this.name = this.fingerprint.replace(/^SHA256:/u, "").substring(0, 8);
   }
-  public static make(location: string): e.Effect.Effect<SshKey, MalformedKeyError, ep.FileSystem.FileSystem> {
+  public static make(location: string): e.Effect.Effect<SshKey, MalformedKeyError, e.FileSystem.FileSystem> {
     return e.Effect.gen(function*() {
-      const fileSystem = yield* ep.FileSystem.FileSystem;
+      const fileSystem = yield* e.FileSystem.FileSystem;
       const privateKeyPath = path.resolve(location);
       const publicKeyPath = `${privateKeyPath}.pub`;
 
       const privateKeyExists = yield* e.pipe(
         fileSystem.exists(privateKeyPath),
-        e.Effect.catchTag("BadArgument", "SystemError", platformError => new MalformedKeyError({
+        e.Effect.catchTag("PlatformError", platformError => new MalformedKeyError({
           reason: MalformedKeyReason.PrivateKeyCheckFailed({
             display: "couldn't access private key file"
           }),
@@ -71,7 +70,7 @@ export class SshKey {
 
       const publicKeyExists = yield* e.pipe(
         fileSystem.exists(publicKeyPath),
-        e.Effect.catchTag("BadArgument", "SystemError", platformError => new MalformedKeyError({
+        e.Effect.catchTag("PlatformError", platformError => new MalformedKeyError({
           reason: MalformedKeyReason.PublicKeyCheckFailed({
             display: "couldn't access public key file"
           }),
@@ -90,7 +89,7 @@ export class SshKey {
         publicKeyPath,
         fileSystem.readFileString,
         e.Effect.map(pubkey => pubkey.trim()),
-        e.Effect.catchTag("BadArgument", "SystemError", platformError => new MalformedKeyError({
+        e.Effect.catchTag("PlatformError", platformError => new MalformedKeyError({
           reason: MalformedKeyReason.PublicKeyReadFailed({
             display: "couldn't read public key file"
           }),

@@ -1,6 +1,5 @@
-import type { GenEffect } from "@/temp-libs/effective-modules";
-import * as e from "effect";
+import type { EffectGen } from "effective-modules";
 
 export interface IDaemon {
-  start(): GenEffect<void>;
+  start(): EffectGen<void>;
 }

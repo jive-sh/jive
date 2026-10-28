@@ -1,5 +1,5 @@
 import * as e from "effect";
-import { BadArgumentError } from "@/modules";
+import { BadArgumentError } from "@/errors";
 import { decodeGitHubTokenResponse } from "../token-response";
 import { createGitHubOAuthClient } from "./oauth";
 
@@ -26,10 +26,10 @@ export const refreshAccessToken = e.Effect.fn(function*(refreshToken: string, re
   // `false` instead of falling through to interactive browser auth.
   const refreshed = yield* e.pipe(
     e.Effect.tryPromise(() => client.isAuthorized()),
-    e.Effect.catchAll(error =>
+    e.Effect.catch(({ cause }) =>
       e.Effect.fail(new BadArgumentError({
         argument: "refresh token",
-        reason: `Failed to refresh token due to ${error instanceof Error ? error.message : String(error)}`,
+        reason: `Failed to refresh token due to ${cause instanceof Error ? cause.message : String(cause)}`,
       })),
     ),
   );
@@ -42,16 +42,16 @@ export const refreshAccessToken = e.Effect.fn(function*(refreshToken: string, re
 
   const response = yield* e.pipe(
     e.Effect.tryPromise(() => client.getToken()),
-    e.Effect.catchAll(error =>
+    e.Effect.catch(({ cause }) =>
       e.Effect.fail(new BadArgumentError({
         argument: "refreshed access token",
-        reason: `Failed to load refreshed token due to ${error instanceof Error ? error.message : String(error)}`,
+        reason: `Failed to load refreshed token due to ${cause instanceof Error ? cause.message : String(cause)}`,
       })),
     ),
   );
   const tokenResponse = yield* e.pipe(
     decodeGitHubTokenResponse(response),
-    e.Effect.catchTag("ParseError", error =>
+    e.Effect.catchTag("SchemaError", error =>
       new BadArgumentError({
         argument: "refreshed access token",
         reason: error.message,

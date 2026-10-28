@@ -1,11 +1,7 @@
-import * as e from "effect";
+import { implementing, type EffectGen } from "effective-modules";
 import { modules } from "@/modules";
-import { Implementing, type GenEffect } from "@/temp-libs/effective-modules";
 import type { IDaemon } from "./interface";
 
-export class DaemonImpl extends Implementing(modules.daemon) implements IDaemon {
-  *start(): GenEffect<void> {
-    
-  }
-  
+export class DaemonImpl extends implementing(modules.daemon) implements IDaemon {
+  *start(): EffectGen<void> {}
 }

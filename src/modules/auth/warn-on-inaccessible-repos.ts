@@ -1,9 +1,10 @@
 import * as e from "effect";
-import { BadArgumentError, BadPreconditionsError, Module, modules } from "@/modules";
+import type { EffectGen } from "effective-modules";
+import type { BadArgumentError, BadPreconditionsError } from "@/errors";
+import { Module, modules } from "@/modules";
 import type { GithubAccessToken } from "@/modules/github/interface";
-import type { GenEffect } from "@/temp-libs/effective-modules";
 
-export function* warnOnInaccessibleRepos(accessToken: GithubAccessToken): GenEffect<void, BadArgumentError | BadPreconditionsError, Module.git | Module.github> {
+export function* warnOnInaccessibleRepos(accessToken: GithubAccessToken): EffectGen<void, BadArgumentError | BadPreconditionsError, Module.git | Module.github> {
   const git = yield* modules.git;
   const github = yield* modules.github;
 

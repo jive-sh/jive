@@ -32,22 +32,20 @@ Tooling TODOs:
 
 Commands with substantive behavior in the current codebase:
 
-- `jive pkg load [github package]`
-- `jive pkg unload [npm package]`
-- `jive pkg on *npm`
-= `jive pkg save *`
-- `jive user login`
-- `jive user whoami`
-- `jive daemon` # we don't want this anymore it should be a separate entrypoint
-- `jive self version`
+- `jive load <org> <repo>`: clone a GitHub repo into the workspace as a submodule, then `bun install` and `bun link` it
+- `jive unload <org> <repo>`: remove a loaded repo
+- `jive on <org> <repo> -- <command...>`: run a command in a loaded repo's directory; its exit code is jive's.
+  The `--` is needed before the command's own flags (`jive on acme widget -- git log --oneline`)
+- `jive login`, `jive whoami`
+- `jive --version`, `jive --help`, and Tab completion (`jive --setup-completion`), which lists the workspace's
+  orgs and loaded repos when Tab is pressed
 
 Commands that are exposed but still mostly stub/TODO-shaped:
 
 - `jive init`
-- `jive pkg create [template] [github package]`
-- `jive pkg update *`
-- `jive self update`
-- `jive pkg rename [npm package] [npm package]`
+- `jive create <template> <repo>`
+- `jive update self`, `jive update repos`
+- `jive daemon` # we don't want this anymore it should be a separate entrypoint
 
 ## Workspace Model
 
