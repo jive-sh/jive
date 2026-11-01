@@ -156,11 +156,14 @@ beforeAll(async () => {
   // Seeding fetches git@ URLs from the files directly, as Alex's clones once did over SSH.
   const viaFiles = ["-c", `url.file://${remotes}/.insteadOf=git@github.com:`];
   seed("gadget", (dir) => writeFileSync(path.join(dir, "gadget.txt"), "gadget\n"));
+  seed("loose", (dir) => writeFileSync(path.join(dir, "loose.txt"), "loose\n"));
   seed("widget", (dir) => sh(["git", ...viaFiles, "submodule", "add", "-q", "git@github.com:acme/gadget.git", "gadget"], dir));
   seed("chaine", (dir) => sh(["git", ...viaFiles, "submodule", "add", "-q", "git@github.com:acme/widget.git", "packages/@acme/widget"], dir));
   sh(["git", ...viaFiles, "clone", "-q", "git@github.com:acme/chaine.git", checkout], scratch);
   // widget checked out, gadget not: init has a missing nested submodule to fetch.
   sh(["git", ...viaFiles, "submodule", "update", "--init", "-q"], checkout);
+  // A repository cloned into the workspace and never added as a submodule, as @jive-sh/server is in Alex's checkout.
+  sh(["git", ...viaFiles, "clone", "-q", "git@github.com:acme/loose.git", path.join(checkout, "packages", "loose")], scratch);
 
   const agentLayer = e.pipe(
     SigningAgentImpl.Layer,
@@ -189,7 +192,7 @@ afterAll(async () => {
 const widget = () => path.join(checkout, "packages", "@acme", "widget");
 const gadget = () => path.join(widget(), "gadget");
 
-test("jive init moves every .gitmodules to https, checks out the nested submodule, and points every repository at jive", async () => {
+test("jive init moves every .gitmodules to https, checks out the nested submodule, and points every repository at jive, untracked ones included", async () => {
   process.chdir(checkout);
   const exit = await e.Effect.runPromise(e.pipe(
     Cli.run(jive, { version: "0.0.0-test" }),
@@ -200,7 +203,7 @@ test("jive init moves every .gitmodules to https, checks out the nested submodul
     e.Effect.provide(BunServices.layer),
     e.Effect.exit,
   ));
-  expect(exit).toEqual(e.Exit.void);
+  if (e.Exit.isFailure(exit)) throw new Error(`jive init failed: ${JSON.stringify(e.Cause.squash(exit.cause))}`);
 
   expect(readFileSync(path.join(checkout, ".gitmodules"), "utf8")).toContain("url = https://github.com/acme/widget.git");
   expect(readFileSync(path.join(widget(), ".gitmodules"), "utf8")).toContain("url = https://github.com/acme/gadget.git");
@@ -208,7 +211,7 @@ test("jive init moves every .gitmodules to https, checks out the nested submodul
   expect(readFileSync(path.join(gadget(), "gadget.txt"), "utf8")).toBe("gadget\n");
   expect(readFileSync(path.join(checkout, ".gitignore"), "utf8")).toContain("/.jive/");
 
-  for (const [repository, name] of [[checkout, "chaine"], [widget(), "widget"], [gadget(), "gadget"]] as const) {
+  for (const [repository, name] of [[checkout, "chaine"], [widget(), "widget"], [gadget(), "gadget"], [path.join(checkout, "packages", "loose"), "loose"]] as const) {
     expect(gitConfigIn(repository, "gpg.format")).toBe("ssh");
     expect(gitConfigIn(repository, "gpg.ssh.program")).toBe(path.join(installedBin, "jive-ssh-keygen"));
     expect(gitConfigIn(repository, "user.signingKey")).toBe(paths.accountPublicKeyFile);
@@ -217,7 +220,7 @@ test("jive init moves every .gitmodules to https, checks out the nested submodul
     expect(gitConfigIn(repository, "remote.origin.url")).toBe(`https://github.com/acme/${name}.git`);
     expect(gitConfigIn(repository, "remote.origin.pushurl")).toBe(`git@github.com:acme/${name}.git`);
   }
-});
+}, 60_000);
 
 test("a commit in the nested submodule is signed through jive, ssh-keygen -Y verify accepts it, and it pushes over jive's SSH connection", async () => {
   writeFileSync(path.join(gadget(), "signed.txt"), "signed by jive\n");
@@ -249,4 +252,4 @@ test("a commit in the nested submodule is signed through jive, ssh-keygen -Y ver
   const head = sh(["git", "rev-parse", "HEAD"], gadget());
   expect(sh(["git", "--git-dir", path.join(remotes, "acme", "gadget.git"), "rev-parse", "refs/heads/signed"], scratch)).toBe(head);
   expect(readFileSync(path.join(sshdDir, "sshd.log"), "utf8")).toContain("Accepted publickey");
-});
+}, 60_000);

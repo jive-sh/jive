@@ -87,8 +87,22 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
   }
 
   *repositoriesUnder(root: string): EffectGen<ReadonlyArray<string>, BadPreconditionsError> {
-    const { stdout } = yield* this.git(["submodule", "--quiet", "foreach", "--recursive", "pwd"], root, "capture");
-    return [root, ...stdout.split("\n").map(line => line.trim()).filter(Boolean)];
+    const repositories: Array<string> = [];
+    const pending = [root];
+    while (pending.length > 0) {
+      const repository = pending.shift()!;
+      repositories.push(repository);
+      const { stdout: submodules } = yield* this.git(["submodule", "--quiet", "foreach", "pwd"], repository, "capture");
+      pending.push(...submodules.split("\n").map(line => line.trim()).filter(Boolean));
+      // A repository in the working tree that git doesn't track (cloned there, never added as a submodule) is listed
+      // as an untracked directory: git stops at its .git.
+      const { stdout: untracked } = yield* this.git(["ls-files", "--others", "--exclude-standard", "--directory"], repository, "capture");
+      for (const entry of untracked.split("\n").map(line => line.trim()).filter(line => line.endsWith("/"))) {
+        const directory = path.join(repository, entry);
+        if (yield* this.pathExists(path.join(directory, ".git"))) pending.push(directory.replace(/\/$/, ""));
+      }
+    }
+    return repositories;
   }
 
   private *useHttpsSubmoduleUrls(repository: string): EffectGen<number, BadPreconditionsError> {
@@ -105,9 +119,11 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return changed;
   }
 
-  private *fetchSubmodules(root: string, user: CurrentUser): EffectGen<void, BadPreconditionsError> {
+  /** Returns how many submodules it checked out. */
+  private *fetchSubmodules(root: string, user: CurrentUser): EffectGen<number, BadPreconditionsError> {
     const fetchConfig = yield* this.fetchConfig(user.accountKey);
     yield* this.git([...fetchConfig, "submodule", "sync", "--recursive"], root, "capture");
+    let checkedOut = 0;
     for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
       // Only submodules not checked out (status "-"): `submodule update` on one already checked out would move its HEAD.
       const { stdout } = yield* this.git(["submodule", "status", "--recursive"], root, "capture");
@@ -115,7 +131,8 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
         const match = SUBMODULE_STATUS_LINE.exec(line);
         return match !== null && match[1] === "-" ? [match[2]!] : [];
       });
-      if (missing.length === 0) return;
+      if (missing.length === 0) return checkedOut;
+      checkedOut += missing.length;
       for (const relativePath of missing) {
         const parent = path.join(root, path.dirname(relativePath));
         const parentRoot = yield* this.repositoryRoot(parent);
@@ -146,13 +163,18 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
   *checkOutSubmodulesOverHttps(root: string, user: CurrentUser): EffectGen<number, BadPreconditionsError> {
     let rewritten = 0;
     for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
+      const repositories = yield* this.repositoriesUnder(root);
       let changed = 0;
-      for (const repository of yield* this.repositoriesUnder(root)) {
+      for (const repository of repositories) {
         changed += yield* this.useHttpsSubmoduleUrls(repository);
       }
-      yield* this.fetchSubmodules(root, user);
+      let checkedOut = 0;
+      for (const repository of repositories) {
+        checkedOut += yield* this.fetchSubmodules(repository, user);
+      }
       rewritten += changed;
-      if (changed === 0) return rewritten;
+      // A checkout can reveal a .gitmodules not yet rewritten, so only a pass that does neither is the last.
+      if (changed === 0 && checkedOut === 0) return rewritten;
     }
     return yield* BadPreconditionsError.withoutFix(`Submodules under ${root} nest more than ${MAX_SUBMODULE_DEPTH} deep`);
   }
