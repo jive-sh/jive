@@ -2,7 +2,7 @@ import * as e from "effect";
 import * as path from "node:path";
 import { implementing, type EffectGen } from "effective-modules";
 import { OSPlatform } from "jive-abstract-library";
-import { GIT_CREDENTIAL_HELPER_NAME, SSH_KEYGEN_COMMAND_NAME, TOOL_NAME, installedCommandPath } from "@/constants";
+import { SSH_KEYGEN_COMMAND_NAME, TOOL_NAME, installedCommandPath } from "@/constants";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { jiveHomePaths } from "@/jive-home";
 import { modules } from "@/modules";
@@ -143,11 +143,7 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
   }
 
   *configureRepository(repository: string, user: CurrentUser): EffectGen<void, BadPreconditionsError> {
-    const config: Record<string, string> = {
-      ...yield* this.signingConfig({ name: user.username, email: user.email }, user.accountKey),
-      "credential.helper": yield* this.installedCommand(GIT_CREDENTIAL_HELPER_NAME),
-      "credential.useHttpPath": "true",
-    };
+    const config = yield* this.signingConfig({ name: user.username, email: user.email }, user.accountKey);
     for (const [key, value] of Object.entries(config)) {
       yield* this.git(["config", "--local", key, value], repository, "capture");
     }
@@ -208,11 +204,9 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     };
   }
 
-  /** For one git command that fetches: https through `git-credential-jive`, a nested SSH URL through the agent. */
+  /** For one git command that fetches: a nested submodule its .gitmodules names over SSH fetches through the agent. */
   private *fetchConfig(accountKey: AccountKey): EffectGen<ReadonlyArray<string>> {
     return [
-      "-c", `credential.helper=${yield* this.installedCommand(GIT_CREDENTIAL_HELPER_NAME)}`,
-      "-c", "credential.useHttpPath=true",
       "-c", `core.sshCommand=${yield* this.sshCommand(accountKey)}`,
     ];
   }

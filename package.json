@@ -1,7 +1,7 @@
 {
   "$schema": "./package.schema.json",
   "name": "@jive-sh/jive",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "license": "MIT",
   "description": "The Jive CLI: signs you in to Jive, signs your git commits and GitHub pushes with your account's key on the Jive server, and loads repos into a workspace.",
   "type": "module",
@@ -30,7 +30,7 @@
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",
-    "jive-abstract-library": "0.7.1",
+    "jive-abstract-library": "0.12.0",
     "typescript": "^5.9.3"
   },
   "jive": {

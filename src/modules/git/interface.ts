@@ -32,8 +32,8 @@ export interface IGit {
    */
   checkOutSubmodulesOverHttps(root: string, user: CurrentUser): EffectGen<number, BadPreconditionsError>;
   /**
-   * Makes `repository` commit as the user, sign commits and tags with the account key, fetch GitHub over https
-   * through `git-credential-jive`, and push to GitHub over SSH through the signing agent.
+   * Makes `repository` commit as the user, sign commits and tags with the account key, fetch GitHub over https, and
+   * push to GitHub over SSH through the signing agent.
    */
   configureRepository(repository: string, user: CurrentUser): EffectGen<void, BadPreconditionsError>;
 }

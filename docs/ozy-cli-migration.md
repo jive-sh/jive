@@ -44,7 +44,7 @@ purpose), **still to port** (wanted, not built yet).
 | `jive provision <kind> <name>` | Makes sure a resource instance exists, e.g. `jive provision connector-package-registry @jive-sh/server-client`; the organization's configured implementation (npm for jive-sh) does it | ported (0.4.0) | Calls `provision` (docs/jive_server_provision_api.md section 2); the instance is `jive.resources.<kind>.<name>` in `./package.json` or `--instance`. The server's `provision` isn't deployed yet, so it answers an error until then |
 | deploy hook on `jive login --cicd` + `jive provision` | jive-abstract-library's deploy runs `bun x @jive-sh/jive@0.4.1 login --cicd`, then `provision connector-package-registry <name> --instance {"packageName":…}` | ported (jive-abstract-library 0.11.0) | The only provisioning path. The direct `packages:provision` call, the library's ID-token fetch and the switch were deleted after a real deploy signed in and reached `provision` |
 | package git URLs through `connector-code-repository` | `jive load` asks the server for the repo's URLs; the organization's configured code-repository implementation (GitHub for jive-sh) answers | still to port | Needs a server call (proposed below). Until then `github.remoteUrls` builds `https://github.com/<org>/<repo>.git` and `git@github.com:…` itself |
-| `jive-signing-agent` (daemon), `jive-ssh-keygen`, `git-credential-jive` | The agent, git's signing program, the workspace's https credential helper | ported | |
+| `jive-signing-agent` (daemon), `jive-ssh-keygen` | The agent, and git's signing program | ported | |
 | `session`, `account-key`, `jive-server`, `pipeline-identity`, `signing-agent` modules | Session file and sign-in; the account key; calls to `@jive-sh/server`; the job's ID token; the agent protocol | ported | New with this migration |
 | `browser` module | Opens a URL with the platform's opener (`open`, `xdg-open`, `start`) | ported | The sign-in page; tests never use the real one |
 | `auth`, `github` modules | The workspace's GitHub sign-in (two OAuth passes, kept in `.jive/users`) and key registration | ported | `jive load` needs a GitHub token to clone and to register the key |
@@ -149,7 +149,7 @@ GitHub's authorization page opens once; approve it. `jive init` then:
   is kept), and runs `git submodule sync`; no submodule is missing, so none is checked out and none moves;
 - configures the root, the 11 submodules and the 10 untracked repositories: `user.signingKey ~/.jive/ssh/account.pub`,
   `gpg.ssh.program …/@jive-sh/jive/bin/jive-ssh-keygen`, commit and tag signing on, `core.sshCommand` through
-  `~/.jive/signing-agent.sock`, `credential.helper git-credential-jive`, origin fetching over https and pushing to
+  `~/.jive/signing-agent.sock`, origin fetching over https and pushing to
   `git@github.com:…`.
 
 It ends with `12 submodule URLs moved to https; 22 repositories sign as ozyman42 <…> and push through jive's agent`.
@@ -182,12 +182,11 @@ for d in . $(git submodule foreach --quiet --recursive pwd) $(git ls-files --oth
   git -C "$d" config gpg.ssh.program /Users/alex/.bun/install/global/node_modules/@ozyman42/ozy-cli/bin/ozy-ssh-keygen
   git -C "$d" config user.signingkey /Users/alex/.ssh/jive-immense-shadowed-camp.pub
   git -C "$d" config --unset core.sshCommand; git -C "$d" config --unset remote.origin.pushurl
-  git -C "$d" config --unset credential.helper; git -C "$d" config --unset credential.useHttpPath
   url=$(git -C "$d" config remote.origin.url) && git -C "$d" remote set-url origin "$(echo "$url" | sed 's#^https://github.com/#git@github.com:#')"
 done
 ```
 
-This puts back ozy's `gpg.ssh.program`, signing key and SSH origins, and removes jive's push and credential config.
+This puts back ozy's `gpg.ssh.program`, signing key and SSH origins, and removes jive's push config.
 `git restore --worktree` returns each `.gitmodules` to its staged version (the other thread's change stays staged)
 and `.gitignore` to its committed one, before `submodule sync` and before the origins are set back. ozy's agent never stopped, so signing works again at once. `jive` stays installed
 and idle; `bun remove -g @jive-sh/jive` removes it and its daemon.

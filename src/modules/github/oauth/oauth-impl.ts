@@ -42,8 +42,8 @@ export const oauthLogin = (username?: string): e.Effect.Effect<{
   email: string;
 }> =>
   e.Effect.gen(function*() {
-    // One sign-in, one consent: the token that registers the SSH key also reads repos for git-credential-jive. A
-    // second, read-only pass was one more approval for the person to click (Alex, 2026-11-01: "no manual steps").
+    // One sign-in, one consent: a second, read-only pass was one more approval for the person to click (Alex,
+    // 2026-11-01: "no manual steps").
     const session = yield* authorizeForScopes(WRITE_SCOPES, "GitHub authorization", username);
     const email = session.email;
     if (!email) {

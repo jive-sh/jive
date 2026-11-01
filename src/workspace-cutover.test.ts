@@ -276,7 +276,6 @@ test("the handed-over repository check finds every repository on jive, and the r
     `  git -C "$d" config gpg.ssh.program ${ozyKeygen}`,
     `  git -C "$d" config user.signingkey ${ozyKey}`,
     `  git -C "$d" config --unset core.sshCommand; git -C "$d" config --unset remote.origin.pushurl`,
-    `  git -C "$d" config --unset credential.helper; git -C "$d" config --unset credential.useHttpPath`,
     `  url=$(git -C "$d" config remote.origin.url) && git -C "$d" remote set-url origin "$(echo "$url" | sed 's#^https://github.com/#git@github.com:#')"`,
     "done",
   ].join("\n")], checkout);

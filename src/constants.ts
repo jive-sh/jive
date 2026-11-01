@@ -3,7 +3,6 @@ import { name } from "../package.json";
 
 export const PACKAGE_NAME = name;
 export const TOOL_NAME = "jive";
-export const GIT_CREDENTIAL_HELPER_NAME = "git-credential-jive";
 /** What git runs to sign (`gpg.ssh.program`): ssh-keygen, pointed at the signing agent's socket. */
 export const SSH_KEYGEN_COMMAND_NAME = "jive-ssh-keygen";
 
