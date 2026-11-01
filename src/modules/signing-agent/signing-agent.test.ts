@@ -11,6 +11,8 @@ import { AccountKeyImpl } from "@/modules/account-key/impl";
 import { JiveServerImpl } from "@/modules/jive-server/impl";
 import { JiveServerError, SignInClaim, type OpenedSignInRequest, type Session } from "@/modules/jive-server/interface";
 import { SessionImpl } from "@/modules/session/impl";
+import { GitHubActionsIdentityImpl } from "@/modules/pipeline-identity/impl";
+import { modules } from "@/modules";
 import { TerminalSignInPromptImpl } from "@/modules/session/sign-in-prompt";
 import { SigningAgentImpl } from "./impl";
 import { serveSigningAgent } from "./socket-server";
@@ -37,6 +39,8 @@ const server = {
   signedWith: [] as Array<string>,
   claimsBeforeApproval: 0,
   promptsShown: 0,
+  pipelineIdTokens: [] as Array<string>,
+  idTokenAudiences: [] as Array<string>,
 };
 
 const request: OpenedSignInRequest = {
@@ -60,6 +64,11 @@ const fakeServer = JiveServerImpl.mockLayer({
   *accountOf(session: Session) {
     return server.liveTokens.has(session.sessionToken) ? e.Option.some({ username: "tester" }) : e.Option.none();
   },
+  *signInPipeline(idToken: string) {
+    server.pipelineIdTokens.push(idToken);
+    server.liveTokens.add("jive_pipeline_session");
+    return { sessionToken: "jive_pipeline_session", expiresAt: Date.now() + 3_600_000 };
+  },
   *createSshKey() { return { publicKey: publicKeyLine }; },
   *signWithSshKey(session: Session, data: Uint8Array) {
     if (!server.liveTokens.has(session.sessionToken)) {
@@ -71,6 +80,13 @@ const fakeServer = JiveServerImpl.mockLayer({
   },
 });
 
+const fakeJobIdentity = GitHubActionsIdentityImpl.mockLayer({
+  *idToken(audience: string) {
+    server.idTokenAudiences.push(audience);
+    return "github-id-token";
+  },
+});
+
 const fakePrompt = TerminalSignInPromptImpl.mockLayer({ *show() { server.promptsShown += 1; } });
 
 const agentLayer = e.pipe(
@@ -78,6 +94,7 @@ const agentLayer = e.pipe(
   e.Layer.provideMerge(AccountKeyImpl.Layer),
   e.Layer.provideMerge(SessionImpl.Layer),
   e.Layer.provideMerge(fakePrompt),
+  e.Layer.provideMerge(fakeJobIdentity),
   e.Layer.provideMerge(fakeServer),
   // Bun reads HOME once at startup, so the scratch home reaches the modules through the platform they ask.
   e.Layer.provideMerge(OSPlatformImpl.mockLayer({ *getHomeDirectory() { return scratch; } })),
@@ -170,4 +187,16 @@ test("refuses to sign for a key it does not hold", async () => {
   writeFileSync(message, "other\n");
   const signed = await run(["ssh-keygen", "-Y", "sign", "-n", "git", "-f", otherPublicKeyFile, message]);
   expect(signed.exitCode).not.toBe(0);
+});
+
+test("a CI/CD job signs in by exchanging its ID token for Jive's audience, and the pipeline session is stored", async () => {
+  const session = await e.Effect.runPromise(e.pipe(
+    e.Effect.gen(function* () { return yield* (yield* modules.session).signInAsPipeline(); }),
+    e.Effect.provide(agentLayer),
+  ));
+  expect(server.idTokenAudiences).toEqual(["https://api.jive.sh"]);
+  expect(server.pipelineIdTokens).toEqual(["github-id-token"]);
+  expect(session.sessionToken).toBe("jive_pipeline_session");
+  expect(JSON.parse(readFileSync(paths.sessionFile, "utf8")).sessionToken).toBe("jive_pipeline_session");
+  expect(server.promptsShown).toBe(2);
 });

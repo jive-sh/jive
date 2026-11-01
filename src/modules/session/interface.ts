@@ -14,8 +14,13 @@ export class SignInFailed extends e.Data.TaggedError("SignInFailed")<{ readonly 
 export interface ISession {
   /** The stored session, when the server should still honour it. */
   current(): EffectGen<e.Option.Option<Session>>;
-  /** Signs in afresh, replacing any stored session. */
+  /** Signs in afresh with a passkey, replacing any stored session. */
   signIn(): EffectGen<Session, SignInFailed>;
+  /**
+   * Signs a CI/CD job in by exchanging its ID token for a session of its pipeline, replacing any stored session. The
+   * only other way to a session; nothing here accepts a token from elsewhere.
+   */
+  signInAsPipeline(): EffectGen<Session, SignInFailed>;
   /**
    * The stored session, or a new one when there is none. Concurrent callers share one sign-in, so a burst of sign
    * requests to the agent shows the person one page.

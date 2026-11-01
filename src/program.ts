@@ -107,10 +107,13 @@ export const jive = Cli.make(TOOL_NAME, {
 
   login: Cli.command({
     description: "sign in to Jive with your jive.sh passkey; git signing and pushes use this session",
-    *run() {
+    flags: {
+      cicd: Cli.flag.boolean({ description: "in a CI/CD job: exchange the job's GitHub OIDC token for a session of its pipeline" }),
+    },
+    *run({ flags }) {
       const sessions = yield* modules.session;
       const session = yield* e.pipe(
-        e.Effect.gen(() => sessions.signIn()),
+        e.Effect.gen(() => flags.cicd ? sessions.signInAsPipeline() : sessions.signIn()),
         e.Effect.mapError(({ reason }) => new BadPreconditionsError({ cause: `Sign-in did not finish: ${reason}`, fix: `Run \`${TOOL_NAME} login\` again` })),
       );
       yield* e.Effect.log(`Signed in to Jive until ${new Date(session.expiresAt).toLocaleString()}`);

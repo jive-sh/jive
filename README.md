@@ -22,6 +22,7 @@ Linux, a scheduled task on Windows).
 | Command | What it does |
 | --- | --- |
 | `jive login` | Signs this machine in to Jive: prints a confirmation code and opens `https://jive.sh/login?request=…`, where you check the code and approve with your jive.sh passkey. |
+| `jive login --cicd` | In a GitHub Actions job with `id-token: write`: exchanges the job's ID token for a session of its pipeline. |
 | `jive whoami` | Prints the Jive account (`<handle>@jive.sh`) this machine is signed in as. |
 | `jive git setup [owner/repo]` | Signs in if needed, has the server create your account's SSH key on first use, registers it on GitHub as an authentication key and a signing key (one GitHub sign-in in the browser), and configures the current repository and every submodule checked out under it to sign commits and tags with it and push through the signing agent. With `owner/repo` it clones that repo first, over SSH, with its submodules. |
 | `jive load <org> <repo>` | Clones a GitHub repo into the workspace as a submodule, configures it the same way, then `bun install` and `bun link` it. |
@@ -36,8 +37,8 @@ Linux, a scheduled task on Windows).
 ## How signing works
 
 1. **Sessions.** A session is obtained only by a person's passkey (`jive login`, or the agent asking when it needs
-   one) or, for a pipeline, by exchanging its GitHub OIDC token (`jive login --cicd`, coming once the server's exchange
-   call lands). There is no other way: no pasted tokens and no local keys. `jive login` opens a sign-in request
+   one) or, for a pipeline, by exchanging its GitHub OIDC token (`jive login --cicd`, which calls the server's
+   `pipelineSessions:signIn` with an ID token minted for `https://api.jive.sh`). There is no other way: no pasted tokens and no local keys. `jive login` opens a sign-in request
    (`signInRequests:open`), shows its code and page, and claims the session (`signInRequests:claim`) every 2 seconds
    until you approve it. The session token goes to `~/.jive/session.json`, readable by you only. A session lasts 12
    hours.
@@ -75,6 +76,8 @@ against the agent with a fake server, and the workspace tests use local bare rep
 
 ## Direction
 
-- `jive login --cicd`, once `@jive-sh/server` can exchange a GitHub OIDC token for a pipeline session.
-- `jive provision <resource>`, which waits on the design page's open decision on organization deployments.
+- `jive provision <kind> <instance>` (e.g. `jive provision connector-package-registry @jive-sh/server-client`): makes sure a
+  resource instance exists, the organization's configuration on the server picking the implementation. Waits on the
+  server's provision call; jive-abstract-library's deploy hook will then run `jive login --cicd` and `jive provision`
+  instead of calling `packages:provision` itself.
 - Repo creation from an abstract: `jive create <kind>` resolves `jive-abstract-<kind>`.

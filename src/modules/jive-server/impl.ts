@@ -33,7 +33,12 @@ const ClaimValue = e.Schema.Union([
   e.Schema.Struct({ status: e.Schema.Literal("gone") }),
 ]);
 
-const AccountValue = e.Schema.NullOr(e.Schema.Struct({ username: e.Schema.String }));
+const PipelineSignInValue = e.Schema.Union([
+  e.Schema.Struct({ status: e.Schema.Literal("signedIn"), sessionToken: e.Schema.NonEmptyString, expiresAt: e.Schema.Number }),
+  e.Schema.Struct({ status: e.Schema.Literal("refused"), reason: e.Schema.String }),
+]);
+
+const AccountValue =e.Schema.NullOr(e.Schema.Struct({ username: e.Schema.String }));
 const PublicKeyValue = e.Schema.Struct({ publicKey: e.Schema.NonEmptyString });
 const SignatureValue = e.Schema.Struct({ signature: ConvexBytes });
 
@@ -51,6 +56,14 @@ export class JiveServerImpl extends implementing(modules.jiveServer).uses(HttpCl
       case "gone": return SignInClaim.Gone();
       case "approved": return SignInClaim.Approved({ session: { sessionToken: claim.sessionToken, expiresAt: claim.expiresAt } });
     }
+  }
+
+  *signInPipeline(idToken: string): EffectGen<Session, JiveServerError> {
+    const outcome = yield* this.call("action", "pipelineSessions:signIn", {}, PipelineSignInValue, e.Option.some(idToken));
+    if (outcome.status === "refused") {
+      return yield* new JiveServerError({ call: "pipelineSessions:signIn", reason: `Jive refused to sign this job in: ${outcome.reason}` });
+    }
+    return { sessionToken: outcome.sessionToken, expiresAt: outcome.expiresAt };
   }
 
   *accountOf(session: Session): EffectGen<e.Option.Option<{ readonly username: string }>, JiveServerError> {
@@ -72,14 +85,22 @@ export class JiveServerImpl extends implementing(modules.jiveServer).uses(HttpCl
     return new Uint8Array(Buffer.from(signature.$bytes, "base64"));
   }
 
-  private *call<A>(kind: FunctionKind, path: string, args: Record<string, unknown>, value: e.Schema.Codec<A, unknown>): EffectGen<A, JiveServerError> {
+  /** `bearer` goes in the Authorization header, where Convex verifies an ID token itself (the server's auth config). */
+  private *call<A>(
+    kind: FunctionKind,
+    path: string,
+    args: Record<string, unknown>,
+    value: e.Schema.Codec<A, unknown>,
+    bearer: e.Option.Option<string> = e.Option.none(),
+  ): EffectGen<A, JiveServerError> {
     const client = this.getDependency(HttpClient.HttpClient);
     const failure = (reason: string) => new JiveServerError({ call: path, reason });
+    const request = e.pipe(
+      HttpClientRequest.post(`${convexUrl}/api/${kind}`),
+      HttpClientRequest.bodyJsonUnsafe({ path, args, format: "json" }),
+    );
     const answer = yield* e.pipe(
-      client.execute(e.pipe(
-        HttpClientRequest.post(`${convexUrl}/api/${kind}`),
-        HttpClientRequest.bodyJsonUnsafe({ path, args, format: "json" }),
-      )),
+      client.execute(e.Option.isSome(bearer) ? HttpClientRequest.bearerToken(request, bearer.value) : request),
       e.Effect.flatMap(HttpClientResponse.schemaJson(e.Schema.Struct({ body: ConvexAnswer }))),
       // Neither error quotes the body or the request, which can hold a token, claim secret or signature.
       e.Effect.catchTag("HttpClientError", (error) => e.Effect.fail(failure(`could not reach ${convexUrl}: ${error.reason._tag}`))),

@@ -7,6 +7,7 @@ import type { IGit } from "./git/interface";
 import type { IGitHub } from "./github/interface";
 import type { IJiveServer } from "./jive-server/interface";
 import type { INpm } from "./npm/interface";
+import type { IPipelineIdentity } from "./pipeline-identity/interface";
 import type { ISession, ISignInPrompt } from "./session/interface";
 import type { ISigningAgent } from "./signing-agent/interface";
 import type { ITemplates } from "./templates/interface";
@@ -21,6 +22,7 @@ export enum Module {
   github = "github",
   jiveServer = "jiveServer",
   npm = "npm",
+  pipelineIdentity = "pipelineIdentity",
   session = "session",
   signInPrompt = "signInPrompt",
   signingAgent = "signingAgent",
@@ -37,6 +39,7 @@ export const modules = interfaces<Module, {
   [Module.github]: IGitHub;
   [Module.jiveServer]: IJiveServer;
   [Module.npm]: INpm;
+  [Module.pipelineIdentity]: IPipelineIdentity;
   [Module.session]: ISession;
   [Module.signInPrompt]: ISignInPrompt;
   [Module.signingAgent]: ISigningAgent;

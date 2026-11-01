@@ -36,9 +36,18 @@ export class JiveServerError extends e.Data.TaggedError("JiveServerError")<{
   readonly reason: string;
 }> {}
 
+/** The audience a CI/CD job's ID token is minted for: it names Jive's API, whichever deployment serves it. */
+export const JIVE_API_AUDIENCE = "https://api.jive.sh";
+
 export interface IJiveServer {
   openSignInRequest(): EffectGen<OpenedSignInRequest, JiveServerError>;
   claimSignInRequest(request: OpenedSignInRequest): EffectGen<SignInClaim, JiveServerError>;
+  /**
+   * Exchanges a CI/CD job's ID token, minted for `JIVE_API_AUDIENCE`, for a session of that job's pipeline
+   * (`pipelineSessions:signIn`). The server checks the token's workflow, ref, runner and repository; a refusal fails
+   * with its reason.
+   */
+  signInPipeline(idToken: string): EffectGen<Session, JiveServerError>;
   /** The session's account handle, or none when the server no longer honours the session (expired or revoked). */
   accountOf(session: Session): EffectGen<e.Option.Option<{ readonly username: string }>, JiveServerError>;
   /** The account's OpenSSH public key, creating the key on the server on the first call. */

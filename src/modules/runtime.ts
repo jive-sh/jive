@@ -9,6 +9,7 @@ import { GitImpl } from "./git/impl";
 import { GithubImpl } from "./github/impl";
 import { JiveServerImpl } from "./jive-server/impl";
 import { NpmImpl } from "./npm/impl";
+import { GitHubActionsIdentityImpl } from "./pipeline-identity/impl";
 import { SessionImpl } from "./session/impl";
 import { DesktopSignInPromptImpl, TerminalSignInPromptImpl } from "./session/sign-in-prompt";
 import { SigningAgentImpl } from "./signing-agent/impl";
@@ -26,6 +27,7 @@ const accountLayer = (signInPrompt: typeof TerminalSignInPromptImpl.Layer | type
   e.Layer.provideMerge(SessionImpl.Layer),
   e.Layer.provideMerge(signInPrompt),
   e.Layer.provideMerge(BrowserImpl.Layer),
+  e.Layer.provideMerge(GitHubActionsIdentityImpl.Layer),
   e.Layer.provideMerge(JiveServerImpl.Layer),
   e.Layer.provideMerge(OSPlatformImpl.Layer),
   e.Layer.provideMerge(FetchHttpClient.layer),

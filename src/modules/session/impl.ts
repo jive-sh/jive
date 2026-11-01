@@ -4,7 +4,7 @@ import { OSPlatform } from "jive-abstract-library";
 import * as path from "node:path";
 import { jiveHomePaths } from "@/jive-home";
 import { modules } from "@/modules";
-import { SignInClaim, type OpenedSignInRequest, type Session } from "@/modules/jive-server/interface";
+import { JIVE_API_AUDIENCE, SignInClaim, type OpenedSignInRequest, type Session } from "@/modules/jive-server/interface";
 import { SignInFailed, type ISession } from "./interface";
 
 const CLAIM_INTERVAL = e.Duration.seconds(2);
@@ -17,6 +17,7 @@ const decodeStoredSession = e.Schema.decodeUnknownOption(e.Schema.fromJsonString
 export class SessionImpl extends implementing(modules.session).uses(
   modules.jiveServer,
   modules.signInPrompt,
+  modules.pipelineIdentity,
   OSPlatform,
   e.FileSystem.FileSystem,
 ) implements ISession {
@@ -41,6 +42,20 @@ export class SessionImpl extends implementing(modules.session).uses(
     );
     yield* signInPrompt.show(request);
     const session = yield* this.claimWhenApproved(request);
+    yield* this.store(session);
+    return session;
+  }
+
+  *signInAsPipeline(): EffectGen<Session, SignInFailed> {
+    const { jiveServer, pipelineIdentity } = this.dependencies;
+    const idToken = yield* e.pipe(
+      e.Effect.gen(() => pipelineIdentity.idToken(JIVE_API_AUDIENCE)),
+      e.Effect.mapError((reason) => new SignInFailed({ reason })),
+    );
+    const session = yield* e.pipe(
+      e.Effect.gen(() => jiveServer.signInPipeline(idToken)),
+      e.Effect.mapError(({ reason }) => new SignInFailed({ reason })),
+    );
     yield* this.store(session);
     return session;
   }
