@@ -90,7 +90,7 @@ export const jive = Cli.make(TOOL_NAME, {
       const sessions = yield* modules.session;
       const session = yield* e.pipe(
         e.Effect.gen(() => flags.cicd ? sessions.signInAsPipeline() : sessions.signIn()),
-        e.Effect.mapError(({ reason }) => new BadPreconditionsError({ cause: `Sign-in did not finish: ${reason}`, fix: `Run \`${TOOL_NAME} login\` again` })),
+        e.Effect.mapError(({ reason }) => new BadPreconditionsError({ cause: `Sign-in did not finish: ${reason}`, fix: flags.cicd ? "Fix what the reason names, then run the job again" : `Run \`${TOOL_NAME} login\` again` })),
       );
       yield* e.Effect.log(`Signed in to Jive until ${new Date(session.expiresAt).toLocaleString()}`);
       if (flags.cicd) return;
