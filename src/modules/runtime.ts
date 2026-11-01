@@ -9,6 +9,7 @@ import { GitImpl } from "./git/impl";
 import { GithubImpl } from "./github/impl";
 import { JiveServerImpl } from "./jive-server/impl";
 import { GitHubActionsIdentityImpl } from "./pipeline-identity/impl";
+import { ProvisioningImpl } from "./provisioning/impl";
 import { SessionImpl } from "./session/impl";
 import { DesktopSignInPromptImpl, TerminalSignInPromptImpl } from "./session/sign-in-prompt";
 import { SigningAgentImpl } from "./signing-agent/impl";
@@ -37,6 +38,7 @@ export const ModulesLayer = e.pipe(
   e.Layer.provideMerge(GitImpl.Layer),
   e.Layer.provideMerge(GithubImpl.Layer),
   e.Layer.provideMerge(ToolStateImpl.Layer),
+  e.Layer.provideMerge(ProvisioningImpl.Layer),
   e.Layer.provideMerge(accountLayer(TerminalSignInPromptImpl.Layer)),
 );
 

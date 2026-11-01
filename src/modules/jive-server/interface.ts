@@ -30,6 +30,16 @@ export type SignInClaim = e.Data.TaggedEnum<{
 }>;
 export const SignInClaim = e.Data.taggedEnum<SignInClaim>();
 
+/** What `provision` answers about one resource instance (docs/jive_server_provision_api.md, section 2). */
+export type ProvisionAnswer = e.Data.TaggedEnum<{
+  Ready: { readonly instanceId: string };
+  InProgress: { readonly retryAfterSeconds: number };
+  /** The outside system wants a person first, on its own page. */
+  PersonNeeded: { readonly reason: string; readonly url: string };
+  Refused: { readonly reason: string };
+}>;
+export const ProvisionAnswer = e.Data.taggedEnum<ProvisionAnswer>();
+
 /** The server could not be reached, or refused the call. Never carries a token, claim secret or signature. */
 export class JiveServerError extends e.Data.TaggedError("JiveServerError")<{
   readonly call: string;
@@ -57,4 +67,9 @@ export interface IJiveServer {
    * (`string "ssh-ed25519" || string <signature>`), what an SSH agent answers a sign request with.
    */
   signWithSshKey(session: Session, data: Uint8Array): EffectGen<Uint8Array, JiveServerError>;
+  /**
+   * Asks the server to make sure one instance of a resource kind exists (`provision`). The caller names the kind,
+   * e.g. `connector-package-registry`, never the implementation: the session's organization has one configured.
+   */
+  provision(input: { readonly session: Session; readonly kind: string; readonly instance: unknown }): EffectGen<ProvisionAnswer, JiveServerError>;
 }

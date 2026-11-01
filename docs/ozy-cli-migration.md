@@ -41,7 +41,7 @@ purpose), **still to port** (wanted, not built yet).
 | `jive load <org> <repo>` | Adds the repo as a submodule by its https URL, runs `git submodule update --init --recursive` for it, registers the account key on GitHub, and configures the repo and every submodule under it to sign with the account key and push through the agent | ported | Takes over `git setup`'s registration and signing config. Pushes go over SSH by config (`remote.origin.pushurl`, `core.sshCommand`); `.gitmodules` holds only https URLs |
 | `jive unload`, `jive on` | Remove a loaded repo; run a command in one | ported | |
 | `jive daemons`, `jive upgrade` | As in ozy-cli | ported | |
-| `jive provision <kind> <instance>` | Makes sure a resource instance exists, e.g. `jive provision connector-package-registry @jive-sh/server-client`; the organization's configured implementation (npm for jive-sh) does it | still to port | Codes against `resources:provision` in [jive_server_provision_api.md](jive_server_provision_api.md), which the server has specified but not built. Ships with it, so no release carries a command that always fails |
+| `jive provision <kind> <name>` | Makes sure a resource instance exists, e.g. `jive provision connector-package-registry @jive-sh/server-client`; the organization's configured implementation (npm for jive-sh) does it | ported (0.4.0) | Calls `provision` (docs/jive_server_provision_api.md section 2); the instance is `jive.resources.<kind>.<name>` in `./package.json` or `--instance`. The server's `provision` isn't deployed yet, so it answers an error until then |
 | deploy hook on `jive login --cicd` + `jive provision` | jive-abstract-library's deploy stops calling `packages:provision` itself | still to port | Waits on `jive provision`; it then also drops the library's own ID-token fetch, which jive now owns |
 | package git URLs through `connector-code-repository` | `jive load` asks the server for the repo's URLs; the organization's configured code-repository implementation (GitHub for jive-sh) answers | still to port | Needs a server call (proposed below). Until then `github.remoteUrls` builds `https://github.com/<org>/<repo>.git` and `git@github.com:…` itself |
 | `jive-signing-agent` (daemon), `jive-ssh-keygen`, `git-credential-jive` | The agent, git's signing program, the workspace's https credential helper | ported | |
@@ -88,9 +88,9 @@ jive-sh), the same one-implementation-per-kind lookup as `resources:provision`. 
 `jive load` writes `fetchUrl` into `.gitmodules` and `remote.origin.url`, and `pushUrl` into
 `remote.origin.pushurl`; `github.remoteUrls` is then deleted.
 
-## Proposed jive block shape for `jive provision`
+## The jive block shape `jive provision` reads
 
-The provision contract's open question 2 leaves this to jive. **Default in effect:** a package declares its instances
+The provision contract's open question 2 leaves this to jive. **Built in 0.4.0, a default Alex can change:** a package declares its instances
 by kind, each instance by name, holding the shape that kind's contract defines:
 
 ```json
@@ -101,9 +101,9 @@ by kind, each instance by name, holding the shape that kind's contract defines:
 }
 ```
 
-`jive provision <kind> <name>` sends `{ kind, instance: <that object> }`; with no name it provisions every instance of
-the kind. The block needs a `resources` field in jive-abstract-library's manifest schema, released with the hook
-change.
+`jive provision <kind> <name>` sends `{ kind, instance: <that object> }`; `--instance '<json>'` gives the object
+instead, which is how jive-abstract-library's deploy hook names the package it publishes. The library's manifest
+schema doesn't validate `jive.resources` yet.
 
 ## Switching Alex's machine from ozy to jive
 

@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { AccountKeyImpl } from "@/modules/account-key/impl";
 import { AccountKeyError } from "@/modules/account-key/interface";
+import { ProvisioningImpl } from "@/modules/provisioning/impl";
 import { AuthImpl } from "@/modules/auth/impl";
 import type { CurrentUser } from "@/modules/auth/interface";
 import { GithubAccessTokenType } from "@/modules/github/interface";
@@ -114,6 +115,7 @@ async function runJive(args: ReadonlyArray<string>): Promise<Outcome> {
     e.Effect.provide(AuthImpl.mockLayer({ *ensureLoggedIn() { return user; } })),
     // No test signs in to Jive: one that reaches the account key would open a sign-in page in the browser.
     e.Effect.provide(AccountKeyImpl.mockLayer({ *ensure() { return yield* new AccountKeyError({ reason: "tests do not sign in" }); } })),
+    e.Effect.provide(ProvisioningImpl.mockLayer({ *ensure(input: { kind: string; instance: unknown }) { provisioned.push(input); return { instanceId: "fake-instance" }; } })),
     e.Effect.provide(ModulesLayer),
     e.Effect.provide(e.Stdio.layerTest({
       args: e.Effect.succeed(args),
@@ -126,6 +128,8 @@ async function runJive(args: ReadonlyArray<string>): Promise<Outcome> {
   ));
   return { stdout: stdout.join(""), exit };
 }
+
+const provisioned: Array<{ kind: string; instance: unknown }> = [];
 
 const errorOf = (exit: e.Exit.Exit<void, unknown>) => e.Option.getOrUndefined(e.Exit.findErrorOption(exit));
 const widget = () => path.join(workspace, "@acme", "widget");
@@ -180,6 +184,20 @@ describe("jive in a workspace", () => {
     expect(existsSync(widget())).toBe(false);
     expect(readFileSync(path.join(workspace, ".gitmodules"), "utf8")).not.toContain("acme/widget");
     expect(existsSync(path.join(workspace, ".git", "modules", "@acme", "widget"))).toBe(false);
+  });
+
+  test("provision sends the kind and the instance --instance gives, or the one package.json declares", async () => {
+    provisioned.length = 0;
+    expect((await runJive(["provision", "connector-package-registry", "@acme/widget", "--instance", '{"packageName":"@acme/widget"}'])).exit).toEqual(e.Exit.void);
+    writeFileSync(path.join(workspace, "package.json"), JSON.stringify({ jive: { resources: { "connector-package-registry": { "@acme/gadget": { packageName: "@acme/gadget" } } } } }));
+    expect((await runJive(["provision", "connector-package-registry", "@acme/gadget"])).exit).toEqual(e.Exit.void);
+    const undeclared = await runJive(["provision", "connector-package-registry", "@acme/missing"]);
+    expect(errorOf(undeclared.exit)).toBeInstanceOf(BadArgumentError);
+    rmSync(path.join(workspace, "package.json"));
+    expect(provisioned).toEqual([
+      { kind: "connector-package-registry", instance: { packageName: "@acme/widget" } },
+      { kind: "connector-package-registry", instance: { packageName: "@acme/gadget" } },
+    ]);
   });
 
   test("outside a workspace, a command says so", async () => {

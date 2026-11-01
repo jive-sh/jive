@@ -123,6 +123,27 @@ export const jive = Cli.make(TOOL_NAME, {
     },
   }),
 
+  provision: Cli.command({
+    description: "make sure a resource instance exists, e.g. `provision connector-package-registry @scope/name`; the organization's configured implementation does it",
+    flags: {
+      instance: Cli.flag.string({ description: "the instance as JSON, in place of the one ./package.json declares under jive.resources.<kind>.<name>" }),
+    },
+    *run({ args: [kind, name], flags }) {
+      if (kind === undefined || name === undefined) {
+        return yield* new BadArgumentError({ argument: "kind and instance", reason: `give both, e.g. \`${TOOL_NAME} provision connector-package-registry @scope/name\`` });
+      }
+      const instance = yield* e.Option.match(flags.instance, {
+        onSome: (json) => parseInstance(json),
+        onNone: () => declaredInstance(kind, name),
+      });
+      const { instanceId } = yield* e.pipe(
+        e.Effect.gen(function* () { return yield* (yield* modules.provisioning).ensure({ kind, instance }); }),
+        e.Effect.mapError(({ reason }) => new BadPreconditionsError({ cause: reason, fix: "" })),
+      );
+      yield* e.Effect.log(`${kind} ${name} is ready (${instanceId})`);
+    },
+  }),
+
   daemons: Cli.command({
     description: "list every Jive daemon registered on this machine, with where its executable lives",
     *run() {
@@ -152,3 +173,28 @@ export const jive = Cli.make(TOOL_NAME, {
     },
   }),
 });
+
+const parseInstance = (json: string): e.Effect.Effect<unknown, BadArgumentError> =>
+  e.Effect.try({
+    try: () => JSON.parse(json) as unknown,
+    catch: () => new BadArgumentError({ argument: "--instance", reason: "is not JSON" }),
+  });
+
+/** The instance `./package.json` declares as `jive.resources.<kind>.<name>`. */
+const DeclaredResources = e.Schema.fromJsonString(e.Schema.Struct({
+  jive: e.Schema.Struct({
+    resources: e.Schema.Record(e.Schema.String, e.Schema.Record(e.Schema.String, e.Schema.Unknown)),
+  }),
+}));
+
+const declaredInstance = (kind: string, name: string): e.Effect.Effect<unknown, BadArgumentError, e.FileSystem.FileSystem> =>
+  e.Effect.gen(function* () {
+    const notDeclared = new BadArgumentError({
+      argument: "instance",
+      reason: `./package.json declares no jive.resources["${kind}"]["${name}"]; declare it there, or pass --instance '<json>'`,
+    });
+    const contents = yield* e.pipe((yield* e.FileSystem.FileSystem).readFileString("package.json"), e.Effect.mapError(() => notDeclared));
+    const declared = yield* e.pipe(e.Schema.decodeUnknownEffect(DeclaredResources)(contents), e.Effect.mapError(() => notDeclared));
+    const instance = declared.jive.resources[kind]?.[name];
+    return instance === undefined ? yield* notDeclared : instance;
+  });

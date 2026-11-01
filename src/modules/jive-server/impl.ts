@@ -3,7 +3,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { implementing, type EffectGen } from "effective-modules";
 import { convexUrl } from "@jive-sh/server-client";
 import { modules } from "@/modules";
-import { JiveServerError, SignInClaim, type IJiveServer, type OpenedSignInRequest, type Session } from "./interface";
+import { JiveServerError, ProvisionAnswer, SignInClaim, type IJiveServer, type OpenedSignInRequest, type Session } from "./interface";
 
 /**
  * Calls the server through Convex's HTTP API (`POST <deployment>/api/<query|action>`), which answers
@@ -38,7 +38,14 @@ const PipelineSignInValue = e.Schema.Union([
   e.Schema.Struct({ status: e.Schema.Literal("refused"), reason: e.Schema.String }),
 ]);
 
-const AccountValue =e.Schema.NullOr(e.Schema.Struct({ username: e.Schema.String }));
+const ProvisionValue = e.Schema.Union([
+  e.Schema.Struct({ status: e.Schema.Literal("ready"), instanceId: e.Schema.String, instance: e.Schema.Unknown }),
+  e.Schema.Struct({ status: e.Schema.Literal("inProgress"), retryAfterSeconds: e.Schema.Number }),
+  e.Schema.Struct({ status: e.Schema.Literal("personNeeded"), reason: e.Schema.String, url: e.Schema.String }),
+  e.Schema.Struct({ status: e.Schema.Literal("refused"), reason: e.Schema.String }),
+]);
+
+const AccountValue = e.Schema.NullOr(e.Schema.Struct({ username: e.Schema.String }));
 const PublicKeyValue = e.Schema.Struct({ publicKey: e.Schema.NonEmptyString });
 const SignatureValue = e.Schema.Struct({ signature: ConvexBytes });
 
@@ -86,6 +93,17 @@ export class JiveServerImpl extends implementing(modules.jiveServer).uses(HttpCl
   }
 
   /** `bearer` goes in the Authorization header, where Convex verifies an ID token itself (the server's auth config). */
+  *provision({ session, kind, instance }: { readonly session: Session; readonly kind: string; readonly instance: unknown }): EffectGen<ProvisionAnswer, JiveServerError> {
+    // A default export is called by its module path alone.
+    const answer = yield* this.call("action", "provision", { sessionToken: session.sessionToken, kind, instance }, ProvisionValue);
+    switch (answer.status) {
+      case "ready": return ProvisionAnswer.Ready({ instanceId: answer.instanceId });
+      case "inProgress": return ProvisionAnswer.InProgress({ retryAfterSeconds: answer.retryAfterSeconds });
+      case "personNeeded": return ProvisionAnswer.PersonNeeded({ reason: answer.reason, url: answer.url });
+      case "refused": return ProvisionAnswer.Refused({ reason: answer.reason });
+    }
+  }
+
   private *call<A>(
     kind: FunctionKind,
     path: string,

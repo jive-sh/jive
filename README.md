@@ -35,6 +35,7 @@ Linux, a scheduled task on Windows).
 | --- | --- |
 | `jive login` | Signs this machine in to Jive: prints a confirmation code and opens `https://jive.sh/login?request=…`, where you check the code and approve with your jive.sh passkey. Then fetches your account's public key, which the server creates on first use. |
 | `jive login --cicd` | In a GitHub Actions job with `id-token: write`: exchanges the job's ID token for a session of its pipeline. |
+| `jive provision <kind> <name>` | Makes sure a resource instance exists through the server's `provision`, e.g. `jive provision connector-package-registry @scope/name`; the organization's configured implementation (npm for jive-sh) does it. The instance is `./package.json`'s `jive.resources.<kind>.<name>`, or `--instance '<json>'`. Needs a pipeline session (`jive login --cicd`). |
 | `jive whoami` | Prints the Jive account (`<handle>@jive.sh`) this machine is signed in as. |
 | `jive load <org> <repo>` | Adds a GitHub repo to the workspace as a submodule by its https URL, fetches its own submodules recursively, registers your account key on GitHub as an authentication and signing key, configures the repo and every submodule under it to sign commits and tags and push through the signing agent, then runs `bun install` and `bun link`. |
 | `jive unload <org> <repo>` | Removes a loaded repo. |
@@ -87,8 +88,4 @@ against the agent with a fake server, and the workspace tests use local bare rep
 
 ## Direction
 
-- `jive provision <kind> <instance>` (e.g. `jive provision connector-package-registry @jive-sh/server-client`): makes sure a
-  resource instance exists, the organization's configuration on the server picking the implementation. Waits on the
-  server's provision call; jive-abstract-library's deploy hook will then run `jive login --cicd` and `jive provision`
-  instead of calling `packages:provision` itself.
 - Repo creation from an abstract: `jive create <kind>` resolves `jive-abstract-<kind>`.
