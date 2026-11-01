@@ -13,6 +13,11 @@ export const serveSigningAgent = (socketPath: string): e.Effect.Effect<void, str
     const agent = yield* modules.signingAgent;
     const context = yield* e.Effect.context<never>();
     const answer = (message: Uint8Array) => e.Effect.runPromiseWith(context)(e.Effect.gen(() => agent.answer(message)));
+    // The kernel's limit on a unix socket path, terminator included (`sun_path`): 104 bytes on macOS, 108 on Linux.
+    const limit = process.platform === "darwin" ? 104 : 108;
+    if (Buffer.byteLength(socketPath) >= limit) {
+      return yield* e.Effect.fail(`cannot listen on ${socketPath}: a unix socket path must be under ${limit} bytes on this system`);
+    }
 
     yield* e.Effect.acquireRelease(
       e.Effect.try({

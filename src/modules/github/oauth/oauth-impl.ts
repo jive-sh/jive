@@ -1,7 +1,7 @@
 import * as e from "effect";
 import { GithubAccessTokenType, type GithubWriteToken } from "@/modules/github/interface";
 import type { TokenState } from "@/modules/tool-state/interface";
-import { createGitHubOAuthClient, READ_SCOPES, WRITE_SCOPES } from "./oauth";
+import { createGitHubOAuthClient, WRITE_SCOPES } from "./oauth";
 import { fetchSessionFromTokenResponse, type GitHubSession } from "../user";
 
 const getErrorMessage = (error: unknown): string =>
@@ -42,9 +42,10 @@ export const oauthLogin = (username?: string): e.Effect.Effect<{
   email: string;
 }> =>
   e.Effect.gen(function*() {
-    const writeSession = yield* authorizeForScopes(WRITE_SCOPES, "GitHub write authorization", username);
-    const readSession = yield* authorizeForScopes(READ_SCOPES, "GitHub read authorization", writeSession.username);
-    const email = readSession.email || writeSession.email;
+    // One sign-in, one consent: the token that registers the SSH key also reads repos for git-credential-jive. A
+    // second, read-only pass was one more approval for the person to click (Alex, 2026-11-01: "no manual steps").
+    const session = yield* authorizeForScopes(WRITE_SCOPES, "GitHub authorization", username);
+    const email = session.email;
     if (!email) {
       return yield* e.Effect.die("GitHub login completed without a usable verified email.");
     }
@@ -52,14 +53,14 @@ export const oauthLogin = (username?: string): e.Effect.Effect<{
     return {
       accessTokenState: {
         tokenType: GithubAccessTokenType.OAuthApp(),
-        token: readSession.accessToken,
-        scope: readSession.scope,
-        expiration: readSession.expiration,
+        token: session.accessToken,
+        scope: session.scope,
+        expiration: session.expiration,
       },
       writeToken: {
-        writeToken: writeSession.accessToken,
+        writeToken: session.accessToken,
       },
-      username: readSession.username,
+      username: session.username,
       email,
     };
   });

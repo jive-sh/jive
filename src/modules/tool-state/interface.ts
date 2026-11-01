@@ -66,6 +66,8 @@ export interface RepoLocation {
 
 export interface IToolState {
   assertInWorkspace(): EffectGen<{ workspaceRoot: string }, NotInWorkspaceError>;
+  /** Makes `root` a workspace: creates its `.jive` directory and adds it to the root's .gitignore when missing. */
+  markWorkspace(root: string): EffectGen<{ readonly ignoreAdded: boolean }, BadPreconditionsError>;
   // User state
   readCurrentUserState(): EffectGen<e.Option.Option<CurrentUserState>>;
   clearCurrentUserState(): EffectGen<void>;

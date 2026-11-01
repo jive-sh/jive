@@ -53,7 +53,7 @@ purpose), **still to port** (wanted, not built yet).
 | `oauth2` module | An interface for refresh-token storage nothing implemented | dropped (deleted) | Dead; GitHub OAuth lives in `github/oauth` |
 | `templates` module and `jive create` | Listed no templates; `create` only printed a line | dropped (deleted) | Templates were removed for abstracts (26e7176); `jive create <kind>` will resolve `jive-abstract-<kind>` when built |
 | `npm` module | Four methods that each died "not implemented" | dropped (deleted) | npm is the server's connector's job |
-| `jive init` | Printed "Initializing jive..." | dropped (deleted) | A stub with no design behind it |
+| `jive init` | Makes the current repository a workspace: .gitmodules to https at every depth, missing submodules checked out (checked-out ones keep their HEAD), and the root and every submodule configured to sign with the account key and push through the agent | ported (0.5.0) | Brought back as the workspace command for the cutover; the 0.3.0 stub only printed a line. URLs come from `github.remoteUrls` until the server has a code-repository call |
 | `jive git setup` | Signed in, registered the key, configured the current repo or cloned one | dropped (deleted) | Alex: "git setup probably goes away honestly" |
 | `jive update self` / `update repos`, `jive daemon`, `daemon` module | Empty stubs; an in-process daemon | dropped (deleted) | `jive upgrade`; daemons are `src/daemons/` entries |
 | `ssh`, `yubikey` modules, local key selection | Local or YubiKey SSH keys under `.jive/ssh` | dropped (deleted) | The key is on the server |

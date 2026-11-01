@@ -33,10 +33,11 @@ Linux, a scheduled task on Windows).
 
 | Command | What it does |
 | --- | --- |
-| `jive login` | Signs this machine in to Jive: prints a confirmation code and opens `https://jive.sh/login?request=…`, where you check the code and approve with your jive.sh passkey. Then fetches your account's public key, which the server creates on first use. |
+| `jive login` | Signs this machine in to Jive: opens `https://jive.sh/login?request=…`, where you sign in with your jive.sh passkey, and waits. Then fetches your account's public key, which the server creates on first use. |
 | `jive login --cicd` | In a GitHub Actions job with `id-token: write`: exchanges the job's ID token for a session of its pipeline. |
 | `jive provision <kind> <name>` | Makes sure a resource instance exists through the server's `provision`, e.g. `jive provision connector-package-registry @scope/name`; the organization's configured implementation (npm for jive-sh) does it. The instance is `./package.json`'s `jive.resources.<kind>.<name>`, or `--instance '<json>'`. Needs a pipeline session (`jive login --cicd`). |
 | `jive whoami` | Prints the Jive account (`<handle>@jive.sh`) this machine is signed in as. |
+| `jive init` | Makes the git repository you are in a jive workspace: adds `/.jive/` to its .gitignore, signs in to GitHub (one approval) and to Jive if needed, rewrites every .gitmodules at every depth to https URLs, syncs them and checks out every submodule not yet checked out (one already checked out keeps its HEAD), and configures the root and every submodule to sign with your account key and push over SSH through `jive-signing-agent`. |
 | `jive load <org> <repo>` | Adds a GitHub repo to the workspace as a submodule by its https URL, fetches its own submodules recursively, registers your account key on GitHub as an authentication and signing key, configures the repo and every submodule under it to sign commits and tags and push through the signing agent, then runs `bun install` and `bun link`. |
 | `jive unload <org> <repo>` | Removes a loaded repo. |
 | `jive on <org> <repo> -- <command…>` | Runs a command in a loaded repo's directory; its exit code is jive's. |
@@ -51,15 +52,14 @@ Linux, a scheduled task on Windows).
 1. **Sessions.** A session is obtained only by a person's passkey (`jive login`, or the agent asking when it needs
    one) or, for a pipeline, by exchanging its GitHub OIDC token (`jive login --cicd`, which calls the server's
    `pipelineSessions:signIn` with an ID token minted for `https://api.jive.sh`). There is no other way: no pasted tokens and no local keys. `jive login` opens a sign-in request
-   (`signInRequests:open`), shows its code and page, and claims the session (`signInRequests:claim`) every 2 seconds
+   (`signInRequests:open`), opens its page, where you sign in with your passkey, and claims the session (`signInRequests:claim`) every 2 seconds
    until you approve it. The session token goes to `~/.jive/session.json`, readable by you only. A session lasts 12
    hours.
 2. **The key.** `ssh:createKey` makes your account's ed25519 key on the server the first time and returns its public
    key, which jive keeps at `~/.jive/ssh/account.pub`. The private key never leaves the server.
 3. **The agent.** `jive-signing-agent` serves the SSH agent protocol on `~/.jive/signing-agent.sock` (owner-only). It
    lists the public key and forwards each sign request's bytes to `ssh:sign` with the session token, returning the
-   server's signature. With no live session it opens a sign-in request itself: it opens the page and, on macOS,
-   shows the code in a notification. A session the server revoked early is dropped and signed in again once. A
+   server's signature. With no live session it opens a sign-in request itself: it opens the page the same way. A session the server revoked early is dropped and signed in again once. A
    second installed copy of jive finds the first agent's pidfile (`~/.jive/signing-agent.pid`) and stands down.
 4. **Git.** `jive load` sets, per repository: `user.signingKey` to the public key file,
    `gpg.format=ssh`, `gpg.ssh.program` to `jive-ssh-keygen` (ssh-keygen pointed at the agent's socket),
@@ -70,8 +70,9 @@ Signing needs `ssh-keygen` (OpenSSH) on PATH, as git's own SSH signing does.
 
 ## Workspaces
 
-`jive load`, `unload` and `on` work in a workspace: the nearest directory holding a `.jive/` directory. Loaded repos
-live at `@<org>/<repo>` under it. The GitHub sign-in a workspace uses for cloning (read through `git-credential-jive`,
+`jive load`, `unload` and `on` work in a workspace: the nearest directory holding a `.jive/` directory (your home
+directory's `~/.jive` is jive's own and never counts). `jive init` makes one of any git repository. Loaded repos live at
+`@<org>/<repo>` under it. The GitHub sign-in a workspace uses for cloning (read through `git-credential-jive`,
 which `jive load` sets as each repo's credential helper) is kept in `.jive/users/`. Loaded repos fetch over HTTPS and
 push over SSH.
 

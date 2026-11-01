@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import * as e from "effect";
 import { BunServices } from "@effect/platform-bun";
-import { Cli } from "jive-abstract-library";
+import { Cli, OSPlatformImpl } from "jive-abstract-library";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
@@ -117,6 +117,7 @@ async function runJive(args: ReadonlyArray<string>): Promise<Outcome> {
     e.Effect.provide(AccountKeyImpl.mockLayer({ *ensure() { return yield* new AccountKeyError({ reason: "tests do not sign in" }); } })),
     e.Effect.provide(ProvisioningImpl.mockLayer({ *ensure(input: { kind: string; instance: unknown }) { provisioned.push(input); return { instanceId: "fake-instance" }; } })),
     e.Effect.provide(ModulesLayer),
+    e.Effect.provide(OSPlatformImpl.Layer),
     e.Effect.provide(e.Stdio.layerTest({
       args: e.Effect.succeed(args),
       stdout: () => e.Sink.forEach((chunk: string | Uint8Array) => e.Effect.sync(() => {

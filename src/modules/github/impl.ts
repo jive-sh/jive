@@ -11,7 +11,10 @@ import { canReadFromRemote, canWriteToRemote } from "./repos";
 import type { GithubAccessToken, GithubWriteToken, IGitHub } from "./interface";
 import type { AccountKey } from "../account-key/interface";
 import type { CurrentUserState, TokenState } from "../tool-state/interface";
-import type { RepoIdentifier } from "../tool-state/repo-identifier";
+import { RepoIdentifier } from "../tool-state/repo-identifier";
+
+/** https://github.com/o/r, git@github.com:o/r and ssh://git@github.com/o/r, each with or without `.git`. */
+const GITHUB_REMOTE = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^\/]+)\/([^\/]+?)(?:\.git)?\/?$/;
 
 export class GithubImpl extends implementing(modules.github).uses(modules.toolState) implements IGitHub {
   *resolveAccessToken(userState: CurrentUserState): EffectGen<{accessToken: GithubAccessToken}, BadArgumentError> {
@@ -85,6 +88,10 @@ export class GithubImpl extends implementing(modules.github).uses(modules.toolSt
   }
   *canWriteToRemote(repo: RepoIdentifier, accessToken: GithubAccessToken): EffectGen<boolean> {
     return yield* canWriteToRemote(repo, accessToken);
+  }
+  repoOfRemote(url: string): e.Option.Option<RepoIdentifier> {
+    const match = GITHUB_REMOTE.exec(url.trim());
+    return match === null ? e.Option.none() : e.Option.some(new RepoIdentifier(match[1]!, match[2]!));
   }
   remoteUrls(repo: RepoIdentifier): { ssh: string; https: string; } {
     return {

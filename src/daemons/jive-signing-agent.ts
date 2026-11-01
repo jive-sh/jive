@@ -1,6 +1,6 @@
 import * as e from "effect";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { exitWhenUninstalled } from "jive-abstract-library";
+import { OSPlatformImpl, exitWhenUninstalled } from "jive-abstract-library";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { jiveHomePaths } from "@/jive-home";
@@ -8,7 +8,7 @@ import { SigningAgentLayer } from "@/modules/runtime";
 import { serveSigningAgent } from "@/modules/signing-agent/socket-server";
 
 /**
- * The SSH agent git and ssh reach through `jive git setup`'s config. It holds no key: each sign request goes to
+ * The SSH agent git and ssh reach through the config `jive init` and `jive load` write. It holds no key: each sign request goes to
  * `@jive-sh/server`, which signs with the account's key given this machine's session. Starts at login.
  */
 
@@ -54,5 +54,6 @@ BunRuntime.runMain(e.pipe(
   e.Effect.andThen(e.Effect.never),
   e.Effect.scoped,
   e.Effect.provide(SigningAgentLayer),
+  e.Effect.provide(OSPlatformImpl.Layer),
   e.Effect.provide(BunServices.layer),
 ));

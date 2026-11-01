@@ -9,14 +9,16 @@ import { modules } from "@/modules";
 import type { AccountKey } from "@/modules/account-key/interface";
 import type { CurrentUser } from "@/modules/auth/interface";
 import { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
-import type { GitIdentity, IGit } from "./interface";
+import type { IGit } from "./interface";
 
 /** One line of `git submodule status`: a state character (space, -, + or U), the commit, then the path. */
-const SUBMODULE_STATUS_LINE = /^[ +\-U]?([0-9a-f]+) (\S+)/;
+const SUBMODULE_STATUS_LINE = /^([ +\-U])[0-9a-f]+ (\S+)/;
+/** One line of `git config --get-regexp` over .gitmodules' URLs: the key, then the URL. */
+const SUBMODULE_URL_LINE = /^(submodule\..+\.url) (.+)$/;
+/** Submodules nest at most this deep; a loop past it means a submodule names itself. */
+const MAX_SUBMODULE_DEPTH = 16;
 
 export class GitImpl extends implementing(modules.git).uses(modules.toolState, modules.github, OSPlatform, e.FileSystem.FileSystem) implements IGit {
-  private readonly credentialHelperExecutablePath = installedCommandPath(GIT_CREDENTIAL_HELPER_NAME);
-
   *removeSubmodule(repoId: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError> {
     const { relativePath } = yield* this.dependencies.toolState.repoPath(repoId);
     const workspaceRoot = yield* this.workspaceRoot();
@@ -28,9 +30,6 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
         `Failed to remove the git directory of submodule ${relativePath}`, message,
       ))),
     );
-    // TODO: I noticed that .git/modules can become out of sync with where the submodules actually are.
-    //       There should ideally be a cleanup task run on configure, remove, and clone.
-    // TODO: should we be committing the jive repo after the unload is done? Seems like maybe.
   }
 
   *localOrgs(): EffectGen<string[], BadPreconditionsError> {
@@ -58,10 +57,6 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
   }
 
   *submoduleExists(repoId: RepoIdentifier): EffectGen<boolean, BadArgumentError | BadPreconditionsError> {
-    const orgLocation = yield* this.dependencies.toolState.orgPath(repoId);
-    if (!(yield* this.isDirectory(orgLocation.absolutePath))) {
-      return false;
-    }
     const repoLocation = yield* this.dependencies.toolState.repoPath(repoId);
     if (!(yield* this.isDirectory(repoLocation.absolutePath))) {
       return false;
@@ -71,64 +66,105 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
   }
 
   *cloneAsSubmodule(repoId: RepoIdentifier, user: CurrentUser): EffectGen<void, BadArgumentError | BadPreconditionsError> {
-    const { relativePath } = yield* this.dependencies.toolState.repoPath(repoId);
+    const { relativePath, absolutePath } = yield* this.dependencies.toolState.repoPath(repoId);
     const { https } = this.dependencies.github.remoteUrls(repoId);
     const workspaceRoot = yield* this.workspaceRoot();
-    // .gitmodules records the https URL, which GitHub and every clone can follow; pushes go over SSH through the
-    // signing agent, set by config rather than by the URL. A nested submodule its own .gitmodules names over SSH
-    // fetches through the agent too.
-    const fetchConfig = [
-      "-c", `credential.helper=${this.credentialHelperExecutablePath}`,
-      "-c", "credential.useHttpPath=true",
-      "-c", `core.sshCommand=${yield* this.sshCommand(user.accountKey)}`,
-    ];
-    yield* this.git([...fetchConfig, "submodule", "add", https, relativePath], workspaceRoot);
-    yield* this.git([...fetchConfig, "submodule", "update", "--init", "--recursive", "--", relativePath], workspaceRoot);
-    yield* this.configureSubmodule(repoId, user);
-  }
-
-  private *configureSubmodule(repoId: RepoIdentifier, user: CurrentUser): EffectGen<void, BadArgumentError | BadPreconditionsError> {
-    const exists = yield* this.submoduleExists(repoId);
-    if (!exists) {
-      return yield* new BadArgumentError({
-        argument: "repo",
-        reason: `Repo ${repoId.packageName()} is not a submodule`
-      });
+    yield* this.git([...yield* this.fetchConfig(user.accountKey), "submodule", "add", https, relativePath], workspaceRoot);
+    yield* this.checkOutSubmodulesOverHttps(absolutePath, user);
+    for (const repository of yield* this.repositoriesUnder(absolutePath)) {
+      yield* this.configureRepository(repository, user);
     }
-    yield* this.configureGitRepo(repoId, user);
   }
 
   *getSubmodules(): EffectGen<RepoIdentifier[], BadArgumentError | BadPreconditionsError> {
-    const { stdout } = yield* this.git(["submodule", "status"], yield* this.workspaceRoot(), "capture");
-    const relativePaths = stdout
-      .split("\n")
-      .map(line => SUBMODULE_STATUS_LINE.exec(line)?.[2])
-      .filter((relativePath): relativePath is string => relativePath !== undefined);
-    return yield* e.Effect.all(relativePaths.map(RepoIdentifier.fromRelativePath));
+    const urls = yield* this.submoduleUrls(yield* this.workspaceRoot());
+    return urls.flatMap(({ url }) => e.Option.toArray(this.dependencies.github.repoOfRemote(url)));
   }
 
-  /**
-   * Makes the loaded repo and every submodule checked out under it commit as the user, sign with the account key,
-   * push through the signing agent and fetch through `git-credential-jive`. The loaded repo fetches over https and
-   * pushes over SSH; nested submodules keep the remotes their own .gitmodules give them.
-   */
-  private *configureGitRepo(repoId: RepoIdentifier, user: CurrentUser): EffectGen<void, BadPreconditionsError> {
-    const { absolutePath } = yield* this.dependencies.toolState.repoPath(repoId);
-    const config: Record<string, string> = {
-      ...yield* this.signingConfig({ name: user.username, email: user.email }, user.accountKey),
-      "credential.helper": this.credentialHelperExecutablePath,
-      "credential.useHttpPath": "true",
-    };
-    const { stdout } = yield* this.git(["submodule", "--quiet", "foreach", "--recursive", "pwd"], absolutePath, "capture");
-    const repositories = [absolutePath, ...stdout.split("\n").map(line => line.trim()).filter(Boolean)];
-    for (const repository of repositories) {
-      for (const [key, value] of Object.entries(config)) {
-        yield* this.git(["config", "--local", key, value], repository, "capture");
+  *repositoryRoot(directory: string): EffectGen<string, BadPreconditionsError> {
+    const { stdout } = yield* this.git(["rev-parse", "--show-toplevel"], directory, "capture");
+    return stdout.trim();
+  }
+
+  *repositoriesUnder(root: string): EffectGen<ReadonlyArray<string>, BadPreconditionsError> {
+    const { stdout } = yield* this.git(["submodule", "--quiet", "foreach", "--recursive", "pwd"], root, "capture");
+    return [root, ...stdout.split("\n").map(line => line.trim()).filter(Boolean)];
+  }
+
+  private *useHttpsSubmoduleUrls(repository: string): EffectGen<number, BadPreconditionsError> {
+    const { github } = this.dependencies;
+    let changed = 0;
+    for (const { key, url } of yield* this.submoduleUrls(repository)) {
+      const maybeRepo = github.repoOfRemote(url);
+      if (e.Option.isNone(maybeRepo)) continue;
+      const { https } = github.remoteUrls(maybeRepo.value);
+      if (url === https) continue;
+      yield* this.git(["config", "-f", ".gitmodules", key, https], repository, "capture");
+      changed += 1;
+    }
+    return changed;
+  }
+
+  private *fetchSubmodules(root: string, user: CurrentUser): EffectGen<void, BadPreconditionsError> {
+    const fetchConfig = yield* this.fetchConfig(user.accountKey);
+    yield* this.git([...fetchConfig, "submodule", "sync", "--recursive"], root, "capture");
+    for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
+      // Only submodules not checked out (status "-"): `submodule update` on one already checked out would move its HEAD.
+      const { stdout } = yield* this.git(["submodule", "status", "--recursive"], root, "capture");
+      const missing = stdout.split("\n").flatMap((line) => {
+        const match = SUBMODULE_STATUS_LINE.exec(line);
+        return match !== null && match[1] === "-" ? [match[2]!] : [];
+      });
+      if (missing.length === 0) return;
+      for (const relativePath of missing) {
+        const parent = path.join(root, path.dirname(relativePath));
+        const parentRoot = yield* this.repositoryRoot(parent);
+        yield* this.git([...fetchConfig, "submodule", "update", "--init", "--", path.relative(parentRoot, path.join(root, relativePath))], parentRoot);
       }
     }
-    const { ssh, https } = this.dependencies.github.remoteUrls(repoId);
-    yield* this.git(["remote", "set-url", "origin", https], absolutePath);
-    yield* this.git(["remote", "set-url", "--push", "origin", ssh], absolutePath);
+    return yield* BadPreconditionsError.withoutFix(`Submodules under ${root} nest more than ${MAX_SUBMODULE_DEPTH} deep`);
+  }
+
+  *configureRepository(repository: string, user: CurrentUser): EffectGen<void, BadPreconditionsError> {
+    const config: Record<string, string> = {
+      ...yield* this.signingConfig({ name: user.username, email: user.email }, user.accountKey),
+      "credential.helper": yield* this.installedCommand(GIT_CREDENTIAL_HELPER_NAME),
+      "credential.useHttpPath": "true",
+    };
+    for (const [key, value] of Object.entries(config)) {
+      yield* this.git(["config", "--local", key, value], repository, "capture");
+    }
+    const { stdout } = yield* this.gitAllowingFailure(["config", "--get", "remote.origin.url"], repository);
+    const maybeRepo = this.dependencies.github.repoOfRemote(stdout);
+    if (e.Option.isNone(maybeRepo)) return;
+    const { ssh, https } = this.dependencies.github.remoteUrls(maybeRepo.value);
+    yield* this.git(["remote", "set-url", "origin", https], repository, "capture");
+    yield* this.git(["remote", "set-url", "--push", "origin", ssh], repository, "capture");
+  }
+
+  /** Each pass checks out the level of submodules the previous one revealed, until a pass rewrites nothing. */
+  *checkOutSubmodulesOverHttps(root: string, user: CurrentUser): EffectGen<number, BadPreconditionsError> {
+    let rewritten = 0;
+    for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
+      let changed = 0;
+      for (const repository of yield* this.repositoriesUnder(root)) {
+        changed += yield* this.useHttpsSubmoduleUrls(repository);
+      }
+      yield* this.fetchSubmodules(root, user);
+      rewritten += changed;
+      if (changed === 0) return rewritten;
+    }
+    return yield* BadPreconditionsError.withoutFix(`Submodules under ${root} nest more than ${MAX_SUBMODULE_DEPTH} deep`);
+  }
+
+  /** `repository`'s .gitmodules URLs with their config keys; none when it has no .gitmodules. */
+  private *submoduleUrls(repository: string): EffectGen<ReadonlyArray<{ readonly key: string; readonly url: string }>, BadPreconditionsError> {
+    if (!(yield* this.pathExists(path.join(repository, ".gitmodules")))) return [];
+    const { stdout } = yield* this.gitAllowingFailure(["config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.url$"], repository);
+    return stdout.split("\n").flatMap((line) => {
+      const match = SUBMODULE_URL_LINE.exec(line.trim());
+      return match === null ? [] : [{ key: match[1]!, url: match[2]! }];
+    });
   }
 
   /**
@@ -137,22 +173,35 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
    * key, the only part of the key this machine has. `core.sshCommand` points these repositories at the agent without
    * changing where the person's ssh config sends every other github.com connection.
    */
-  private *signingConfig(identity: GitIdentity, accountKey: AccountKey): EffectGen<Record<string, string>> {
+  private *signingConfig(identity: { readonly name: string; readonly email: string }, accountKey: AccountKey): EffectGen<Record<string, string>> {
     return {
       "user.name": identity.name,
       "user.email": identity.email,
       "user.signingKey": accountKey.publicKeyFile,
       "gpg.format": "ssh",
-      "gpg.ssh.program": installedCommandPath(SSH_KEYGEN_COMMAND_NAME),
+      "gpg.ssh.program": yield* this.installedCommand(SSH_KEYGEN_COMMAND_NAME),
       "commit.gpgSign": "true",
       "tag.gpgSign": "true",
       "core.sshCommand": yield* this.sshCommand(accountKey),
     };
   }
 
+  /** For one git command that fetches: https through `git-credential-jive`, a nested SSH URL through the agent. */
+  private *fetchConfig(accountKey: AccountKey): EffectGen<ReadonlyArray<string>> {
+    return [
+      "-c", `credential.helper=${yield* this.installedCommand(GIT_CREDENTIAL_HELPER_NAME)}`,
+      "-c", "credential.useHttpPath=true",
+      "-c", `core.sshCommand=${yield* this.sshCommand(accountKey)}`,
+    ];
+  }
+
   private *sshCommand(accountKey: AccountKey): EffectGen<string> {
     const { agentSocket } = jiveHomePaths(yield* this.dependencies.OSPlatform.getHomeDirectory());
     return `ssh -o IdentityAgent=${JSON.stringify(agentSocket)} -o IdentityFile=${JSON.stringify(accountKey.publicKeyFile)} -o IdentitiesOnly=yes`;
+  }
+
+  private *installedCommand(commandName: string): EffectGen<string> {
+    return installedCommandPath(yield* this.dependencies.OSPlatform.getExecutablePath(), commandName);
   }
 
   /** Runs git in `cwd`, failing when it exits nonzero; "capture" returns its output instead of showing it. */
@@ -175,12 +224,28 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return { stdout: result.stdout };
   }
 
+  /** For a git query whose nonzero exit means "nothing found" (`config --get` of an unset key): its output, empty then. */
+  private *gitAllowingFailure(args: ReadonlyArray<string>, cwd: string): EffectGen<{ stdout: string }, BadPreconditionsError> {
+    const result = yield* e.pipe(
+      e.Effect.gen(() => this.dependencies.OSPlatform.spawnProcess({ command: "git", args, cwd, stdout: "pipe", stderr: "pipe" })),
+      e.Effect.mapError(message => BadPreconditionsError.withoutFix(`Failed to run git ${args.join(" ")}`, message)),
+    );
+    return { stdout: result.exitCode === 0 ? result.stdout : "" };
+  }
+
   private *workspaceRoot(): EffectGen<string, BadPreconditionsError> {
     const { workspaceRoot } = yield* e.pipe(
       e.Effect.gen(() => this.dependencies.toolState.assertInWorkspace()),
       e.Effect.mapError(BadPreconditionsError.fromNotInWorkspaceError),
     );
     return workspaceRoot;
+  }
+
+  private *pathExists(targetPath: string): EffectGen<boolean> {
+    return yield* e.pipe(
+      this.getDependency(e.FileSystem.FileSystem).exists(targetPath),
+      e.Effect.catchTag("PlatformError", () => e.Effect.succeed(false)),
+    );
   }
 
   private *isDirectory(targetPath: string): EffectGen<boolean> {

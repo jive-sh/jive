@@ -123,6 +123,24 @@ export const jive = Cli.make(TOOL_NAME, {
     },
   }),
 
+  init: Cli.command({
+    description: "make the git repository you are in a jive workspace: .gitmodules on https, every submodule checked out, and every repository signing with your Jive account key and pushing through jive's agent",
+    *run() {
+      const git = yield* modules.git;
+      const root = yield* git.repositoryRoot(yield* (yield* OSPlatform).getCurrentDirectory());
+      const { ignoreAdded } = yield* (yield* modules.toolState).markWorkspace(root);
+      if (ignoreAdded) yield* e.Effect.log(`Added /.jive/ to ${root}/.gitignore: it holds this workspace's GitHub tokens`);
+      // GitHub sign-in (for https fetches and registering the key), and the account key, signing in to Jive if needed.
+      const user = yield* (yield* modules.auth).ensureLoggedIn({ chooseNewUser: false });
+      const rewritten = yield* git.checkOutSubmodulesOverHttps(root, user);
+      const repositories = yield* git.repositoriesUnder(root);
+      for (const repository of repositories) {
+        yield* git.configureRepository(repository, user);
+      }
+      yield* e.Effect.log(`${rewritten} submodule URL${rewritten === 1 ? "" : "s"} moved to https; ${repositories.length} repositor${repositories.length === 1 ? "y signs" : "ies sign"} as ${user.username} <${user.email}> and push through jive's agent`);
+    },
+  }),
+
   provision: Cli.command({
     description: "make sure a resource instance exists, e.g. `provision connector-package-registry @scope/name`; the organization's configured implementation does it",
     flags: {

@@ -10,8 +10,6 @@ import type { EffectGen } from "effective-modules";
 export interface OpenedSignInRequest {
   readonly requestId: string;
   readonly claimSecret: string;
-  /** Shown by this program and by the login page, so the person can check they approve this program's request. */
-  readonly confirmationCode: string;
   readonly loginUrl: string;
   readonly expiresAt: number;
 }

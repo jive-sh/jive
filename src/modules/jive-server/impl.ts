@@ -22,7 +22,6 @@ const ConvexBytes = e.Schema.Struct({ $bytes: e.Schema.String });
 const OpenedSignInRequestValue = e.Schema.Struct({
   requestId: e.Schema.NonEmptyString,
   claimSecret: e.Schema.NonEmptyString,
-  confirmationCode: e.Schema.NonEmptyString,
   loginUrl: e.Schema.NonEmptyString,
   expiresAt: e.Schema.Number,
 });

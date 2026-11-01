@@ -1,7 +1,7 @@
 import * as e from "effect";
 import * as process from "node:process";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Cli } from "jive-abstract-library";
+import { Cli, OSPlatformImpl } from "jive-abstract-library";
 import { version } from "../../package.json";
 import { GIT_CREDENTIAL_HELPER_NAME, TOOL_NAME } from "@/constants";
 import { modules } from "@/modules";
@@ -77,7 +77,7 @@ const credentialHelper = Cli.make(GIT_CREDENTIAL_HELPER_NAME, {
 
 BunRuntime.runMain(e.pipe(
   Cli.run(credentialHelper, { version }),
-  e.Effect.provide(e.pipe(GithubImpl.Layer, e.Layer.provideMerge(ToolStateImpl.Layer))),
+  e.Effect.provide(e.pipe(GithubImpl.Layer, e.Layer.provideMerge(ToolStateImpl.Layer), e.Layer.provideMerge(OSPlatformImpl.Layer))),
   e.Effect.provide(Cli.terminalLogger),
   e.Effect.provide(BunServices.layer),
 ));

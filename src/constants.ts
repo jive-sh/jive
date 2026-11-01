@@ -8,8 +8,9 @@ export const GIT_CREDENTIAL_HELPER_NAME = "git-credential-jive";
 export const SSH_KEYGEN_COMMAND_NAME = "jive-ssh-keygen";
 
 /**
- * Where an installed jive command lives. jive-abstract-library installs every command as a link to one binary in the
- * same directory, so each sits beside the running one; git config names them by these paths.
+ * Where an installed jive command lives, given the running one (`OSPlatform.getExecutablePath`). jive-abstract-library
+ * installs every command as a link to one binary in the same directory, so each sits beside the running one; git
+ * config names them by these paths.
  */
-export const installedCommandPath = (commandName: string): string =>
-  path.join(path.dirname(process.execPath), process.platform === "win32" ? `${commandName}.exe` : commandName);
+export const installedCommandPath = (runningExecutable: string, commandName: string): string =>
+  path.join(path.dirname(runningExecutable), process.platform === "win32" ? `${commandName}.exe` : commandName);

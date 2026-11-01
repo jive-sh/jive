@@ -1,6 +1,7 @@
 import * as e from "effect";
 import * as path from "node:path";
 import { implementing, type EffectGen } from "effective-modules";
+import { OSPlatform } from "jive-abstract-library";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { modules } from "@/modules";
 import { GithubAccessTokenType } from "@/modules/github/interface";
@@ -39,11 +40,27 @@ interface CurrentUserStateJson {
  * The workspace is the nearest directory, from the current one upward, holding a `.jive` directory; its loaded
  * repos live at `@<org>/<repo>` under it and its signed-in user's state under `.jive/users`.
  */
-export class ToolStateImpl extends implementing(modules.toolState).uses(e.FileSystem.FileSystem) implements IToolState {
+export class ToolStateImpl extends implementing(modules.toolState).uses(OSPlatform, e.FileSystem.FileSystem) implements IToolState {
+  *markWorkspace(root: string): EffectGen<{ readonly ignoreAdded: boolean }, BadPreconditionsError> {
+    const fs = this.getDependency(e.FileSystem.FileSystem);
+    yield* this.ensureDirectory(path.join(root, WORKSPACE_DIR));
+    // The directory holds the workspace's GitHub tokens, so git must never pick it up.
+    const gitignore = path.join(root, ".gitignore");
+    const existing = (yield* this.pathExists(gitignore)) ? yield* e.Effect.orDie(fs.readFileString(gitignore)) : "";
+    const ignored = existing.split("\n").some((line) => [WORKSPACE_DIR, `${WORKSPACE_DIR}/`, `/${WORKSPACE_DIR}`, `/${WORKSPACE_DIR}/`].includes(line.trim()));
+    if (ignored) return { ignoreAdded: false };
+    const separator = existing === "" || existing.endsWith("\n") ? "" : "\n";
+    yield* e.pipe(
+      fs.writeFileString(gitignore, `${existing}${separator}/${WORKSPACE_DIR}/\n`),
+      e.Effect.mapError(({ message }) => BadPreconditionsError.withoutFix(`Failed to add /${WORKSPACE_DIR}/ to ${gitignore}`, message)),
+    );
+    return { ignoreAdded: true };
+  }
+
   *assertInWorkspace(): EffectGen<{ workspaceRoot: string }, NotInWorkspaceError> {
     const maybeWorkspaceRoot = yield* this.findWorkspaceRoot();
     if (e.Option.isNone(maybeWorkspaceRoot)) {
-      return yield* new NotInWorkspaceError({ path: process.cwd() });
+      return yield* new NotInWorkspaceError({ path: yield* this.dependencies.OSPlatform.getCurrentDirectory() });
     }
     return { workspaceRoot: maybeWorkspaceRoot.value };
   }
@@ -113,15 +130,17 @@ export class ToolStateImpl extends implementing(modules.toolState).uses(e.FileSy
   private *workspaceRootOrFail(): EffectGen<string, BadPreconditionsError> {
     const maybeWorkspaceRoot = yield* this.findWorkspaceRoot();
     if (e.Option.isNone(maybeWorkspaceRoot)) {
-      return yield* BadPreconditionsError.fromNotInWorkspaceError(new NotInWorkspaceError({ path: process.cwd() }));
+      return yield* BadPreconditionsError.fromNotInWorkspaceError(new NotInWorkspaceError({ path: yield* this.dependencies.OSPlatform.getCurrentDirectory() }));
     }
     return maybeWorkspaceRoot.value;
   }
 
+  /** The home directory's `.jive` is jive's own home (session, account key, agent socket), never a workspace. */
   private *findWorkspaceRoot(): EffectGen<e.Option.Option<string>> {
-    let currentPath = process.cwd();
+    const homeDirectory = yield* this.dependencies.OSPlatform.getHomeDirectory();
+    let currentPath = yield* this.dependencies.OSPlatform.getCurrentDirectory();
     while (true) {
-      if (yield* this.isDirectory(path.join(currentPath, WORKSPACE_DIR))) {
+      if (currentPath !== homeDirectory && (yield* this.isDirectory(path.join(currentPath, WORKSPACE_DIR)))) {
         return e.Option.some(currentPath);
       }
       const parentPath = path.dirname(currentPath);
@@ -134,7 +153,8 @@ export class ToolStateImpl extends implementing(modules.toolState).uses(e.FileSy
 
   /** User state is kept beside the workspace when there is one, and beside the current directory otherwise. */
   private *usersDirectoryPath(): EffectGen<string> {
-    const rootPath = e.Option.getOrElse(yield* this.findWorkspaceRoot(), () => process.cwd());
+    const maybeRoot = yield* this.findWorkspaceRoot();
+    const rootPath = e.Option.isSome(maybeRoot) ? maybeRoot.value : yield* this.dependencies.OSPlatform.getCurrentDirectory();
     return path.join(rootPath, WORKSPACE_DIR, USERS_DIR);
   }
 

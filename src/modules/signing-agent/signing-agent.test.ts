@@ -46,7 +46,6 @@ const server = {
 const request: OpenedSignInRequest = {
   requestId: "request-1",
   claimSecret: "claim-secret",
-  confirmationCode: "brave-otter",
   loginUrl: "https://jive.sh/login?request=request-1",
   expiresAt: Date.now() + 60_000,
 };

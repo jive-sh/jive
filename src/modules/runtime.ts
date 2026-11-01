@@ -1,6 +1,5 @@
 import * as e from "effect";
 import { FetchHttpClient } from "effect/http";
-import { OSPlatformImpl } from "jive-abstract-library";
 import { AccountKeyImpl } from "./account-key/impl";
 import { AuthImpl } from "./auth/impl";
 import { BrowserImpl } from "./browser/impl";
@@ -16,8 +15,9 @@ import { SigningAgentImpl } from "./signing-agent/impl";
 import { ToolStateImpl } from "./tool-state/impl";
 
 /**
- * Every module jive owns, composed most-dependent first. What is left for the entrypoint to provide is the host's own
- * services (the filesystem, paths and the terminal), which `BunServices.layer` gives. The CLI and the signing agent
+ * Every module jive owns, composed most-dependent first. What is left for the entrypoint to provide is the host: its
+ * processes and facts (`OSPlatformImpl.Layer`) and its filesystem, paths and terminal (`BunServices.layer`), which a
+ * test replaces to give the modules a home and an install directory of its own. The CLI and the signing agent
  * differ only in how a sign-in reaches the person: the CLI prints it, the agent, with no terminal, notifies.
  */
 
@@ -28,7 +28,6 @@ const accountLayer = (signInPrompt: typeof TerminalSignInPromptImpl.Layer | type
   e.Layer.provideMerge(BrowserImpl.Layer),
   e.Layer.provideMerge(GitHubActionsIdentityImpl.Layer),
   e.Layer.provideMerge(JiveServerImpl.Layer),
-  e.Layer.provideMerge(OSPlatformImpl.Layer),
   e.Layer.provideMerge(FetchHttpClient.layer),
 );
 

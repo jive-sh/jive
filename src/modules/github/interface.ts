@@ -32,5 +32,8 @@ export interface IGitHub {
   remoteRepos(org: string, accessToken: e.Option.Option<GithubAccessToken>): EffectGen<string[]>;
   canReadFromRemote(repo: RepoIdentifier, accessToken: GithubAccessToken): EffectGen<boolean>;
   canWriteToRemote(repo: RepoIdentifier, accessToken: GithubAccessToken): EffectGen<boolean>;
+  /** A repo's https URL, which fetches and .gitmodules use, and its SSH URL, which pushes through the agent use. */
   remoteUrls(repo: RepoIdentifier): {ssh: string; https: string;};
+  /** The GitHub repo a remote URL names, in its https, `git@github.com:` or `ssh://` form; none for any other host. */
+  repoOfRemote(url: string): e.Option.Option<RepoIdentifier>;
 }
