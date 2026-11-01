@@ -1,15 +1,26 @@
 import * as e from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { implementing, type EffectGen } from "effective-modules";
-import { convexUrl } from "@jive-sh/server-client";
+import { getFunctionName, type FunctionArgs, type FunctionReference } from "convex/server";
+import { convexToJson, jsonToConvex, type Value } from "convex/values";
+import { api, convexUrl } from "@jive-sh/server-client";
 import { modules } from "@/modules";
+import {
+  AccountValue,
+  ClaimValue,
+  OpenedSignInRequestValue,
+  PipelineSignInValue,
+  ProvisionValue,
+  PublicKeyValue,
+  SignatureValue,
+} from "./contract";
 import { JiveServerError, ProvisionAnswer, SignInClaim, type IJiveServer, type OpenedSignInRequest, type Session } from "./interface";
 
 /**
- * Calls the server through Convex's HTTP API (`POST <deployment>/api/<query|action>`), which answers
- * `{ status: "success", value }` or `{ status: "error", errorMessage, errorData }`. Bytes travel as
- * `{ "$bytes": <base64> }`, Convex's JSON form of `v.bytes()`. The deployment URL comes from
- * `@jive-sh/server-client`, which the server's own deploy publishes.
+ * Calls the server through Convex's HTTP API (`POST <deployment>/api/<query|action>`) in `convex_encoded_json`, the
+ * format Convex's own clients use, encoded and decoded by `convex/values` (bytes travel as `{ "$bytes": … }`). Every
+ * call names its function by `@jive-sh/server-client`'s `api`, so its path and arguments are the server's own types;
+ * what comes back is decoded by `./contract`. The deployment URL comes from `@jive-sh/server-client` too.
  */
 
 const ConvexAnswer = e.Schema.Union([
@@ -17,49 +28,15 @@ const ConvexAnswer = e.Schema.Union([
   e.Schema.Struct({ status: e.Schema.Literal("error"), errorMessage: e.Schema.String, errorData: e.Schema.optionalKey(e.Schema.Unknown) }),
 ]);
 
-const ConvexBytes = e.Schema.Struct({ $bytes: e.Schema.String });
-
-const OpenedSignInRequestValue = e.Schema.Struct({
-  requestId: e.Schema.NonEmptyString,
-  claimSecret: e.Schema.NonEmptyString,
-  loginUrl: e.Schema.NonEmptyString,
-  expiresAt: e.Schema.Number,
-  approvalDevices: e.Schema.optionalKey(e.Schema.Number),
-});
-
-const ClaimValue = e.Schema.Union([
-  e.Schema.Struct({ status: e.Schema.Literal("pending") }),
-  e.Schema.Struct({ status: e.Schema.Literal("approved"), sessionToken: e.Schema.NonEmptyString, expiresAt: e.Schema.Number }),
-  e.Schema.Struct({ status: e.Schema.Literal("gone") }),
-]);
-
-const PipelineSignInValue = e.Schema.Union([
-  e.Schema.Struct({ status: e.Schema.Literal("signedIn"), sessionToken: e.Schema.NonEmptyString, expiresAt: e.Schema.Number }),
-  e.Schema.Struct({ status: e.Schema.Literal("refused"), reason: e.Schema.String }),
-]);
-
-const ProvisionValue = e.Schema.Union([
-  e.Schema.Struct({ status: e.Schema.Literal("ready"), instanceId: e.Schema.String, instance: e.Schema.Unknown }),
-  e.Schema.Struct({ status: e.Schema.Literal("inProgress"), retryAfterSeconds: e.Schema.Number }),
-  e.Schema.Struct({ status: e.Schema.Literal("personNeeded"), reason: e.Schema.String, url: e.Schema.String }),
-  e.Schema.Struct({ status: e.Schema.Literal("refused"), reason: e.Schema.String }),
-]);
-
-const AccountValue = e.Schema.NullOr(e.Schema.Struct({ username: e.Schema.String }));
-const PublicKeyValue = e.Schema.Struct({ publicKey: e.Schema.NonEmptyString });
-const SignatureValue = e.Schema.Struct({ signature: ConvexBytes });
-
-type FunctionKind = "query" | "action";
-
 export class JiveServerImpl extends implementing(modules.jiveServer).uses(HttpClient.HttpClient) implements IJiveServer {
   *openSignInRequest({ previousSession }: { readonly previousSession: e.Option.Option<Session> }): EffectGen<OpenedSignInRequest, JiveServerError> {
     const args = e.Option.match(previousSession, { onNone: () => ({}), onSome: (session) => ({ previousSessionToken: session.sessionToken }) });
-    const opened = yield* this.call("action", "signInRequests:open", args, OpenedSignInRequestValue);
+    const opened = yield* this.call("action", api.signInRequests.open, args, OpenedSignInRequestValue);
     return { ...opened, approvalDevices: opened.approvalDevices !== undefined ? opened.approvalDevices : 0 };
   }
 
   *claimSignInRequest(request: OpenedSignInRequest): EffectGen<SignInClaim, JiveServerError> {
-    const claim = yield* this.call("action", "signInRequests:claim", { requestId: request.requestId, claimSecret: request.claimSecret }, ClaimValue);
+    const claim = yield* this.call("action", api.signInRequests.claim, { requestId: request.requestId, claimSecret: request.claimSecret }, ClaimValue);
     switch (claim.status) {
       case "pending": return SignInClaim.Pending();
       case "gone": return SignInClaim.Gone();
@@ -68,7 +45,7 @@ export class JiveServerImpl extends implementing(modules.jiveServer).uses(HttpCl
   }
 
   *signInPipeline(idToken: string): EffectGen<Session, JiveServerError> {
-    const outcome = yield* this.call("action", "pipelineSessions:signIn", {}, PipelineSignInValue, e.Option.some(idToken));
+    const outcome = yield* this.call("action", api.pipelineSessions.signIn, {}, PipelineSignInValue, e.Option.some(idToken));
     if (outcome.status === "refused") {
       return yield* new JiveServerError({ call: "pipelineSessions:signIn", reason: `Jive refused to sign this job in: ${outcome.reason}` });
     }
@@ -76,28 +53,22 @@ export class JiveServerImpl extends implementing(modules.jiveServer).uses(HttpCl
   }
 
   *accountOf(session: Session): EffectGen<e.Option.Option<{ readonly username: string }>, JiveServerError> {
-    const account = yield* this.call("query", "accounts:me", { sessionToken: session.sessionToken }, AccountValue);
+    const account = yield* this.call("query", api.accounts.me, { sessionToken: session.sessionToken }, AccountValue);
     return e.Option.fromNullOr(account);
   }
 
   *createSshKey(session: Session): EffectGen<{ readonly publicKey: string }, JiveServerError> {
-    return yield* this.call("action", "ssh:createKey", { sessionToken: session.sessionToken }, PublicKeyValue);
+    return yield* this.call("action", api.ssh.createKey, { sessionToken: session.sessionToken }, PublicKeyValue);
   }
 
   *signWithSshKey(session: Session, data: Uint8Array): EffectGen<Uint8Array, JiveServerError> {
-    const { signature } = yield* this.call(
-      "action",
-      "ssh:sign",
-      { sessionToken: session.sessionToken, data: { $bytes: Buffer.from(data).toString("base64") } },
-      SignatureValue,
-    );
-    return new Uint8Array(Buffer.from(signature.$bytes, "base64"));
+    const bytes = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+    const { signature } = yield* this.call("action", api.ssh.sign, { sessionToken: session.sessionToken, data: bytes }, SignatureValue);
+    return new Uint8Array(signature);
   }
 
-  /** `bearer` goes in the Authorization header, where Convex verifies an ID token itself (the server's auth config). */
   *provision({ session, kind, instance }: { readonly session: Session; readonly kind: string; readonly instance: unknown }): EffectGen<ProvisionAnswer, JiveServerError> {
-    // A default export is called by its module path alone.
-    const answer = yield* this.call("action", "provision", { sessionToken: session.sessionToken, kind, instance }, ProvisionValue);
+    const answer = yield* this.call("action", api.provision.default, { sessionToken: session.sessionToken, kind, instance }, ProvisionValue);
     switch (answer.status) {
       case "ready": return ProvisionAnswer.Ready({ instanceId: answer.instanceId });
       case "inProgress": return ProvisionAnswer.InProgress({ retryAfterSeconds: answer.retryAfterSeconds });
@@ -106,18 +77,20 @@ export class JiveServerImpl extends implementing(modules.jiveServer).uses(HttpCl
     }
   }
 
-  private *call<A>(
-    kind: FunctionKind,
-    path: string,
-    args: Record<string, unknown>,
+  /** `kind` is the function's own (`F["_type"]`), passed because `api` only carries it in types. `bearer` goes in the Authorization header, where Convex verifies an ID token itself (the server's auth config). */
+  private *call<F extends FunctionReference<"query" | "action">, A>(
+    kind: F["_type"],
+    fn: F,
+    args: FunctionArgs<F>,
     value: e.Schema.Codec<A, unknown>,
     bearer: e.Option.Option<string> = e.Option.none(),
   ): EffectGen<A, JiveServerError> {
     const client = this.getDependency(HttpClient.HttpClient);
+    const path = getFunctionName(fn);
     const failure = (reason: string) => new JiveServerError({ call: path, reason });
     const request = e.pipe(
       HttpClientRequest.post(`${convexUrl}/api/${kind}`),
-      HttpClientRequest.bodyJsonUnsafe({ path, args, format: "json" }),
+      HttpClientRequest.bodyJsonUnsafe({ path, args: convexToJson(args as Value), format: "convex_encoded_json" }),
     );
     const answer = yield* e.pipe(
       client.execute(e.Option.isSome(bearer) ? HttpClientRequest.bearerToken(request, bearer.value) : request),
@@ -130,8 +103,13 @@ export class JiveServerImpl extends implementing(modules.jiveServer).uses(HttpCl
       const data = answer.body.errorData;
       return yield* failure(typeof data === "string" ? data : answer.body.errorMessage);
     }
+    const encoded = answer.body.value;
+    const decoded = yield* e.Effect.try({
+      try: () => jsonToConvex(encoded as Parameters<typeof jsonToConvex>[0]),
+      catch: () => failure(`${path} answered in an unexpected encoding`),
+    });
     return yield* e.pipe(
-      e.Schema.decodeUnknownEffect(value)(answer.body.value),
+      e.Schema.decodeUnknownEffect(value)(decoded),
       e.Effect.mapError(() => failure(`${path} answered in an unexpected shape`)),
     );
   }

@@ -6,7 +6,7 @@
       "name": "@chaine-dance/jive",
       "dependencies": {
         "@effect/platform-bun": "^4.0.0",
-        "@jive-sh/server-client": "^0.4.0",
+        "@jive-sh/server-client": "0.10.1",
         "convex": "^1.48.0",
         "effect": "^4.0.0",
         "effective-modules": "0.3.1-effect4",
@@ -81,7 +81,7 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.27.0", "", { "os": "win32", "cpu": "x64" }, "sha512-aIitBcjQeyOhMTImhLZmtxfdOcuNRpwlPNmlFKPcHQYPhEssw75Cl1TSXJXpMkzaua9FUetx/4OQKq7eJul5Cg=="],
 
-    "@jive-sh/server-client": ["@jive-sh/server-client@0.4.0", "", { "peerDependencies": { "convex": "^1.48.0" } }, "sha512-QiztIBZQF2iABk82017aCC0B48EYMzwOeImaHCg7XSRaSKwJuaqUfkTCFDZG1TFrwZq8iTNE8hT9w+6gR+idcQ=="],
+    "@jive-sh/server-client": ["@jive-sh/server-client@0.10.1", "", { "peerDependencies": { "convex": "^1.48.0" } }, "sha512-P2S134gzTV7gJdBQ+X0KalgxsQHptZS898ENoO/SzwbsihuVa1GQiaO2o3QVtbcmgpa1FGzJhDRdq8vEehZp4A=="],
 
     "@qui-cli/colors": ["@qui-cli/colors@3.2.4", "", { "dependencies": { "chalk": "^5.6.2" } }, "sha512-Shw5WdGuKTMUR2796LtMu1x47TFdce/ACp/kLjaUrMY6zbVEMhWUsN5DyTzKysVUC/wE/L5RyMshcicRTqReqg=="],
 
