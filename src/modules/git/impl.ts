@@ -1,6 +1,5 @@
 import * as e from "effect";
 import * as path from "node:path";
-import parseGitRemote from "git-url-parse";
 import { implementing, type EffectGen } from "effective-modules";
 import { OSPlatform } from "jive-abstract-library";
 import { GIT_CREDENTIAL_HELPER_NAME, SSH_KEYGEN_COMMAND_NAME, TOOL_NAME, installedCommandPath } from "@/constants";
