@@ -3,14 +3,15 @@ import * as e from "effect";
 import { BunServices } from "@effect/platform-bun";
 import { Cli } from "jive-abstract-library";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
+import { AccountKeyImpl } from "@/modules/account-key/impl";
+import { AccountKeyError } from "@/modules/account-key/interface";
 import { AuthImpl } from "@/modules/auth/impl";
 import type { CurrentUser } from "@/modules/auth/interface";
 import { GithubAccessTokenType } from "@/modules/github/interface";
 import { ModulesLayer } from "@/modules/runtime";
-import { SshKey } from "@/modules/ssh/ssh-key";
 import { jive } from "@/program";
 
 /**
@@ -77,16 +78,15 @@ afterAll(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-const fakeUser = e.Effect.gen(function*() {
-  const keyPath = path.join(scratch, "id_ed25519");
-  writeFileSync(keyPath, "not a real private key\n");
-  writeFileSync(`${keyPath}.pub`, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl test@example.com\n");
-  const sshKey = yield* SshKey.make(keyPath);
+const fakeUser = e.Effect.sync(() => {
+  const publicKeyFile = path.join(scratch, "account.pub");
+  const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl jive-test@jive.sh";
+  writeFileSync(publicKeyFile, `${publicKey}\n`);
   const user: CurrentUser = {
     username: "jive-test",
     email: "test@example.com",
     githubAccessToken: { accessToken: "not-a-token", tokenType: GithubAccessTokenType.OAuthApp() },
-    sshKey,
+    accountKey: { publicKey, publicKeyFile },
   };
   return user;
 });
@@ -103,6 +103,8 @@ async function runJive(args: ReadonlyArray<string>): Promise<Outcome> {
   const exit = await e.Effect.runPromise(e.pipe(
     Cli.run(jive, { version: "0.0.0-test" }),
     e.Effect.provide(AuthImpl.mockLayer({ *ensureLoggedIn() { return user; } })),
+    // No test signs in to Jive: one that reaches the account key would open a sign-in page in the browser.
+    e.Effect.provide(AccountKeyImpl.mockLayer({ *ensure() { accountKeyRequests += 1; return yield* new AccountKeyError({ reason: "tests do not sign in" }); } })),
     e.Effect.provide(ModulesLayer),
     e.Effect.provide(e.Stdio.layerTest({
       args: e.Effect.succeed(args),
@@ -115,6 +117,8 @@ async function runJive(args: ReadonlyArray<string>): Promise<Outcome> {
   ));
   return { stdout: stdout.join(""), exit };
 }
+
+let accountKeyRequests = 0;
 
 const errorOf = (exit: e.Exit.Exit<void, unknown>) => e.Option.getOrUndefined(e.Exit.findErrorOption(exit));
 const widget = () => path.join(workspace, "@acme", "widget");
@@ -130,7 +134,10 @@ describe("jive in a workspace", () => {
     expect(gitConfigIn(widget(), "remote.origin.url")).toBe("https://github.com/acme/widget.git");
     expect(gitConfigIn(widget(), "remote.origin.pushurl")).toBe("git@github.com:acme/widget.git");
     expect(gitConfigIn(widget(), "user.email")).toBe("test@example.com");
-    expect(gitConfigIn(widget(), "user.signingKey")).toBe(path.join(scratch, "id_ed25519"));
+    expect(gitConfigIn(widget(), "user.signingKey")).toBe(path.join(scratch, "account.pub"));
+    expect(gitConfigIn(widget(), "gpg.ssh.program")).toEndWith("jive-ssh-keygen");
+    expect(gitConfigIn(widget(), "tag.gpgSign")).toBe("true");
+    expect(gitConfigIn(widget(), "core.sshCommand")).toContain(`IdentityAgent=${JSON.stringify(path.join(homedir(), ".jive", "signing-agent.sock"))}`);
     expect(readFileSync(path.join(widget(), "installed-here.txt"), "utf8").trim()).toBe(widget());
     expect(existsSync(path.join(bunHome, "install", "global", "node_modules", "@acme", "widget"))).toBe(true);
   });
@@ -162,6 +169,12 @@ describe("jive in a workspace", () => {
     expect(existsSync(widget())).toBe(false);
     expect(readFileSync(path.join(workspace, ".gitmodules"), "utf8")).not.toContain("acme/widget");
     expect(existsSync(path.join(workspace, ".git", "modules", "@acme", "widget"))).toBe(false);
+  });
+
+  test("git setup refuses a malformed owner/repo before asking anyone to sign in", async () => {
+    const { exit } = await runJive(["git", "setup", "acme/widget/extra"]);
+    expect(errorOf(exit)).toBeInstanceOf(BadArgumentError);
+    expect(accountKeyRequests).toBe(0);
   });
 
   test("outside a workspace, a command says so", async () => {

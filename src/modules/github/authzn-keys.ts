@@ -1,6 +1,6 @@
 import * as e from "effect";
 import { TOOL_NAME } from "@/constants";
-import type { SshKey } from "@/modules/ssh/interface";
+import type { AccountKey } from "@/modules/account-key/interface";
 import type { GithubAccessToken, GithubWriteToken } from "./interface";
 import { fetchResponse, githubHeaders, parseJson, readResponseMessage } from "./shared";
 
@@ -17,8 +17,9 @@ const normalizeKeyBody = (publicKey: string): string => {
   return keyType && keyBody ? `${keyType} ${keyBody}` : publicKey.trim();
 };
 
-const managedKeyTitle = (key: SshKey): string =>
-  `${GITHUB_KEY_PREFIX}${key.email}:${key.name}`;
+/** Names the key by the account it belongs to (`jive:<handle>@jive.sh`), the comment the server gives it. */
+const managedKeyTitle = (key: AccountKey): string =>
+  `${GITHUB_KEY_PREFIX}${key.publicKey.trim().split(/\s+/).slice(2).join(" ")}`;
 
 const fetchUserKeys = (token: string, endpoint: string): e.Effect.Effect<GitHubUserKey[]> =>
   e.Effect.gen(function*() {
@@ -124,10 +125,10 @@ const ensureUserKey = (
 
 export const sshKeyExists = (
   accessToken: GithubAccessToken,
-  key: SshKey,
+  key: AccountKey,
 ): e.Effect.Effect<{ authn: boolean; signing: boolean }> =>
   e.Effect.gen(function*() {
-    const normalizedPublicKey = normalizeKeyBody(key.pubkey);
+    const normalizedPublicKey = normalizeKeyBody(key.publicKey);
     const authKeys = yield* fetchUserKeys(accessToken.accessToken, "https://api.github.com/user/keys");
     const signingKeys = yield* fetchUserKeys(accessToken.accessToken, "https://api.github.com/user/ssh_signing_keys");
     return {
@@ -136,19 +137,19 @@ export const sshKeyExists = (
     };
   });
 
-export const setSshKey = (writeToken: GithubWriteToken, key: SshKey): e.Effect.Effect<void> =>
+export const setSshKey = (writeToken: GithubWriteToken, key: AccountKey): e.Effect.Effect<void> =>
   e.Effect.gen(function*() {
     const title = managedKeyTitle(key);
     yield* ensureUserKey(
       writeToken.writeToken,
-      key.pubkey,
+      key.publicKey,
       title,
       "https://api.github.com/user/keys",
       "https://api.github.com/user/keys",
     );
     yield* ensureUserKey(
       writeToken.writeToken,
-      key.pubkey,
+      key.publicKey,
       title,
       "https://api.github.com/user/ssh_signing_keys",
       "https://api.github.com/user/ssh_signing_keys",

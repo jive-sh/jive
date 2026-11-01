@@ -1,12 +1,9 @@
 import * as e from "effect";
-import { randomUUID } from "node:crypto";
-import * as os from "node:os";
 import * as path from "node:path";
 import { implementing, type EffectGen } from "effective-modules";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { modules } from "@/modules";
 import { GithubAccessTokenType } from "@/modules/github/interface";
-import { SshKey } from "@/modules/ssh/ssh-key";
 import { WORKSPACE_DIR } from "./constants";
 import {
   NotInWorkspaceError,
@@ -22,7 +19,6 @@ import type { RepoIdentifier } from "./repo-identifier";
 
 const USERS_DIR = "users";
 const CURRENT_USER_FILE = "current.json";
-const MANAGED_SSH_KEY_FILE = "ssh-key";
 
 interface CurrentUserStateJson {
   readonly username: string;
@@ -37,7 +33,6 @@ interface CurrentUserStateJson {
       readonly refreshTokenExpiresAt: number;
     } | null;
   };
-  readonly sshKeyLocation: string | null;
 }
 
 /**
@@ -53,12 +48,6 @@ export class ToolStateImpl extends implementing(modules.toolState).uses(e.FileSy
     return { workspaceRoot: maybeWorkspaceRoot.value };
   }
 
-  *usingTempDirectory<T, E, R>(doThing: (tempPath: string) => e.Effect.Effect<T, E, R>): EffectGen<T, E, R> {
-    const tempPath = path.join(os.tmpdir(), `jive-${randomUUID()}`);
-    yield* this.ensureDirectory(tempPath);
-    return yield* e.Effect.ensuring(doThing(tempPath), e.Effect.gen(() => this.removePathIfPresent(tempPath)));
-  }
-
   *readCurrentUserState(): EffectGen<e.Option.Option<CurrentUserState>> {
     const currentUserJson = yield* this.readJsonObject(yield* this.currentUserFilePath());
     if (e.Option.isNone(currentUserJson)) {
@@ -72,13 +61,7 @@ export class ToolStateImpl extends implementing(modules.toolState).uses(e.FileSy
       return e.Option.none();
     }
 
-    const sshKey = yield* this.parseSshKey(currentUserJson.value["sshKeyLocation"]);
-    return e.Option.some({
-      username,
-      email,
-      accessTokenState: accessTokenState.value,
-      sshKey,
-    });
+    return e.Option.some({ username, email, accessTokenState: accessTokenState.value });
   }
 
   *clearCurrentUserState(): EffectGen<void> {
@@ -86,33 +69,9 @@ export class ToolStateImpl extends implementing(modules.toolState).uses(e.FileSy
   }
 
   *setUser({ email, username, accessToken }: { email: string; username: string; accessToken: TokenState }): EffectGen<CurrentUserState> {
-    const managedSshKeyPath = yield* this.managedSshKeyPath(email);
-    yield* this.ensureDirectory(path.dirname(managedSshKeyPath));
-    yield* this.removePathIfPresent(managedSshKeyPath);
-    yield* this.removePathIfPresent(`${managedSshKeyPath}.pub`);
-
-    const newUserState: CurrentUserState = {
-      username,
-      email,
-      accessTokenState: accessToken,
-      sshKey: e.Option.none(),
-    };
+    const newUserState: CurrentUserState = { username, email, accessTokenState: accessToken };
     yield* this.writeCurrentUserState(newUserState);
     return newUserState;
-  }
-
-  *setSshKey(sshKey: SshKey): EffectGen<{ newUserState: CurrentUserState }> {
-    const maybeCurrentUserState = yield* this.readCurrentUserState();
-    if (e.Option.isNone(maybeCurrentUserState)) {
-      return yield* e.Effect.die("IMPOSSIBLE TO SET SSH KEY WITH NO CURRENT USER");
-    }
-    const managedSshKey = yield* this.copyManagedSshKey(maybeCurrentUserState.value.email, sshKey);
-    const newUserState: CurrentUserState = {
-      ...maybeCurrentUserState.value,
-      sshKey: e.Option.some(managedSshKey),
-    };
-    yield* this.writeCurrentUserState(newUserState);
-    return { newUserState };
   }
 
   *verifyRepoIntegrity(repo: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError | BadArgumentError> {
@@ -183,11 +142,6 @@ export class ToolStateImpl extends implementing(modules.toolState).uses(e.FileSy
     return path.join(yield* this.usersDirectoryPath(), CURRENT_USER_FILE);
   }
 
-  private *managedSshKeyPath(email: string): EffectGen<string> {
-    const userDirectory = email.trim().toLowerCase().replace(/[\/\\]/g, "_");
-    return path.join(yield* this.usersDirectoryPath(), userDirectory, MANAGED_SSH_KEY_FILE);
-  }
-
   private *pathExists(targetPath: string): EffectGen<boolean> {
     return yield* e.pipe(
       this.getDependency(e.FileSystem.FileSystem).exists(targetPath),
@@ -250,10 +204,6 @@ export class ToolStateImpl extends implementing(modules.toolState).uses(e.FileSy
           }),
         }),
       },
-      sshKeyLocation: e.Option.match(state.sshKey, {
-        onNone: () => null,
-        onSome: sshKey => sshKey.location,
-      }),
     };
     yield* e.Effect.orDie(this.getDependency(e.FileSystem.FileSystem).writeFileString(
       currentUserFilePath,
@@ -262,34 +212,6 @@ export class ToolStateImpl extends implementing(modules.toolState).uses(e.FileSy
     ));
   }
 
-  private *parseSshKey(value: unknown): EffectGen<e.Option.Option<SshKey>> {
-    if (typeof value !== "string" || !value) {
-      return e.Option.none();
-    }
-    return yield* e.pipe(
-      SshKey.make(value),
-      e.Effect.provideService(e.FileSystem.FileSystem, this.getDependency(e.FileSystem.FileSystem)),
-      e.Effect.map(e.Option.some),
-      e.Effect.catchTag("MalformedKeyError", () => e.Effect.succeed(e.Option.none<SshKey>())),
-    );
-  }
-
-  private *copyManagedSshKey(email: string, sshKey: SshKey): EffectGen<SshKey> {
-    const fileSystem = this.getDependency(e.FileSystem.FileSystem);
-    const targetPath = yield* this.managedSshKeyPath(email);
-    yield* this.ensureDirectory(path.dirname(targetPath));
-
-    const privateKeyContents = yield* e.Effect.orDie(fileSystem.readFileString(sshKey.location));
-    const publicKeyContents = yield* e.Effect.orDie(fileSystem.readFileString(`${sshKey.location}.pub`));
-    yield* e.Effect.orDie(fileSystem.writeFileString(targetPath, privateKeyContents, { mode: 0o600 }));
-    yield* e.Effect.orDie(fileSystem.writeFileString(`${targetPath}.pub`, publicKeyContents, { mode: 0o644 }));
-
-    return yield* e.pipe(
-      SshKey.make(targetPath),
-      e.Effect.provideService(e.FileSystem.FileSystem, fileSystem),
-      e.Effect.orDie,
-    );
-  }
 }
 
 function parseTokenExpiration(value: unknown): e.Option.Option<TokenExpirationState> {

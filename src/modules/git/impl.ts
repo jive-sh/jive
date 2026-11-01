@@ -1,21 +1,48 @@
 import * as e from "effect";
 import * as path from "node:path";
-import * as process from "node:process";
 import parseGitRemote from "git-url-parse";
 import { implementing, type EffectGen } from "effective-modules";
 import { OSPlatform } from "jive-abstract-library";
-import { GIT_CREDENTIAL_HELPER_NAME, TOOL_NAME } from "@/constants";
+import { GIT_CREDENTIAL_HELPER_NAME, SSH_KEYGEN_COMMAND_NAME, TOOL_NAME, installedCommandPath } from "@/constants";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
+import { jiveHomePaths } from "@/jive-home";
 import { modules } from "@/modules";
+import type { AccountKey } from "@/modules/account-key/interface";
 import type { CurrentUser } from "@/modules/auth/interface";
 import { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
-import type { IGit } from "./interface";
+import type { GitIdentity, IGit } from "./interface";
 
 /** One line of `git submodule status`: a state character (space, -, + or U), the commit, then the path. */
 const SUBMODULE_STATUS_LINE = /^[ +\-U]?([0-9a-f]+) (\S+)/;
 
 export class GitImpl extends implementing(modules.git).uses(modules.toolState, modules.github, OSPlatform, e.FileSystem.FileSystem) implements IGit {
-  private readonly credentialHelperExecutablePath = path.join(path.dirname(process.execPath), GIT_CREDENTIAL_HELPER_NAME);
+  private readonly credentialHelperExecutablePath = installedCommandPath(GIT_CREDENTIAL_HELPER_NAME);
+
+  *currentRepositoryRoot(): EffectGen<string, BadPreconditionsError> {
+    const cwd = yield* this.dependencies.OSPlatform.getCurrentDirectory();
+    const { stdout } = yield* this.git(["rev-parse", "--show-toplevel"], cwd, "capture");
+    return stdout.trim();
+  }
+
+  *cloneWithAccountKey({ repo, accountKey, intoDirectory }: { readonly repo: RepoIdentifier; readonly accountKey: AccountKey; readonly intoDirectory: string }): EffectGen<string, BadPreconditionsError> {
+    const { ssh } = this.dependencies.github.remoteUrls(repo);
+    const sshCommand = yield* this.sshCommand(accountKey);
+    yield* this.git(["-c", `core.sshCommand=${sshCommand}`, "clone", "--recurse-submodules", ssh, repo.repo], intoDirectory);
+    return path.join(intoDirectory, repo.repo);
+  }
+
+  *configureSigning({ directory, identity, accountKey }: { readonly directory: string; readonly identity: GitIdentity; readonly accountKey: AccountKey }): EffectGen<ReadonlyArray<string>, BadPreconditionsError> {
+    const config = yield* this.signingConfig(identity, accountKey);
+    // Only submodules checked out under the repository; one not yet cloned has no git config to set.
+    const { stdout } = yield* this.git(["submodule", "--quiet", "foreach", "--recursive", "pwd"], directory, "capture");
+    const repositories = [directory, ...stdout.split("\n").map(line => line.trim()).filter(Boolean)];
+    for (const repository of repositories) {
+      for (const [key, value] of Object.entries(config)) {
+        yield* this.git(["config", "--local", key, value], repository, "capture");
+      }
+    }
+    return repositories;
+  }
 
   *removeSubmodule(repoId: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError> {
     const { relativePath } = yield* this.dependencies.toolState.repoPath(repoId);
@@ -133,14 +160,9 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     const { absolutePath } = yield* this.dependencies.toolState.repoPath(repoId);
     // TODO: ensure this path is an actual git repo.
     const config: Record<string, string> = {
-      "user.name": user.username,
-      "user.email": user.email,
+      ...yield* this.signingConfig({ name: user.username, email: user.email }, user.accountKey),
       "credential.helper": this.credentialHelperExecutablePath,
       "credential.useHttpPath": "true",
-      "gpg.format": "ssh",
-      "commit.gpgSign": "true",
-      "core.sshCommand": `ssh -i ${JSON.stringify(user.sshKey.location)} -o IdentitiesOnly=yes`, // sshCommand needs to point to privkey file
-      "user.signingKey": user.sshKey.location, // signingKey needs to point to pubkey file
     };
     for (const [key, value] of Object.entries(config)) {
       yield* this.git(["config", "--local", key, value], absolutePath);
@@ -148,6 +170,30 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     const { ssh, https } = this.dependencies.github.remoteUrls(repoId);
     yield* this.git(["remote", "set-url", "origin", https], absolutePath);
     yield* this.git(["remote", "set-url", "--push", "origin", ssh], absolutePath);
+  }
+
+  /**
+   * The git config that signs with the account key and pushes through the signing agent. Signing runs
+   * `jive-ssh-keygen`, which is ssh-keygen pointed at the agent; `user.signingKey` and ssh's identity name the public
+   * key, the only part of the key this machine has. `core.sshCommand` points these repositories at the agent without
+   * changing where the person's ssh config sends every other github.com connection.
+   */
+  private *signingConfig(identity: GitIdentity, accountKey: AccountKey): EffectGen<Record<string, string>> {
+    return {
+      "user.name": identity.name,
+      "user.email": identity.email,
+      "user.signingKey": accountKey.publicKeyFile,
+      "gpg.format": "ssh",
+      "gpg.ssh.program": installedCommandPath(SSH_KEYGEN_COMMAND_NAME),
+      "commit.gpgSign": "true",
+      "tag.gpgSign": "true",
+      "core.sshCommand": yield* this.sshCommand(accountKey),
+    };
+  }
+
+  private *sshCommand(accountKey: AccountKey): EffectGen<string> {
+    const { agentSocket } = jiveHomePaths(yield* this.dependencies.OSPlatform.getHomeDirectory());
+    return `ssh -o IdentityAgent=${JSON.stringify(agentSocket)} -o IdentityFile=${JSON.stringify(accountKey.publicKeyFile)} -o IdentitiesOnly=yes`;
   }
 
   /** Runs git in `cwd`, failing when it exits nonzero; "capture" returns its output instead of showing it. */

@@ -33,5 +33,5 @@
       "@/*": ["src/*"]
     },
   },
-  "include": ["src/**/*", "../../packages/effective-modules/src/tests/test.ts"]
+  "include": ["src/**/*"]
 }

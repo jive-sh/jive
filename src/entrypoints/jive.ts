@@ -1,7 +1,7 @@
 import * as e from "effect";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Cli } from "jive-abstract-library";
-import { version } from "../package.json";
+import { version } from "../../package.json";
 import { ModulesLayer } from "@/modules/runtime";
 import { jive } from "@/program";
 

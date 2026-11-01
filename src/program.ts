@@ -1,8 +1,9 @@
 import * as e from "effect";
-import { Cli, OSPlatform } from "jive-abstract-library";
-import { TOOL_NAME } from "@/constants";
+import { Cli, OSPlatform, daemonStatuses, upgrade } from "jive-abstract-library";
+import { PACKAGE_NAME, TOOL_NAME } from "@/constants";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { modules } from "@/modules";
+import { NotLoggedInError } from "@/modules/auth/interface";
 import { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
 
 /* TODO:
@@ -105,17 +106,93 @@ export const jive = Cli.make(TOOL_NAME, {
   }),
 
   login: Cli.command({
-    description: "sign in to GitHub and choose the SSH key for pushes and commit signing",
+    description: "sign in to Jive with your jive.sh passkey; git signing and pushes use this session",
     *run() {
-      yield* (yield* modules.auth).ensureLoggedIn({ chooseNewUser: true });
+      const sessions = yield* modules.session;
+      const session = yield* e.pipe(
+        e.Effect.gen(() => sessions.signIn()),
+        e.Effect.mapError(({ reason }) => new BadPreconditionsError({ cause: `Sign-in did not finish: ${reason}`, fix: `Run \`${TOOL_NAME} login\` again` })),
+      );
+      yield* e.Effect.log(`Signed in to Jive until ${new Date(session.expiresAt).toLocaleString()}`);
     },
   }),
 
   whoami: Cli.command({
-    description: "print the signed-in user's email",
+    description: "print the Jive account this machine is signed in as",
     *run() {
-      const user = yield* (yield* modules.auth).assertLoggedIn();
-      yield* e.Effect.log(user.email);
+      const maybeSession = yield* (yield* modules.session).current();
+      if (e.Option.isNone(maybeSession)) {
+        return yield* BadPreconditionsError.fromNotLoggedInError(new NotLoggedInError({}));
+      }
+      const jiveServer = yield* modules.jiveServer;
+      const maybeAccount = yield* e.pipe(
+        e.Effect.gen(() => jiveServer.accountOf(maybeSession.value)),
+        e.Effect.mapError(({ reason }) => BadPreconditionsError.withoutFix("Could not reach the Jive server", reason)),
+      );
+      if (e.Option.isNone(maybeAccount)) {
+        return yield* BadPreconditionsError.fromNotLoggedInError(new NotLoggedInError({ reason: "the session was revoked" }));
+      }
+      yield* e.Effect.log(`${maybeAccount.value.username}@jive.sh`);
+    },
+  }),
+
+  git: {
+    setup: Cli.command({
+      description: "sign and push with your Jive account's key in this repo and its submodules; give owner/repo to clone it first",
+      *run({ args: [ownerAndRepo] }) {
+        const git = yield* modules.git;
+        // Before anything opens a page: a bad argument, or no repository to set up, fails without a sign-in.
+        const target = ownerAndRepo === undefined
+          ? { _tag: "CurrentRepository" as const, directory: yield* git.currentRepositoryRoot() }
+          : { _tag: "Clone" as const, repo: yield* parseOwnerAndRepo(ownerAndRepo) };
+        const accountKeys = yield* modules.accountKey;
+        const accountKey = yield* e.pipe(
+          e.Effect.gen(() => accountKeys.ensure()),
+          e.Effect.mapError(({ reason }) => new BadPreconditionsError({ cause: reason, fix: `Run \`${TOOL_NAME} git setup\` again and approve the sign-in on jive.sh` })),
+        );
+        const github = yield* modules.github;
+        const { writeToken, username, email } = yield* github.authorizeKeyRegistration();
+        yield* github.setSshKey(writeToken, accountKey);
+        yield* e.Effect.log(`Your Jive account key is an authentication and signing key of GitHub user ${username}`);
+        const directory = target._tag === "CurrentRepository"
+          ? target.directory
+          : yield* git.cloneWithAccountKey({
+            repo: target.repo,
+            accountKey,
+            intoDirectory: yield* (yield* OSPlatform).getCurrentDirectory(),
+          });
+        const repositories = yield* git.configureSigning({ directory, identity: { name: username, email }, accountKey });
+        yield* e.Effect.log(`${repositories.length} repositor${repositories.length === 1 ? "y" : "ies"} under ${directory} now sign commits and tags as ${username} <${email}>`);
+      },
+    }),
+  },
+
+  daemons: Cli.command({
+    description: "list every Jive daemon registered on this machine, with where its executable lives",
+    *run() {
+      const statuses = yield* daemonStatuses;
+      if (statuses.length === 0) {
+        yield* e.Effect.log("No Jive daemons are registered.");
+        return;
+      }
+      for (const { registration, state, pid, executableExists } of statuses) {
+        const pidText = e.Option.match(pid, { onNone: () => "", onSome: (value) => ` (pid ${value})` });
+        yield* e.Effect.log([
+          `${registration.name} — ${registration.packageName}: ${state}${pidText}`,
+          `  executable ${registration.executable}${executableExists ? "" : " (missing: this registration is stale)"}`,
+          `  log        ${registration.logPath}`,
+        ].join("\n"));
+      }
+    },
+  }),
+
+  upgrade: Cli.command({
+    description: `upgrade ${TOOL_NAME} to its latest version with the package manager that installed it`,
+    *run() {
+      yield* e.pipe(
+        upgrade({ packageName: PACKAGE_NAME }),
+        e.Effect.mapError((reason) => BadPreconditionsError.withoutFix(`Could not upgrade ${PACKAGE_NAME}`, reason)),
+      );
     },
   }),
 
@@ -125,26 +202,12 @@ export const jive = Cli.make(TOOL_NAME, {
       yield* e.Effect.log(`Initializing ${TOOL_NAME}...`);
     },
   }),
-
-  daemon: Cli.command({
-    *run() {
-      yield* (yield* modules.daemon).start();
-    },
-  }),
-
-  update: {
-    self: Cli.command({
-      *run() {
-        // TODO: upgrade self (detect installer and run that installer's update for self. We can support yarn, pnpm, bun, npm to start).
-        //       perhaps the postinstall could somehow determine what tool is installing this CLI then record the tool and whether it's
-        //       a local or global install
-      },
-    }),
-    repos: Cli.command({
-      *run() {
-        // TODO: user should input a glob match using *. Ideally there'd be a way to match all in autocomplete. Perhaps a custom match algorithm
-        //       for async options.
-      },
-    }),
-  },
 });
+
+/** `owner/repo`, as `jive git setup` takes it. */
+function parseOwnerAndRepo(ownerAndRepo: string): e.Effect.Effect<RepoIdentifier, BadArgumentError> {
+  const [owner, repo, ...rest] = ownerAndRepo.split("/");
+  return owner && repo && rest.length === 0
+    ? e.Effect.succeed(new RepoIdentifier(owner, repo.replace(/\.git$/, "")))
+    : e.Effect.fail(new BadArgumentError({ argument: "owner/repo", reason: `"${ownerAndRepo}" is not owner/repo` }));
+}

@@ -3,14 +3,14 @@ import { implementing, type EffectGen } from "effective-modules";
 import { BadArgumentError } from "@/errors";
 import { modules } from "@/modules";
 import { setSshKey, sshKeyExists } from "./authzn-keys";
-import { oauthLogin } from "./oauth/oauth-impl";
+import { authorizeKeyRegistration, oauthLogin } from "./oauth/oauth-impl";
 import "javascript-time-ago/locale/en";
 import TimeAgo from "javascript-time-ago";
 import { refreshAccessToken } from "./oauth/refresh-access-token";
 import { canReadFromRemote, canWriteToRemote } from "./repos";
 import { getVerifiedEmails } from "./user";
 import type { GithubAccessToken, GithubWriteToken, IGitHub } from "./interface";
-import type { SshKey } from "../ssh/ssh-key";
+import type { AccountKey } from "../account-key/interface";
 import type { CurrentUserState, TokenState } from "../tool-state/interface";
 import type { RepoIdentifier } from "../tool-state/repo-identifier";
 
@@ -59,11 +59,6 @@ export class GithubImpl extends implementing(modules.github).uses(modules.toolSt
           }),
         },
       });
-      if (e.Option.isSome(userState.sshKey)) {
-        // setUser clears the ssh key, so restore the existing workspace-managed key
-        yield* toolState.setSshKey(userState.sshKey.value);
-      }
-      
       return {
         accessToken: {
           accessToken: refreshed.accessToken,
@@ -77,13 +72,16 @@ export class GithubImpl extends implementing(modules.github).uses(modules.toolSt
   *oauthLogin(username?: string): EffectGen<{accessTokenState: TokenState; writeToken: GithubWriteToken; username: string; email: string;}> {
     return yield* oauthLogin(username);
   }
+  *authorizeKeyRegistration(): EffectGen<{ writeToken: GithubWriteToken; username: string; email: string }> {
+    return yield* authorizeKeyRegistration();
+  }
   *getVerifiedEmails(accessToken: GithubAccessToken): EffectGen<string[]> {
     return yield* getVerifiedEmails(accessToken);
   }
-  *sshKeyExists(accessToken: GithubAccessToken, key: SshKey): EffectGen<{authn: boolean; signing: boolean}> {
+  *sshKeyExists(accessToken: GithubAccessToken, key: AccountKey): EffectGen<{authn: boolean; signing: boolean}> {
     return yield* sshKeyExists(accessToken, key);
   }
-  *setSshKey(writeToken: GithubWriteToken, key: SshKey): EffectGen<void> {
+  *setSshKey(writeToken: GithubWriteToken, key: AccountKey): EffectGen<void> {
     yield* setSshKey(writeToken, key);
   }
   *remoteRepos(_org: string, _accessToken: e.Option.Option<GithubAccessToken>): EffectGen<string[]> {

@@ -1,100 +1,80 @@
-# Jive
+# @jive-sh/jive
 
-Jive is a workspace orchestration CLI for teams that want polyrepo ownership with monorepo-like local development ergonomics.
+The Jive CLI. It signs you in to Jive, signs your git commits and GitHub pushes with your Jive account's SSH key, which
+lives on [`@jive-sh/server`](https://github.com/jive-sh/server) and never on your machine, and loads repos into a
+workspace. It replaces `@ozyman42/ozy-cli`.
 
-## Current TODOs
+This repository also holds Jive's [reusable pipeline](.github/workflows/reusable-pipeline.yml), which every Jive
+package's `pipeline.yml` calls; its contract is [CICD_API.md](CICD_API.md). The CLI itself is built and published by
+[`jive-abstract-library`](https://github.com/jive-sh/jive-abstract-library) like any Jive command package.
 
-Resume TODOs:
-- [ ] startup and k8s
+## Install
 
-Tooling TODOs:
-- [ ] Latest ozy/cli in
-- [ ] @jive-sh/dev-utils library with stuff like npm, git, github, etc
-- [ ] @jive-sh/cli-builder library
-- [ ] Publish jive-abstract-library
-- [ ] Switch ozy/cli and jive-abstract-library to jive-abstract-library
-- [ ] Switch @jive-sh/jive to jive-abstract-library
-- [ ] Move commands to @jive-sh/jive with updated logic
-- [ ] Background agent registration logic
-- [ ] Jive server deployed
-- [ ] Discord app and Github app accepting webhooks
-- [ ] Software factory online without packages
-- [ ] Software factory with packages
-
-## What It Does
-
-- Loads repos into a shared workspace and wires local development across them
-- Automates GitHub auth/browser login and workspace-scoped credential state
-- Uses one selected SSH key for both GitHub auth and SSH commit signing
-- Provides reusable GitHub Actions build/deploy/test conventions for package repos
-
-## Current Command Surface
-
-Commands with substantive behavior in the current codebase:
-
-- `jive load <org> <repo>`: clone a GitHub repo into the workspace as a submodule, then `bun install` and `bun link` it
-- `jive unload <org> <repo>`: remove a loaded repo
-- `jive on <org> <repo> -- <command...>`: run a command in a loaded repo's directory; its exit code is jive's.
-  The `--` is needed before the command's own flags (`jive on acme widget -- git log --oneline`)
-- `jive login`, `jive whoami`
-- `jive --version`, `jive --help`, and Tab completion (`jive --setup-completion`), which lists the workspace's
-  orgs and loaded repos when Tab is pressed
-
-Commands that are exposed but still mostly stub/TODO-shaped:
-
-- `jive init`
-- `jive create <template> <repo>`
-- `jive update self`, `jive update repos`
-- `jive daemon` # we don't want this anymore it should be a separate entrypoint
-
-## Workspace Model
-
-Jive treats the presence of `.jive/` as the workspace root. Workspace-managed state stays inside that directory rather than leaking into global user config.
-
-```text
-.jive/
-  ssh/
-    local/
-  tmp/
-  users/
-    current.json
-    <email>_yubikey_handle_<id>
-    <email>_yubikey_handle_<id>.pub
-    <email>/
-      readonly-github-clone-token.json
-      readonly-org-scoped-@<owner>-repo-token.json
-      write-refresh-token.json
-  state
+```sh
+bun add -g @jive-sh/jive
 ```
 
-## Auth Model
+Installing registers `jive-signing-agent` to start at login (a LaunchAgent on macOS, a `systemctl --user` unit on
+Linux, a scheduled task on Windows).
 
-- `jive login` uses browser-based GitHub OAuth.
-- Fresh auth currently uses two passes: a write-capable token for setup/repair, then a separate persisted read-scope token.
-- The user selects a verified GitHub email and then chooses either a workspace-local SSH key or a YubiKey-backed resident key.
-- The same SSH public key is uploaded to both the GitHub auth-key and SSH-signing-key registries.
-- Local keys live under `.jive/ssh/local/`.
-- YubiKey mode requires `ykman`. On macOS, Jive rejects `/usr/bin/ssh-keygen` and expects a full OpenSSH install such as Homebrew’s.
+## Commands
 
-## Repo Transport
+| Command | What it does |
+| --- | --- |
+| `jive login` | Signs this machine in to Jive: prints a confirmation code and opens `https://jive.sh/login?request=…`, where you check the code and approve with your jive.sh passkey. |
+| `jive whoami` | Prints the Jive account (`<handle>@jive.sh`) this machine is signed in as. |
+| `jive git setup [owner/repo]` | Signs in if needed, has the server create your account's SSH key on first use, registers it on GitHub as an authentication key and a signing key (one GitHub sign-in in the browser), and configures the current repository and every submodule checked out under it to sign commits and tags with it and push through the signing agent. With `owner/repo` it clones that repo first, over SSH, with its submodules. |
+| `jive load <org> <repo>` | Clones a GitHub repo into the workspace as a submodule, configures it the same way, then `bun install` and `bun link` it. |
+| `jive unload <org> <repo>` | Removes a loaded repo. |
+| `jive on <org> <repo> -- <command…>` | Runs a command in a loaded repo's directory; its exit code is jive's. |
+| `jive daemons` | Lists every Jive daemon registered on this machine, with its state, executable and log. |
+| `jive upgrade` | Upgrades jive with the package manager that installed it. |
 
-- Fetch/pull stays on HTTPS using the local `git-credential-jive` helper.
-- Push auth and SSH commit signing use the selected workspace-managed SSH key.
+`jive --help`, `--version` and Tab completion (`jive --setup-completion`) work as for every command built with
+`jive-abstract-library`'s `Cli`. `jive init` and `jive create` are still stubs.
 
-## CI Conventions
+## How signing works
 
-Jive's [reusable pipeline](.github/workflows/reusable-pipeline.yml) invokes package-owned
-scripts for configuration, build, audit, artifact upload, deployment planning, and deployment.
-All hooks consume the same `JIVE_CICD_INPUT` JSON environment variable.
+1. **Sessions.** A session is obtained only by a person's passkey (`jive login`, or the agent asking when it needs
+   one) or, for a pipeline, by exchanging its GitHub OIDC token (`jive login --cicd`, coming once the server's exchange
+   call lands). There is no other way: no pasted tokens and no local keys. `jive login` opens a sign-in request
+   (`signInRequests:open`), shows its code and page, and claims the session (`signInRequests:claim`) every 2 seconds
+   until you approve it. The session token goes to `~/.jive/session.json`, readable by you only. A session lasts 12
+   hours.
+2. **The key.** `ssh:createKey` makes your account's ed25519 key on the server the first time and returns its public
+   key, which jive keeps at `~/.jive/ssh/account.pub`. The private key never leaves the server.
+3. **The agent.** `jive-signing-agent` serves the SSH agent protocol on `~/.jive/signing-agent.sock` (owner-only). It
+   lists the public key and forwards each sign request's bytes to `ssh:sign` with the session token, returning the
+   server's signature. With no live session it opens a sign-in request itself: it opens the page and, on macOS,
+   shows the code in a notification. A session the server revoked early is dropped and signed in again once. A
+   second installed copy of jive finds the first agent's pidfile (`~/.jive/signing-agent.pid`) and stands down.
+4. **Git.** `jive git setup` and `jive load` set, per repository: `user.signingKey` to the public key file,
+   `gpg.format=ssh`, `gpg.ssh.program` to `jive-ssh-keygen` (ssh-keygen pointed at the agent's socket),
+   `commit.gpgSign` and `tag.gpgSign`, and `core.sshCommand` to ssh with the agent as `IdentityAgent`. Your
+   `~/.ssh/config` is left alone, so github.com connections outside these repositories are unchanged.
 
-See [CI/CD Script API](CICD_API.md) for every hook's input, output, execution conditions,
-and examples, and the [input schema](.github/cicd-input.schema.json) for the shared boundary.
+Signing needs `ssh-keygen` (OpenSSH) on PATH, as git's own SSH signing does.
+
+## Workspaces
+
+`jive load`, `unload` and `on` work in a workspace: the nearest directory holding a `.jive/` directory. Loaded repos
+live at `@<org>/<repo>` under it. The GitHub sign-in a workspace uses for cloning (read through `git-credential-jive`,
+which `jive load` sets as each repo's credential helper) is kept in `.jive/users/`. Loaded repos fetch over HTTPS and
+push over SSH.
+
+## Developing
+
+```sh
+bun install
+bun run jive:cicd:audit   # type check and tests
+bun run install:local     # build with the jive-abstract-library checkout beside this one, install globally
+```
+
+Tests never reach jive.sh, the server or GitHub: the signing agent's tests run the real `ssh-keygen` and `ssh-add`
+against the agent with a fake server, and the workspace tests use local bare repos.
 
 ## Direction
 
-Jive’s broader direction is to automate more of the cross-repo coordination burden:
-
-- workspace composition and linking
-- semver/version propagation
-- repo creation from an abstract: `jive create <kind>` resolves `jive-abstract-<kind>` (`jive create library`, `jive create abstraction`, `jive create connector`)
-- coordinated release and dependency update flows
+- `jive login --cicd`, once `@jive-sh/server` can exchange a GitHub OIDC token for a pipeline session.
+- `jive provision <resource>`, which waits on the design page's open decision on organization deployments.
+- Repo creation from an abstract: `jive create <kind>` resolves `jive-abstract-<kind>`.

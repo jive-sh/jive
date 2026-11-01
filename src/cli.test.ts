@@ -6,7 +6,7 @@ import { version } from "../package.json";
 
 /** The `jive` entrypoint run as a process, as a person runs it; none of these commands reaches a network. */
 
-const entrypoint = path.join(import.meta.dir, "index.ts");
+const entrypoint = path.join(import.meta.dir, "entrypoints", "jive.ts");
 const workspace = realpathSync(mkdtempSync(path.join(tmpdir(), "jive-entrypoint-test-")));
 mkdirSync(path.join(workspace, ".jive"));
 mkdirSync(path.join(workspace, "@acme", "widget"), { recursive: true });

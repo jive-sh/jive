@@ -1,6 +1,5 @@
 import * as e from "effect";
 import type { GithubAccessTokenType } from "@/modules/github/interface";
-import type { SshKey } from "@/modules/ssh/interface";
 import type { EffectGen } from "effective-modules";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { TOOL_NAME } from "@/constants";
@@ -11,7 +10,6 @@ export interface CurrentUserState {
   readonly username: string;
   readonly email: string;
   readonly accessTokenState: TokenState;
-  readonly sshKey: e.Option.Option<SshKey>;
 }
 
 export interface TokenState {
@@ -68,20 +66,10 @@ export interface RepoLocation {
 
 export interface IToolState {
   assertInWorkspace(): EffectGen<{ workspaceRoot: string }, NotInWorkspaceError>;
-  /**
-   * Tool state will create a temporary directory for another tool to operate out of.
-   */
-  usingTempDirectory<T, E, R>(doThing: (tempPath: string) => e.Effect.Effect<T, E, R>): EffectGen<T, E, R>;
-
   // User state
   readCurrentUserState(): EffectGen<e.Option.Option<CurrentUserState>>;
   clearCurrentUserState(): EffectGen<void>;
-  /**
-   * Should clear out ssh key associated with user
-   */
   setUser(opts: { email: string; username: string; accessToken: TokenState }): EffectGen<CurrentUserState>;
-  /** Moves the ssh key to the current user location (amongst other things) */
-  setSshKey(sshKey: SshKey): EffectGen<{ newUserState: CurrentUserState }>;
 
   // Repos
   /** Where a loaded repo is, failing when it is not a configured submodule with a package.json. */
