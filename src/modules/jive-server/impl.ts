@@ -24,6 +24,7 @@ const OpenedSignInRequestValue = e.Schema.Struct({
   claimSecret: e.Schema.NonEmptyString,
   loginUrl: e.Schema.NonEmptyString,
   expiresAt: e.Schema.Number,
+  approvalDevices: e.Schema.optionalKey(e.Schema.Number),
 });
 
 const ClaimValue = e.Schema.Union([
@@ -51,8 +52,10 @@ const SignatureValue = e.Schema.Struct({ signature: ConvexBytes });
 type FunctionKind = "query" | "action";
 
 export class JiveServerImpl extends implementing(modules.jiveServer).uses(HttpClient.HttpClient) implements IJiveServer {
-  *openSignInRequest(): EffectGen<OpenedSignInRequest, JiveServerError> {
-    return yield* this.call("action", "signInRequests:open", {}, OpenedSignInRequestValue);
+  *openSignInRequest({ previousSession }: { readonly previousSession: e.Option.Option<Session> }): EffectGen<OpenedSignInRequest, JiveServerError> {
+    const args = e.Option.match(previousSession, { onNone: () => ({}), onSome: (session) => ({ previousSessionToken: session.sessionToken }) });
+    const opened = yield* this.call("action", "signInRequests:open", args, OpenedSignInRequestValue);
+    return { ...opened, approvalDevices: opened.approvalDevices !== undefined ? opened.approvalDevices : 0 };
   }
 
   *claimSignInRequest(request: OpenedSignInRequest): EffectGen<SignInClaim, JiveServerError> {

@@ -12,6 +12,8 @@ export interface OpenedSignInRequest {
   readonly claimSecret: string;
   readonly loginUrl: string;
   readonly expiresAt: number;
+  /** How many of the account's phones the server asked to approve it; 0 when it knows none, or the server predates it. */
+  readonly approvalDevices: number;
 }
 
 /** A program's session on the server: the token every call takes, and when the server stops honouring it. */
@@ -48,7 +50,11 @@ export class JiveServerError extends e.Data.TaggedError("JiveServerError")<{
 export const JIVE_API_AUDIENCE = "https://api.jive.sh";
 
 export interface IJiveServer {
-  openSignInRequest(): EffectGen<OpenedSignInRequest, JiveServerError>;
+  /**
+   * Opens a sign-in request. Given the session this machine last held, even an expired one, the server also asks that
+   * account's phones to approve it, unless that session was revoked.
+   */
+  openSignInRequest(input: { readonly previousSession: e.Option.Option<Session> }): EffectGen<OpenedSignInRequest, JiveServerError>;
   claimSignInRequest(request: OpenedSignInRequest): EffectGen<SignInClaim, JiveServerError>;
   /**
    * Exchanges a CI/CD job's ID token, minted for `JIVE_API_AUDIENCE`, for a session of that job's pipeline

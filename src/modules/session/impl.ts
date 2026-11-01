@@ -24,20 +24,15 @@ export class SessionImpl extends implementing(modules.session).uses(
   private readonly signingIn = e.Semaphore.makeUnsafe(1);
 
   *current(): EffectGen<e.Option.Option<Session>> {
-    const fs = this.getDependency(e.FileSystem.FileSystem);
-    const { sessionFile } = yield* this.paths();
-    const maybeContents = yield* e.Effect.option(fs.readFileString(sessionFile));
-    return e.pipe(
-      maybeContents,
-      e.Option.flatMap(decodeStoredSession),
-      e.Option.filter((session) => session.expiresAt - EXPIRY_MARGIN_MS > Date.now()),
-    );
+    return e.Option.filter(yield* this.stored(), (session) => session.expiresAt - EXPIRY_MARGIN_MS > Date.now());
   }
 
   *signIn(): EffectGen<Session, SignInFailed> {
     const { jiveServer, signInPrompt } = this.dependencies;
+    const self = this;
     const request = yield* e.pipe(
-      e.Effect.gen(() => jiveServer.openSignInRequest()),
+      // The last session, expired or not, tells the server whose phones to ask.
+      e.Effect.gen(function* () { return yield* jiveServer.openSignInRequest({ previousSession: yield* self.stored() }); }),
       e.Effect.mapError(({ reason }) => new SignInFailed({ reason: `could not open a sign-in request: ${reason}` })),
     );
     yield* signInPrompt.show(request);
@@ -73,6 +68,13 @@ export class SessionImpl extends implementing(modules.session).uses(
     const fs = this.getDependency(e.FileSystem.FileSystem);
     const { sessionFile } = yield* this.paths();
     yield* e.Effect.ignore(fs.remove(sessionFile, { force: true }));
+  }
+
+  /** The session file's session, expired or not. */
+  private *stored(): EffectGen<e.Option.Option<Session>> {
+    const fs = this.getDependency(e.FileSystem.FileSystem);
+    const { sessionFile } = yield* this.paths();
+    return e.Option.flatMap(yield* e.Effect.option(fs.readFileString(sessionFile)), decodeStoredSession);
   }
 
   private *claimWhenApproved(request: OpenedSignInRequest): EffectGen<Session, SignInFailed> {

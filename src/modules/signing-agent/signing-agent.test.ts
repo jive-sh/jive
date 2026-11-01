@@ -40,6 +40,7 @@ const server = {
   claimsBeforeApproval: 0,
   promptsShown: 0,
   pipelineIdTokens: [] as Array<string>,
+  previousSessionTokens: [] as Array<string | undefined>,
   idTokenAudiences: [] as Array<string>,
 };
 
@@ -47,12 +48,16 @@ const request: OpenedSignInRequest = {
   requestId: "request-1",
   claimSecret: "claim-secret",
   loginUrl: "https://jive.sh/login?request=request-1",
+  approvalDevices: 0,
   expiresAt: Date.now() + 60_000,
 };
 
 let claims = 0;
 const fakeServer = JiveServerImpl.mockLayer({
-  *openSignInRequest() { return request; },
+  *openSignInRequest({ previousSession }: { previousSession: e.Option.Option<Session> }) {
+    server.previousSessionTokens.push(e.Option.getOrUndefined(e.Option.map(previousSession, (session) => session.sessionToken)));
+    return request;
+  },
   *claimSignInRequest() {
     claims += 1;
     if (claims <= server.claimsBeforeApproval) return SignInClaim.Pending();
@@ -198,4 +203,14 @@ test("a CI/CD job signs in by exchanging its ID token for Jive's audience, and t
   expect(session.sessionToken).toBe("jive_pipeline_session");
   expect(JSON.parse(readFileSync(paths.sessionFile, "utf8")).sessionToken).toBe("jive_pipeline_session");
   expect(server.promptsShown).toBe(2);
+});
+
+test("a sign-in after the stored session expired names that session, so the server can ask the account's phones", async () => {
+  writeFileSync(paths.sessionFile, `${JSON.stringify({ sessionToken: "jive_expired_session", expiresAt: Date.now() - 1000 })}\n`);
+  server.previousSessionTokens.length = 0;
+  await e.Effect.runPromise(e.pipe(
+    e.Effect.gen(function* () { return yield* (yield* modules.session).ensureSignedIn(); }),
+    e.Effect.provide(agentLayer),
+  ));
+  expect(server.previousSessionTokens).toEqual(["jive_expired_session"]);
 });

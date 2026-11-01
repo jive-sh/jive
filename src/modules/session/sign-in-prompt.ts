@@ -11,6 +11,7 @@ import type { ISignInPrompt } from "./interface";
 export class TerminalSignInPromptImpl extends implementing(modules.signInPrompt).uses(modules.browser) implements ISignInPrompt {
   *show(request: OpenedSignInRequest): EffectGen<void> {
     yield* e.Effect.log(`Sign in to Jive with your passkey at ${request.loginUrl}`);
+    if (request.approvalDevices > 0) yield* e.Effect.log("Approve on your phone");
     yield* e.pipe(
       e.Effect.gen(() => this.dependencies.browser.open(request.loginUrl)),
       e.Effect.catch((reason) => e.Effect.logWarning(`${reason}; open the page yourself`)),
@@ -22,6 +23,7 @@ export class TerminalSignInPromptImpl extends implementing(modules.signInPrompt)
 export class DesktopSignInPromptImpl extends implementing(modules.signInPrompt).uses(modules.browser) implements ISignInPrompt {
   *show(request: OpenedSignInRequest): EffectGen<void> {
     yield* e.Effect.log(`A sign request needs a Jive session: opening ${request.loginUrl}`);
+    if (request.approvalDevices > 0) yield* e.Effect.log("Approve on your phone");
     yield* e.pipe(
       e.Effect.gen(() => this.dependencies.browser.open(request.loginUrl)),
       e.Effect.catch((reason) => e.Effect.logWarning(reason)),
