@@ -1,0 +1,8 @@
+{
+  "openDecisions": [],
+  "groups": [],
+  "packagesToDelete": [],
+  "groupForOtherPackages": { "label": "other" },
+  "packages": [{ "name": "x", "group": "missing" }],
+  "jiveCli": { "stubs": [], "docs": [] }
+}

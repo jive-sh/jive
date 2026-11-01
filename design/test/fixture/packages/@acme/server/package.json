@@ -1,0 +1,1 @@
+{ "name": "@acme/server", "dependencies": { "jive-abstract-child": "1.0.0" }, "jive": { "backend-convex": { "clientPackageName": "@acme/server-client" } } }

@@ -1,0 +1,1 @@
+{ "name": "jive-abstract-grandchild", "dependencies": { "jive-abstract-child": "1.0.0" }, "devDependencies": { "jive-abstract-base": "1.0.0" } }

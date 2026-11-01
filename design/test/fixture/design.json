@@ -1,0 +1,25 @@
+{
+  "openDecisions": [
+    { "title": "Pick one", "text": "Context first.", "options": ["First <option> (recommended).", "Second option."] }
+  ],
+  "groups": [
+    { "label": "@acme/", "description": "Acme itself", "namePrefix": "@acme/" },
+    { "label": "jive-abstract-*", "namePrefix": "jive-abstract-" }
+  ],
+  "packagesToDelete": [
+    { "name": "@other/unrelated", "reason": "Unused" },
+    { "name": "@other/already-gone", "reason": "Unused" }
+  ],
+  "groupForOtherPackages": { "label": "elsewhere" },
+  "packages": [
+    { "name": "@acme/server", "purpose": "Backend" },
+    { "name": "@acme/server-client", "purpose": "Its client" },
+    { "name": "@acme/building", "purpose": "Work", "building": "ship it" },
+    { "name": "jive-abstract-base", "purpose": "Base" },
+    { "name": "jive-abstract-proposed", "purpose": "Planned", "proposed": { "extends": "jive-abstract-base" } },
+    { "name": "jive-abstract-child" },
+    { "name": "@acme/gone", "purpose": "Deleted" },
+    { "name": "jive-abstract-docs", "proposed": {} }
+  ],
+  "jiveCli": { "stubs": ["make", "gone"], "docs": ["docs/cli.md", "docs/not-yet.md"] }
+}
