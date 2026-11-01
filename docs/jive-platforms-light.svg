@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 460" width="640" height="460" role="img" aria-labelledby="title">
+  <title id="title">Jive's agentic workforce holds a software factory, binary decompilation, and a business and its operations</title>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" text-anchor="middle" fill="#1e1b4b">
+    <circle cx="320" cy="240" r="200" fill="#eef2ff" stroke="#4f46e5" stroke-width="3"/>
+    <text x="320" y="74" font-size="22" font-weight="600">Agentic workforce</text>
+    <circle cx="320" cy="170" r="70" fill="#ffffff" stroke="#6366f1" stroke-width="2.5"/>
+    <text x="320" y="166" font-size="16">Software</text>
+    <text x="320" y="186" font-size="16">factory</text>
+    <circle cx="236" cy="300" r="70" fill="#ffffff" stroke="#6366f1" stroke-width="2.5"/>
+    <text x="236" y="296" font-size="16">Binary</text>
+    <text x="236" y="316" font-size="16">decompilation</text>
+    <circle cx="404" cy="300" r="70" fill="#ffffff" stroke="#6366f1" stroke-width="2.5"/>
+    <text x="404" y="286" font-size="16">A business</text>
+    <text x="404" y="306" font-size="16">and its</text>
+    <text x="404" y="326" font-size="16">operations</text>
+  </g>
+</svg>

@@ -1,11 +1,23 @@
-# @jive-sh/jive
+# Jive
 
-The Jive CLI. It signs you in to Jive, signs your git commits and GitHub pushes with your Jive account's SSH key, which
+Jive is a developer platform and an agentic workforce platform.
+
+- **Developer platform:** the `jive` CLI in this repository; the CI/CD pipeline every Jive package runs (its
+  [reusable workflow](.github/workflows/reusable-pipeline.yml) lives here, its contract in [CICD_API.md](CICD_API.md));
+  and resource provisioning, which makes sure each resource a package declares exists in its organization.
+- **Agentic workforce platform:** workforces of agents that run an organization's work. A software factory is one
+  kind of workforce; binary decompilation is another; a business with its various operations is another.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/jive-platforms-dark.svg">
+  <img alt="Agentic workforce, the outer circle, holding three separate circles: software factory, binary decompilation, and a business and its operations" src="docs/jive-platforms-light.svg" width="480">
+</picture>
+
+## The `jive` CLI
+
+`@jive-sh/jive` signs you in to Jive, signs your git commits and GitHub pushes with your Jive account's SSH key, which
 lives on [`@jive-sh/server`](https://github.com/jive-sh/server) and never on your machine, and loads repos into a
-workspace. It replaces `@ozyman42/ozy-cli`.
-
-This repository also holds Jive's [reusable pipeline](.github/workflows/reusable-pipeline.yml), which every Jive
-package's `pipeline.yml` calls; its contract is [CICD_API.md](CICD_API.md). The CLI itself is built and published by
+workspace. It replaces `@ozyman42/ozy-cli` ([what changed](docs/ozy-cli-migration.md)). It is built and published by
 [`jive-abstract-library`](https://github.com/jive-sh/jive-abstract-library) like any Jive command package.
 
 ## Install
