@@ -6,19 +6,6 @@ import { modules } from "@/modules";
 import { NotLoggedInError } from "@/modules/auth/interface";
 import { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
 
-/* TODO:
- * 1. On-device renaming should be supported if the YubiKey appears to have a default name on load.
- * 2. (Partially addressed) Commit signing and SSH auth now share one selected SSH key. Jive stores workspace-managed
- *    local keys under `.jive/ssh/local`, recovers resident keys from a selected YubiKey into a temp directory, persists
- *    only the chosen YubiKey handle under `.jive/users/`, uploads the same SSH public key to both GitHub auth-key and
- *    SSH-signing-key registries, and wires the private key into local git config.
- * 3. (Partially addressed) Repo reading now goes through `git-credential-jive`, submodule adds pass a credential-helper path
- *    derived from `process.execPath`, and the helper prefers stored repo-owner-scoped clone tokens when present before falling back to the broader OAuth token.
- *    New loads now warn and require confirmation before that broader fallback. Still TODO: mint/store GitHub App tokens and prompt about installing the app when possible.
- * 4. (Partially addressed) Loaded repos now keep HTTPS for pull/fetch, SSH for push, configure the credential helper locally, and wire
- *    the selected workspace-managed SSH key into local git signing and push-auth config.
- */
-
 /** Tab after an org lists the repos already loaded under it in this workspace. */
 const loadedRepoChoice = (description: string, next: (repo: RepoIdentifier) => Cli.Node) => (org: string) =>
   Cli.choose({
@@ -94,19 +81,8 @@ export const jive = Cli.make(TOOL_NAME, {
     },
   }))),
 
-  create: Cli.choose({
-    description: "create a repo from a template",
-    *choices() { return yield* (yield* modules.templates).availableTemplates(); },
-    next: (template) => Cli.command({
-      *run({ args: [repo] }) {
-        // TODO: scaffold repo from template, create on GitHub, link to workspace
-        yield* e.Effect.log(`Creating ${repo} from template ${template}...`);
-      },
-    }),
-  }),
-
   login: Cli.command({
-    description: "sign in to Jive with your jive.sh passkey; git signing and pushes use this session",
+    description: "sign in to Jive with your jive.sh passkey and fetch your account's public key, which git signing and pushes use",
     flags: {
       cicd: Cli.flag.boolean({ description: "in a CI/CD job: exchange the job's GitHub OIDC token for a session of its pipeline" }),
     },
@@ -117,6 +93,14 @@ export const jive = Cli.make(TOOL_NAME, {
         e.Effect.mapError(({ reason }) => new BadPreconditionsError({ cause: `Sign-in did not finish: ${reason}`, fix: `Run \`${TOOL_NAME} login\` again` })),
       );
       yield* e.Effect.log(`Signed in to Jive until ${new Date(session.expiresAt).toLocaleString()}`);
+      if (flags.cicd) return;
+      // A person's machine signs with the account key; the server makes it on first use and this keeps its public key.
+      const accountKeys = yield* modules.accountKey;
+      const { publicKeyFile } = yield* e.pipe(
+        e.Effect.gen(() => accountKeys.ensure()),
+        e.Effect.mapError(({ reason }) => BadPreconditionsError.withoutFix("Could not fetch your account's SSH key", reason)),
+      );
+      yield* e.Effect.log(`Your account's public key is at ${publicKeyFile}; \`${TOOL_NAME} load\` registers it on GitHub`);
     },
   }),
 
@@ -138,37 +122,6 @@ export const jive = Cli.make(TOOL_NAME, {
       yield* e.Effect.log(`${maybeAccount.value.username}@jive.sh`);
     },
   }),
-
-  git: {
-    setup: Cli.command({
-      description: "sign and push with your Jive account's key in this repo and its submodules; give owner/repo to clone it first",
-      *run({ args: [ownerAndRepo] }) {
-        const git = yield* modules.git;
-        // Before anything opens a page: a bad argument, or no repository to set up, fails without a sign-in.
-        const target = ownerAndRepo === undefined
-          ? { _tag: "CurrentRepository" as const, directory: yield* git.currentRepositoryRoot() }
-          : { _tag: "Clone" as const, repo: yield* parseOwnerAndRepo(ownerAndRepo) };
-        const accountKeys = yield* modules.accountKey;
-        const accountKey = yield* e.pipe(
-          e.Effect.gen(() => accountKeys.ensure()),
-          e.Effect.mapError(({ reason }) => new BadPreconditionsError({ cause: reason, fix: `Run \`${TOOL_NAME} git setup\` again and approve the sign-in on jive.sh` })),
-        );
-        const github = yield* modules.github;
-        const { writeToken, username, email } = yield* github.authorizeKeyRegistration();
-        yield* github.setSshKey(writeToken, accountKey);
-        yield* e.Effect.log(`Your Jive account key is an authentication and signing key of GitHub user ${username}`);
-        const directory = target._tag === "CurrentRepository"
-          ? target.directory
-          : yield* git.cloneWithAccountKey({
-            repo: target.repo,
-            accountKey,
-            intoDirectory: yield* (yield* OSPlatform).getCurrentDirectory(),
-          });
-        const repositories = yield* git.configureSigning({ directory, identity: { name: username, email }, accountKey });
-        yield* e.Effect.log(`${repositories.length} repositor${repositories.length === 1 ? "y" : "ies"} under ${directory} now sign commits and tags as ${username} <${email}>`);
-      },
-    }),
-  },
 
   daemons: Cli.command({
     description: "list every Jive daemon registered on this machine, with where its executable lives",
@@ -198,19 +151,4 @@ export const jive = Cli.make(TOOL_NAME, {
       );
     },
   }),
-
-  init: Cli.command({
-    *run() {
-      // TODO: initialize TOOL_NAME in current repo (tsconfig, renovate.json, gitignore, GitHub workflow)
-      yield* e.Effect.log(`Initializing ${TOOL_NAME}...`);
-    },
-  }),
 });
-
-/** `owner/repo`, as `jive git setup` takes it. */
-function parseOwnerAndRepo(ownerAndRepo: string): e.Effect.Effect<RepoIdentifier, BadArgumentError> {
-  const [owner, repo, ...rest] = ownerAndRepo.split("/");
-  return owner && repo && rest.length === 0
-    ? e.Effect.succeed(new RepoIdentifier(owner, repo.replace(/\.git$/, "")))
-    : e.Effect.fail(new BadArgumentError({ argument: "owner/repo", reason: `"${ownerAndRepo}" is not owner/repo` }));
-}

@@ -21,18 +21,17 @@ Linux, a scheduled task on Windows).
 
 | Command | What it does |
 | --- | --- |
-| `jive login` | Signs this machine in to Jive: prints a confirmation code and opens `https://jive.sh/login?request=…`, where you check the code and approve with your jive.sh passkey. |
+| `jive login` | Signs this machine in to Jive: prints a confirmation code and opens `https://jive.sh/login?request=…`, where you check the code and approve with your jive.sh passkey. Then fetches your account's public key, which the server creates on first use. |
 | `jive login --cicd` | In a GitHub Actions job with `id-token: write`: exchanges the job's ID token for a session of its pipeline. |
 | `jive whoami` | Prints the Jive account (`<handle>@jive.sh`) this machine is signed in as. |
-| `jive git setup [owner/repo]` | Signs in if needed, has the server create your account's SSH key on first use, registers it on GitHub as an authentication key and a signing key (one GitHub sign-in in the browser), and configures the current repository and every submodule checked out under it to sign commits and tags with it and push through the signing agent. With `owner/repo` it clones that repo first, over SSH, with its submodules. |
-| `jive load <org> <repo>` | Clones a GitHub repo into the workspace as a submodule, configures it the same way, then `bun install` and `bun link` it. |
+| `jive load <org> <repo>` | Adds a GitHub repo to the workspace as a submodule by its https URL, fetches its own submodules recursively, registers your account key on GitHub as an authentication and signing key, configures the repo and every submodule under it to sign commits and tags and push through the signing agent, then runs `bun install` and `bun link`. |
 | `jive unload <org> <repo>` | Removes a loaded repo. |
 | `jive on <org> <repo> -- <command…>` | Runs a command in a loaded repo's directory; its exit code is jive's. |
 | `jive daemons` | Lists every Jive daemon registered on this machine, with its state, executable and log. |
 | `jive upgrade` | Upgrades jive with the package manager that installed it. |
 
 `jive --help`, `--version` and Tab completion (`jive --setup-completion`) work as for every command built with
-`jive-abstract-library`'s `Cli`. `jive init` and `jive create` are still stubs.
+`jive-abstract-library`'s `Cli`. What changed from ozy-cli, and why: [docs/ozy-cli-migration.md](docs/ozy-cli-migration.md).
 
 ## How signing works
 
@@ -49,7 +48,7 @@ Linux, a scheduled task on Windows).
    server's signature. With no live session it opens a sign-in request itself: it opens the page and, on macOS,
    shows the code in a notification. A session the server revoked early is dropped and signed in again once. A
    second installed copy of jive finds the first agent's pidfile (`~/.jive/signing-agent.pid`) and stands down.
-4. **Git.** `jive git setup` and `jive load` set, per repository: `user.signingKey` to the public key file,
+4. **Git.** `jive load` sets, per repository: `user.signingKey` to the public key file,
    `gpg.format=ssh`, `gpg.ssh.program` to `jive-ssh-keygen` (ssh-keygen pointed at the agent's socket),
    `commit.gpgSign` and `tag.gpgSign`, and `core.sshCommand` to ssh with the agent as `IdentityAgent`. Your
    `~/.ssh/config` is left alone, so github.com connections outside these repositories are unchanged.

@@ -3,12 +3,11 @@ import { implementing, type EffectGen } from "effective-modules";
 import { BadArgumentError } from "@/errors";
 import { modules } from "@/modules";
 import { setSshKey, sshKeyExists } from "./authzn-keys";
-import { authorizeKeyRegistration, oauthLogin } from "./oauth/oauth-impl";
+import { oauthLogin } from "./oauth/oauth-impl";
 import "javascript-time-ago/locale/en";
 import TimeAgo from "javascript-time-ago";
 import { refreshAccessToken } from "./oauth/refresh-access-token";
 import { canReadFromRemote, canWriteToRemote } from "./repos";
-import { getVerifiedEmails } from "./user";
 import type { GithubAccessToken, GithubWriteToken, IGitHub } from "./interface";
 import type { AccountKey } from "../account-key/interface";
 import type { CurrentUserState, TokenState } from "../tool-state/interface";
@@ -72,12 +71,6 @@ export class GithubImpl extends implementing(modules.github).uses(modules.toolSt
   *oauthLogin(username?: string): EffectGen<{accessTokenState: TokenState; writeToken: GithubWriteToken; username: string; email: string;}> {
     return yield* oauthLogin(username);
   }
-  *authorizeKeyRegistration(): EffectGen<{ writeToken: GithubWriteToken; username: string; email: string }> {
-    return yield* authorizeKeyRegistration();
-  }
-  *getVerifiedEmails(accessToken: GithubAccessToken): EffectGen<string[]> {
-    return yield* getVerifiedEmails(accessToken);
-  }
   *sshKeyExists(accessToken: GithubAccessToken, key: AccountKey): EffectGen<{authn: boolean; signing: boolean}> {
     return yield* sshKeyExists(accessToken, key);
   }
@@ -98,11 +91,5 @@ export class GithubImpl extends implementing(modules.github).uses(modules.toolSt
       ssh: `git@github.com:${repo.org}/${repo.repo}.git`,
       https: `https://github.com/${repo.org}/${repo.repo}.git`
     };
-  }
-  *setupOrgs(_writeToken: GithubWriteToken): EffectGen<void> {
-    return yield* e.Effect.die("github.setupOrgs is not implemented");
-  }
-  *setupRemoteRepo(_repo: RepoIdentifier, _writeToken: GithubWriteToken, _cicdSecrets: Record<string, string>): EffectGen<void> {
-    return yield* e.Effect.die("github.setupRepo is not implemented");
   }
 }

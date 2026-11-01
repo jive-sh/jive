@@ -133,6 +133,3 @@ export const fetchSessionFromTokenResponse = (
       maybeTokenResponse.value.refresh_token_expires_in ?? 0,
     );
   });
-
-export const getVerifiedEmails = (accessToken: GithubAccessToken): e.Effect.Effect<string[]> =>
-  fetchVerifiedEmailsFromToken(accessToken.accessToken);

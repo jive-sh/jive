@@ -18,32 +18,6 @@ const SUBMODULE_STATUS_LINE = /^[ +\-U]?([0-9a-f]+) (\S+)/;
 export class GitImpl extends implementing(modules.git).uses(modules.toolState, modules.github, OSPlatform, e.FileSystem.FileSystem) implements IGit {
   private readonly credentialHelperExecutablePath = installedCommandPath(GIT_CREDENTIAL_HELPER_NAME);
 
-  *currentRepositoryRoot(): EffectGen<string, BadPreconditionsError> {
-    const cwd = yield* this.dependencies.OSPlatform.getCurrentDirectory();
-    const { stdout } = yield* this.git(["rev-parse", "--show-toplevel"], cwd, "capture");
-    return stdout.trim();
-  }
-
-  *cloneWithAccountKey({ repo, accountKey, intoDirectory }: { readonly repo: RepoIdentifier; readonly accountKey: AccountKey; readonly intoDirectory: string }): EffectGen<string, BadPreconditionsError> {
-    const { ssh } = this.dependencies.github.remoteUrls(repo);
-    const sshCommand = yield* this.sshCommand(accountKey);
-    yield* this.git(["-c", `core.sshCommand=${sshCommand}`, "clone", "--recurse-submodules", ssh, repo.repo], intoDirectory);
-    return path.join(intoDirectory, repo.repo);
-  }
-
-  *configureSigning({ directory, identity, accountKey }: { readonly directory: string; readonly identity: GitIdentity; readonly accountKey: AccountKey }): EffectGen<ReadonlyArray<string>, BadPreconditionsError> {
-    const config = yield* this.signingConfig(identity, accountKey);
-    // Only submodules checked out under the repository; one not yet cloned has no git config to set.
-    const { stdout } = yield* this.git(["submodule", "--quiet", "foreach", "--recursive", "pwd"], directory, "capture");
-    const repositories = [directory, ...stdout.split("\n").map(line => line.trim()).filter(Boolean)];
-    for (const repository of repositories) {
-      for (const [key, value] of Object.entries(config)) {
-        yield* this.git(["config", "--local", key, value], repository, "capture");
-      }
-    }
-    return repositories;
-  }
-
   *removeSubmodule(repoId: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError> {
     const { relativePath } = yield* this.dependencies.toolState.repoPath(repoId);
     const workspaceRoot = yield* this.workspaceRoot();
@@ -84,34 +58,6 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return repos.sort().map(repo => new RepoIdentifier(org, repo));
   }
 
-  *configureWorkspace(user: CurrentUser): EffectGen<void, BadArgumentError | BadPreconditionsError> {
-    const workspaceRoot = yield* this.workspaceRoot();
-    const args = ["config", "--get", "remote.origin.url"];
-    const { stdout } = yield* this.git(args, workspaceRoot, "capture");
-    const [firstLine] = stdout.split("\n");
-    if (!firstLine) {
-      return yield* new BadPreconditionsError({
-        cause: `Invalid root workspace at ${workspaceRoot}. \`git ${args.join(" ")}\` returned no results`,
-        fix: `Configure the "origin" remote in this git repo`
-      });
-    }
-    // It could be either an ssh or http remote.
-    const { owner, name } = parseGitRemote(firstLine);
-    if (!owner) {
-      return yield* new BadPreconditionsError({
-        cause: `Invalid org in origin remote for root workspace ${workspaceRoot}. Remote was ${firstLine}`,
-        fix: `Reconfigure the "origin" remote in this repo to something valid`
-      });
-    }
-    if (!name) {
-      return yield* new BadPreconditionsError({
-        cause: `Invalid repo name in origin remote for root workspace ${workspaceRoot}. Remote was ${firstLine}`,
-        fix: `Reconfigure the "origin" remote in this repo to something valid`
-      });
-    }
-    yield* this.configureGitRepo(new RepoIdentifier(owner, name), user);
-  }
-
   *submoduleExists(repoId: RepoIdentifier): EffectGen<boolean, BadArgumentError | BadPreconditionsError> {
     const orgLocation = yield* this.dependencies.toolState.orgPath(repoId);
     if (!(yield* this.isDirectory(orgLocation.absolutePath))) {
@@ -128,15 +74,21 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
   *cloneAsSubmodule(repoId: RepoIdentifier, user: CurrentUser): EffectGen<void, BadArgumentError | BadPreconditionsError> {
     const { relativePath } = yield* this.dependencies.toolState.repoPath(repoId);
     const { https } = this.dependencies.github.remoteUrls(repoId);
-    yield* this.git([
+    const workspaceRoot = yield* this.workspaceRoot();
+    // .gitmodules records the https URL, which GitHub and every clone can follow; pushes go over SSH through the
+    // signing agent, set by config rather than by the URL. A nested submodule its own .gitmodules names over SSH
+    // fetches through the agent too.
+    const fetchConfig = [
       "-c", `credential.helper=${this.credentialHelperExecutablePath}`,
       "-c", "credential.useHttpPath=true",
-      "submodule", "add", https, relativePath,
-    ], yield* this.workspaceRoot());
+      "-c", `core.sshCommand=${yield* this.sshCommand(user.accountKey)}`,
+    ];
+    yield* this.git([...fetchConfig, "submodule", "add", https, relativePath], workspaceRoot);
+    yield* this.git([...fetchConfig, "submodule", "update", "--init", "--recursive", "--", relativePath], workspaceRoot);
     yield* this.configureSubmodule(repoId, user);
   }
 
-  *configureSubmodule(repoId: RepoIdentifier, user: CurrentUser): EffectGen<void, BadArgumentError | BadPreconditionsError> {
+  private *configureSubmodule(repoId: RepoIdentifier, user: CurrentUser): EffectGen<void, BadArgumentError | BadPreconditionsError> {
     const exists = yield* this.submoduleExists(repoId);
     if (!exists) {
       return yield* new BadArgumentError({
@@ -156,16 +108,24 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return yield* e.Effect.all(relativePaths.map(RepoIdentifier.fromRelativePath));
   }
 
+  /**
+   * Makes the loaded repo and every submodule checked out under it commit as the user, sign with the account key,
+   * push through the signing agent and fetch through `git-credential-jive`. The loaded repo fetches over https and
+   * pushes over SSH; nested submodules keep the remotes their own .gitmodules give them.
+   */
   private *configureGitRepo(repoId: RepoIdentifier, user: CurrentUser): EffectGen<void, BadPreconditionsError> {
     const { absolutePath } = yield* this.dependencies.toolState.repoPath(repoId);
-    // TODO: ensure this path is an actual git repo.
     const config: Record<string, string> = {
       ...yield* this.signingConfig({ name: user.username, email: user.email }, user.accountKey),
       "credential.helper": this.credentialHelperExecutablePath,
       "credential.useHttpPath": "true",
     };
-    for (const [key, value] of Object.entries(config)) {
-      yield* this.git(["config", "--local", key, value], absolutePath);
+    const { stdout } = yield* this.git(["submodule", "--quiet", "foreach", "--recursive", "pwd"], absolutePath, "capture");
+    const repositories = [absolutePath, ...stdout.split("\n").map(line => line.trim()).filter(Boolean)];
+    for (const repository of repositories) {
+      for (const [key, value] of Object.entries(config)) {
+        yield* this.git(["config", "--local", key, value], repository, "capture");
+      }
     }
     const { ssh, https } = this.dependencies.github.remoteUrls(repoId);
     yield* this.git(["remote", "set-url", "origin", https], absolutePath);

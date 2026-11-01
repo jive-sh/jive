@@ -8,12 +8,10 @@ import { BunImpl } from "./bun/impl";
 import { GitImpl } from "./git/impl";
 import { GithubImpl } from "./github/impl";
 import { JiveServerImpl } from "./jive-server/impl";
-import { NpmImpl } from "./npm/impl";
 import { GitHubActionsIdentityImpl } from "./pipeline-identity/impl";
 import { SessionImpl } from "./session/impl";
 import { DesktopSignInPromptImpl, TerminalSignInPromptImpl } from "./session/sign-in-prompt";
 import { SigningAgentImpl } from "./signing-agent/impl";
-import { TemplatesImpl } from "./templates/impl";
 import { ToolStateImpl } from "./tool-state/impl";
 
 /**
@@ -39,8 +37,6 @@ export const ModulesLayer = e.pipe(
   e.Layer.provideMerge(GitImpl.Layer),
   e.Layer.provideMerge(GithubImpl.Layer),
   e.Layer.provideMerge(ToolStateImpl.Layer),
-  e.Layer.provideMerge(NpmImpl.Layer),
-  e.Layer.provideMerge(TemplatesImpl.Layer),
   e.Layer.provideMerge(accountLayer(TerminalSignInPromptImpl.Layer)),
 );
 

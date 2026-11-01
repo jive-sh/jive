@@ -24,9 +24,6 @@ export interface IGitHub {
   //       this should handle token refresh (if necessary) and save the updated token state
   resolveAccessToken(userState: CurrentUserState): EffectGen<{accessToken: GithubAccessToken}, BadArgumentError>;
   oauthLogin(username?: string): EffectGen<{accessTokenState: TokenState; writeToken: GithubWriteToken; username: string; email: string;}>;
-  /** One GitHub sign-in in the browser for a token that can register SSH keys, and who signed in; nothing is stored. */
-  authorizeKeyRegistration(): EffectGen<{ writeToken: GithubWriteToken; username: string; email: string }>;
-  getVerifiedEmails(accessToken: GithubAccessToken): EffectGen<string[]>;
   sshKeyExists(accessToken: GithubAccessToken, key: AccountKey): EffectGen<{authn: boolean; signing: boolean}>;
   setSshKey(writeToken: GithubWriteToken, key: AccountKey): EffectGen<void>;
   /**
@@ -36,15 +33,4 @@ export interface IGitHub {
   canReadFromRemote(repo: RepoIdentifier, accessToken: GithubAccessToken): EffectGen<boolean>;
   canWriteToRemote(repo: RepoIdentifier, accessToken: GithubAccessToken): EffectGen<boolean>;
   remoteUrls(repo: RepoIdentifier): {ssh: string; https: string;};
-  /**
-   * For all orgs which you're an owner of, attempts to
-   * 1. Install Github app which will automate dependency management and enforce verified commits only
-   * 2. Coordinate npm org setup via the npm module
-   */
-  setupOrgs(writeToken: GithubWriteToken): EffectGen<void>;
-  /**
-   * Creates repo in github, sets deployment secrets, publishes initial implementation, installs the GH App,
-   * and coordinates npm trusted publishing via the npm module
-   */
-  setupRemoteRepo(repo: RepoIdentifier, writeToken: GithubWriteToken, cicdSecrets: Record<string, string>): EffectGen<void>;
 }

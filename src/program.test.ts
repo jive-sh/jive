@@ -51,10 +51,19 @@ beforeAll(() => {
   const widgetSource = path.join(scratch, "widget-source");
   mkdirSync(widgetSource);
   writeFileSync(path.join(widgetSource, "package.json"), JSON.stringify({ name: "@acme/widget", version: "0.0.0", scripts: { postinstall: "pwd > installed-here.txt" } }));
+  mkdirSync(path.join(remotes, "acme"));
+  // A submodule of the widget, so `load` has a nested one to fetch. Its https URL resolves to a local bare repo too.
+  const gadgetSource = path.join(scratch, "gadget-source");
+  mkdirSync(gadgetSource);
+  writeFileSync(path.join(gadgetSource, "gadget.txt"), "gadget\n");
+  sh(["git", "init", "-q"], gadgetSource);
+  sh(["git", "add", "."], gadgetSource);
+  sh(["git", "commit", "-qm", "gadget"], gadgetSource);
+  sh(["git", "clone", "-q", "--bare", gadgetSource, path.join(remotes, "acme", "gadget.git")], scratch);
   sh(["git", "init", "-q"], widgetSource);
+  sh(["git", "submodule", "add", "-q", "https://github.com/acme/gadget.git", "gadget"], widgetSource);
   sh(["git", "add", "."], widgetSource);
   sh(["git", "commit", "-qm", "widget"], widgetSource);
-  mkdirSync(path.join(remotes, "acme"));
   sh(["git", "clone", "-q", "--bare", widgetSource, path.join(remotes, "acme", "widget.git")], scratch);
 
   mkdirSync(path.join(workspace, ".jive"), { recursive: true });
@@ -104,7 +113,7 @@ async function runJive(args: ReadonlyArray<string>): Promise<Outcome> {
     Cli.run(jive, { version: "0.0.0-test" }),
     e.Effect.provide(AuthImpl.mockLayer({ *ensureLoggedIn() { return user; } })),
     // No test signs in to Jive: one that reaches the account key would open a sign-in page in the browser.
-    e.Effect.provide(AccountKeyImpl.mockLayer({ *ensure() { accountKeyRequests += 1; return yield* new AccountKeyError({ reason: "tests do not sign in" }); } })),
+    e.Effect.provide(AccountKeyImpl.mockLayer({ *ensure() { return yield* new AccountKeyError({ reason: "tests do not sign in" }); } })),
     e.Effect.provide(ModulesLayer),
     e.Effect.provide(e.Stdio.layerTest({
       args: e.Effect.succeed(args),
@@ -117,8 +126,6 @@ async function runJive(args: ReadonlyArray<string>): Promise<Outcome> {
   ));
   return { stdout: stdout.join(""), exit };
 }
-
-let accountKeyRequests = 0;
 
 const errorOf = (exit: e.Exit.Exit<void, unknown>) => e.Option.getOrUndefined(e.Exit.findErrorOption(exit));
 const widget = () => path.join(workspace, "@acme", "widget");
@@ -138,6 +145,10 @@ describe("jive in a workspace", () => {
     expect(gitConfigIn(widget(), "gpg.ssh.program")).toEndWith("jive-ssh-keygen");
     expect(gitConfigIn(widget(), "tag.gpgSign")).toBe("true");
     expect(gitConfigIn(widget(), "core.sshCommand")).toContain(`IdentityAgent=${JSON.stringify(path.join(homedir(), ".jive", "signing-agent.sock"))}`);
+    // The widget's own submodule is fetched and configured too; .gitmodules records only https URLs.
+    expect(readFileSync(path.join(widget(), "gadget", "gadget.txt"), "utf8")).toBe("gadget\n");
+    expect(gitConfigIn(path.join(widget(), "gadget"), "gpg.ssh.program")).toEndWith("jive-ssh-keygen");
+    expect(readFileSync(path.join(workspace, ".gitmodules"), "utf8")).not.toContain("git@");
     expect(readFileSync(path.join(widget(), "installed-here.txt"), "utf8").trim()).toBe(widget());
     expect(existsSync(path.join(bunHome, "install", "global", "node_modules", "@acme", "widget"))).toBe(true);
   });
@@ -169,12 +180,6 @@ describe("jive in a workspace", () => {
     expect(existsSync(widget())).toBe(false);
     expect(readFileSync(path.join(workspace, ".gitmodules"), "utf8")).not.toContain("acme/widget");
     expect(existsSync(path.join(workspace, ".git", "modules", "@acme", "widget"))).toBe(false);
-  });
-
-  test("git setup refuses a malformed owner/repo before asking anyone to sign in", async () => {
-    const { exit } = await runJive(["git", "setup", "acme/widget/extra"]);
-    expect(errorOf(exit)).toBeInstanceOf(BadArgumentError);
-    expect(accountKeyRequests).toBe(0);
   });
 
   test("outside a workspace, a command says so", async () => {

@@ -64,12 +64,3 @@ export const oauthLogin = (username?: string): e.Effect.Effect<{
     };
   });
 
-/** One browser pass for a token that can register SSH keys, plus who signed in; nothing is persisted. */
-export const authorizeKeyRegistration = (): e.Effect.Effect<{ writeToken: GithubWriteToken; username: string; email: string }> =>
-  e.Effect.gen(function*() {
-    const session = yield* authorizeForScopes(WRITE_SCOPES, "GitHub authorization");
-    if (!session.email) {
-      return yield* e.Effect.die("GitHub login completed without a usable verified email.");
-    }
-    return { writeToken: { writeToken: session.accessToken }, username: session.username, email: session.email };
-  });
