@@ -158,7 +158,11 @@ beforeAll(async () => {
   seed("gadget", (dir) => writeFileSync(path.join(dir, "gadget.txt"), "gadget\n"));
   seed("loose", (dir) => writeFileSync(path.join(dir, "loose.txt"), "loose\n"));
   seed("widget", (dir) => sh(["git", ...viaFiles, "submodule", "add", "-q", "git@github.com:acme/gadget.git", "gadget"], dir));
-  seed("chaine", (dir) => sh(["git", ...viaFiles, "submodule", "add", "-q", "git@github.com:acme/widget.git", "packages/@acme/widget"], dir));
+  seed("chaine", (dir) => {
+    // A committed .gitignore, as Alex's root has.
+    writeFileSync(path.join(dir, ".gitignore"), "node_modules\n");
+    sh(["git", ...viaFiles, "submodule", "add", "-q", "git@github.com:acme/widget.git", "packages/@acme/widget"], dir);
+  });
   sh(["git", ...viaFiles, "clone", "-q", "git@github.com:acme/chaine.git", checkout], scratch);
   // widget checked out, gadget not: init has a missing nested submodule to fetch.
   sh(["git", ...viaFiles, "submodule", "update", "--init", "-q"], checkout);
@@ -252,4 +256,37 @@ test("a commit in the nested submodule is signed through jive, ssh-keygen -Y ver
   const head = sh(["git", "rev-parse", "HEAD"], gadget());
   expect(sh(["git", "--git-dir", path.join(remotes, "acme", "gadget.git"), "rev-parse", "refs/heads/signed"], scratch)).toBe(head);
   expect(readFileSync(path.join(sshdDir, "sshd.log"), "utf8")).toContain("Accepted publickey");
+}, 60_000);
+
+/** The repository check and the rollback handed over in docs/ozy-cli-migration.md, step 4 and step 5, as written there. */
+const everyRepository = `for d in . $(git submodule foreach --quiet --recursive pwd) $(git ls-files --others --exclude-standard --directory | sed -n 's#/$##p'); do [ -e "$d/.git" ] || continue;`;
+
+test("the handed-over repository check finds every repository on jive, and the rollback puts each back on ozy", async () => {
+  const check = await run(["sh", "-c", `${everyRepository} p=$(git -C "$d" config gpg.ssh.program); s=$(git -C "$d" config core.sshCommand); u=$(git -C "$d" config remote.origin.pushurl); case "$p$s$u" in *jive-ssh-keygen*signing-agent.sock*git@github.com:*) ;; *) echo "NOT ON JIVE: $d";; esac; done; echo "repo check done"`], checkout);
+  expect(check.stdout).toBe("repo check done");
+  const modules = await run(["sh", "-c", `for f in .gitmodules $(git submodule foreach --quiet --recursive 'test -f .gitmodules && echo "$toplevel/$sm_path/.gitmodules"'); do grep -H "url = git@" "$f"; done; echo ".gitmodules check done"`], checkout);
+  expect(modules.stdout).toBe(".gitmodules check done");
+
+  const ozyKeygen = path.join(scratch, "ozy-ssh-keygen");
+  const ozyKey = path.join(scratch, "ozy-key.pub");
+  const rollback = await run(["sh", "-c", [
+    `${everyRepository} [ -f "$d/.gitmodules" ] && git -C "$d" restore --worktree .gitmodules; done`,
+    "git restore --worktree .gitignore && git submodule sync --recursive",
+    `${everyRepository}`,
+    `  git -C "$d" config gpg.ssh.program ${ozyKeygen}`,
+    `  git -C "$d" config user.signingkey ${ozyKey}`,
+    `  git -C "$d" config --unset core.sshCommand; git -C "$d" config --unset remote.origin.pushurl`,
+    `  git -C "$d" config --unset credential.helper; git -C "$d" config --unset credential.useHttpPath`,
+    `  url=$(git -C "$d" config remote.origin.url) && git -C "$d" remote set-url origin "$(echo "$url" | sed 's#^https://github.com/#git@github.com:#')"`,
+    "done",
+  ].join("\n")], checkout);
+  expect(rollback.stderr).toBe("");
+  expect(rollback.exitCode).toBe(0);
+  for (const [repository, name] of [[checkout, "chaine"], [widget(), "widget"], [gadget(), "gadget"], [path.join(checkout, "packages", "loose"), "loose"]] as const) {
+    expect(gitConfigIn(repository, "gpg.ssh.program")).toBe(ozyKeygen);
+    expect(gitConfigIn(repository, "user.signingkey")).toBe(ozyKey);
+    expect(gitConfigIn(repository, "remote.origin.url")).toBe(`git@github.com:acme/${name}.git`);
+    expect(Bun.spawnSync(["git", "config", "--local", "--get", "core.sshCommand"], { cwd: repository }).exitCode).toBe(1);
+  }
+  expect(readFileSync(path.join(checkout, ".gitmodules"), "utf8")).toContain("url = git@github.com:acme/widget.git");
 }, 60_000);
