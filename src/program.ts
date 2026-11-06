@@ -1,9 +1,10 @@
 import * as e from "effect";
+import * as path from "node:path";
 import { Cli, OSPlatform, daemonStatuses, upgrade } from "jive-abstract-library";
 import { PACKAGE_NAME, TOOL_NAME } from "@/constants";
-import { BadArgumentError, BadPreconditionsError } from "@/errors";
+import { BadArgumentError, BadPreconditionsError, NotLoggedInError } from "@/errors";
 import { modules } from "@/modules";
-import { NotLoggedInError } from "@/modules/auth/interface";
+import { LinkResult, LinkScope, type WorkspaceLink } from "@/modules/bun/interface";
 import { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
 
 /** Tab after an org lists the repos already loaded under it in this workspace. */
@@ -26,24 +27,24 @@ const workspaceOrgChoice = (description: string, next: (org: string) => Cli.Node
 
 export const jive = Cli.make(TOOL_NAME, {
   load: Cli.choose({
-    description: "clone a GitHub repo into this workspace as a submodule, then install and link it",
+    description: "clone a GitHub repo into this workspace as a submodule, install it, and link it with the workspace's packages",
     *choices() { return yield* (yield* modules.git).localOrgs(); },
     next: (org) => Cli.choose({
       description: "a repo of the org on GitHub",
-      *choices() { return yield* (yield* modules.github).remoteRepos(org, e.Option.none()); },
+      // Listing an org's repos needs a GitHub sign-in, which jive no longer has; the name is typed.
+      *choices() { return []; },
       next: (repo) => Cli.command({
         description: `clone ${org}/${repo} to @${org}/${repo}`,
         *run() {
           const chosenRepo = new RepoIdentifier(org, repo);
           const git = yield* modules.git;
           const bun = yield* modules.bun;
-          // TODO: warn if user has a permissive token rather than a scoped token
-          const user = yield* (yield* modules.auth).ensureLoggedIn({ chooseNewUser: false });
-          yield* git.cloneAsSubmodule(chosenRepo, user);
-          const { relativePath } = yield* (yield* modules.toolState).repoPath(chosenRepo);
+          yield* git.cloneAsSubmodule(chosenRepo, yield* accountKey());
+          const { relativePath, absolutePath } = yield* (yield* modules.toolState).repoPath(chosenRepo);
           yield* e.Effect.log(`Cloned ${chosenRepo.toString()} to ${relativePath}`);
           yield* bun.install(chosenRepo);
-          yield* bun.link(chosenRepo);
+          const { workspaceRoot, repositories } = yield* workspaceRepositories();
+          yield* logLinks({ workspaceRoot, links: yield* bun.linkWorkspace({ repositories, scope: LinkScope.Touching({ directory: absolutePath }) }) });
         },
       }),
     }),
@@ -52,6 +53,10 @@ export const jive = Cli.make(TOOL_NAME, {
   unload: workspaceOrgChoice("remove a loaded repo from this workspace", loadedRepoChoice("a repo loaded in this workspace", (repo) => Cli.command({
     description: `remove ${repo.packageName()} from this workspace`,
     *run() {
+      const { absolutePath } = yield* (yield* modules.toolState).repoPath(repo);
+      const { repositories } = yield* workspaceRepositories();
+      const reinstalled = yield* (yield* modules.bun).unlinkPackage({ repositories, packageDirectory: absolutePath });
+      if (reinstalled.length > 0) yield* e.Effect.log(`${repo.packageName()} unlinked from ${reinstalled.join(", ")}, which have their registry copy back`);
       yield* (yield* modules.git).removeSubmodule(repo);
     },
   }))),
@@ -92,52 +97,63 @@ export const jive = Cli.make(TOOL_NAME, {
         e.Effect.gen(() => flags.cicd ? sessions.signInAsPipeline() : sessions.signIn()),
         e.Effect.mapError(({ reason }) => new BadPreconditionsError({ cause: `Sign-in did not finish: ${reason}`, fix: flags.cicd ? "Fix what the reason names, then run the job again" : `Run \`${TOOL_NAME} login\` again` })),
       );
-      yield* e.Effect.log(`Signed in to Jive until ${new Date(session.expiresAt).toLocaleString()}`);
-      if (flags.cicd) return;
-      // A person's machine signs with the account key; the server makes it on first use and this keeps its public key.
+      const ends = new Date(session.expiresAt).toLocaleString();
+      if (flags.cicd) return yield* e.Effect.log(`Signed in to Jive until ${ends}`);
+      // A person's session moves its end a day on with each use, on the server.
+      yield* e.Effect.log(`Signed in to Jive; the session ends ${ends} unless this machine uses it before then`);
+      // A person's machine signs with the account key, which lives on the server; this keeps its public half.
       const accountKeys = yield* modules.accountKey;
       const { publicKeyFile } = yield* e.pipe(
         e.Effect.gen(() => accountKeys.ensure()),
         e.Effect.mapError(({ reason }) => BadPreconditionsError.withoutFix("Could not fetch your account's SSH key", reason)),
       );
-      yield* e.Effect.log(`Your account's public key is at ${publicKeyFile}; \`${TOOL_NAME} load\` registers it on GitHub`);
+      yield* e.Effect.log(`Your account's public key is at ${publicKeyFile}`);
     },
   }),
 
   whoami: Cli.command({
-    description: "print the Jive account this machine is signed in as",
+    description: "print the handle of the Jive account this machine is signed in as",
     *run() {
-      const maybeSession = yield* (yield* modules.session).current();
+      const sessions = yield* modules.session;
+      const maybeSession = yield* sessions.current();
       if (e.Option.isNone(maybeSession)) {
         return yield* BadPreconditionsError.fromNotLoggedInError(new NotLoggedInError({}));
       }
-      const jiveServer = yield* modules.jiveServer;
       const maybeAccount = yield* e.pipe(
-        e.Effect.gen(() => jiveServer.accountOf(maybeSession.value)),
+        e.Effect.gen(() => sessions.checkWithServer(maybeSession.value)),
         e.Effect.mapError(({ reason }) => BadPreconditionsError.withoutFix("Could not reach the Jive server", reason)),
       );
       if (e.Option.isNone(maybeAccount)) {
-        return yield* BadPreconditionsError.fromNotLoggedInError(new NotLoggedInError({ reason: "the session was revoked" }));
+        return yield* BadPreconditionsError.fromNotLoggedInError(new NotLoggedInError({ reason: "Jive ended this machine's session" }));
       }
-      yield* e.Effect.log(`${maybeAccount.value.username}@jive.sh`);
+      yield* e.Effect.log(maybeAccount.value.username);
     },
   }),
 
   init: Cli.command({
-    description: "make the git repository you are in a jive workspace: .gitmodules on https, every submodule checked out, and every repository signing with your Jive account key and pushing through jive's agent",
+    description: "make every repository here sign with your Jive account key and fetch and push over SSH through jive's agent; .gitmodules on https, every submodule checked out, and the packages among them linked with each other",
     *run() {
       const git = yield* modules.git;
       const root = yield* git.repositoryRoot(yield* (yield* OSPlatform).getCurrentDirectory());
-      const { ignoreAdded } = yield* (yield* modules.toolState).markWorkspace(root);
-      if (ignoreAdded) yield* e.Effect.log(`Added /.jive/ to ${root}/.gitignore: it holds this workspace's GitHub tokens`);
-      // GitHub sign-in (for https fetches and registering the key), and the account key, signing in to Jive if needed.
-      const user = yield* (yield* modules.auth).ensureLoggedIn({ chooseNewUser: false });
-      const rewritten = yield* git.checkOutSubmodulesOverHttps(root, user);
+      const key = yield* accountKey();
+      const rewritten = yield* git.checkOutSubmodulesOverHttps(root, key);
       const repositories = yield* git.repositoriesUnder(root);
       for (const repository of repositories) {
-        yield* git.configureRepository(repository, user);
+        yield* git.configureRepository(repository, key);
       }
-      yield* e.Effect.log(`${rewritten} submodule URL${rewritten === 1 ? "" : "s"} moved to https; ${repositories.length} repositor${repositories.length === 1 ? "y signs" : "ies sign"} as ${user.username} <${user.email}> and push through jive's agent`);
+      yield* e.Effect.log(`${rewritten} submodule URL${rewritten === 1 ? "" : "s"} moved to https; ${repositories.length} repositor${repositories.length === 1 ? "y signs" : "ies sign"} with your Jive account key and fetch and push over SSH through jive's agent`);
+      yield* logLinks({ workspaceRoot: root, links: yield* (yield* modules.bun).linkWorkspace({ repositories, scope: LinkScope.Workspace() }) });
+    },
+  }),
+
+  link: Cli.command({
+    description: "link the workspace's packages with each other again, as `load` does (a `bun install` in a package puts its registry copies back); give a package's directory to link only into that package",
+    *run({ args: [directory] }) {
+      const { workspaceRoot, repositories } = yield* workspaceRepositories();
+      const scope = directory === undefined
+        ? LinkScope.Workspace()
+        : LinkScope.Into({ directory: path.resolve(yield* (yield* OSPlatform).getCurrentDirectory(), directory) });
+      yield* logLinks({ workspaceRoot, links: yield* (yield* modules.bun).linkWorkspace({ repositories, scope }) });
     },
   }),
 
@@ -216,3 +232,45 @@ const declaredInstance = (kind: string, name: string): e.Effect.Effect<unknown, 
     const instance = declared.jive.resources[kind]?.[name];
     return instance === undefined ? yield* notDeclared : instance;
   });
+
+/** The account's key, signing in to Jive first when there is no session (`jive login`'s passkey sign-in). */
+function accountKey() {
+  return e.Effect.gen(function* () {
+    const accountKeys = yield* modules.accountKey;
+    return yield* e.pipe(
+      e.Effect.gen(() => accountKeys.ensure()),
+      e.Effect.mapError(({ reason }) => new BadPreconditionsError({ cause: reason, fix: `Run \`${TOOL_NAME} login\`, then this again` })),
+    );
+  });
+}
+
+/** The workspace's root and every repository in it: its submodules at any depth and the clones git doesn't track. */
+function workspaceRepositories() {
+  return e.Effect.gen(function* () {
+    const { workspaceRoot } = yield* e.pipe(
+      e.Effect.gen(function* () { return yield* (yield* modules.toolState).assertInWorkspace(); }),
+      e.Effect.mapError(BadPreconditionsError.fromNotInWorkspaceError),
+    );
+    return { workspaceRoot, repositories: yield* (yield* modules.git).repositoriesUnder(workspaceRoot) };
+  });
+}
+
+/** One line per link made or not made, then a count, so a person sees which packages run their checkout. */
+function logLinks({ workspaceRoot, links }: { readonly workspaceRoot: string; readonly links: ReadonlyArray<WorkspaceLink> }) {
+  return e.Effect.gen(function* () {
+    const rebuild = `run \`bun run jive:cicd:build\` in it, then \`${TOOL_NAME} link\``;
+    for (const link of links) {
+      const into = `${link.dependency} into ${link.dependent}`;
+      yield* e.Effect.log(e.pipe(link.result, LinkResult.$match({
+        Linked: ({ target }) => `Linked ${into}: ${path.relative(workspaceRoot, target)} (${link.checkoutVersion}${link.specifierSatisfied ? "" : `, which ${link.dependent}'s pin ${link.specifier} doesn't allow; its CI installs the pin`})`,
+        LocalSpecifier: () => `Left ${into}: it asks for ${link.specifier} itself`,
+        NotInstalled: () => `Left ${into}: bun install hasn't installed it there`,
+        NotBuilt: () => `Left ${into}: ${link.dependency} has no build; ${rebuild}`,
+        StaleBuild: ({ builtVersion }) => `Left ${into}: ${link.dependency}'s build is ${builtVersion} and its checkout ${link.checkoutVersion}; ${rebuild}`,
+        SameName: ({ directories }) => `Left ${into}: ${directories.map(directory => path.relative(workspaceRoot, directory)).join(" and ")} are both ${link.dependency}`,
+      })));
+    }
+    const linked = links.filter(link => link.result._tag === "Linked").length;
+    yield* e.Effect.log(`${linked} workspace link${linked === 1 ? "" : "s"} in place; ${links.length - linked} left as installed`);
+  });
+}

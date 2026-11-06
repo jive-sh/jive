@@ -34,6 +34,6 @@ export const ProvisionValue = e.Schema.Union([
   e.Schema.Struct({ status: e.Schema.Literal("refused"), reason: e.Schema.String }),
 ]);
 
-export const AccountValue = e.Schema.NullOr(e.Schema.Struct({ username: e.Schema.String }));
+export const AccountValue = e.Schema.NullOr(e.Schema.Struct({ username: e.Schema.String, sessionExpiresAt: e.Schema.Number }));
 export const PublicKeyValue = e.Schema.Struct({ publicKey: e.Schema.NonEmptyString });
 export const SignatureValue = e.Schema.Struct({ signature: e.Schema.instanceOf(ArrayBuffer) });

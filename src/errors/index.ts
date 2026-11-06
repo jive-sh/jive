@@ -1,8 +1,12 @@
 import * as e from "effect";
 import { Cli } from "jive-abstract-library";
 import { TOOL_NAME } from "@/constants";
-import type { NotLoggedInError } from "@/modules/auth/interface";
 import type { NotInWorkspaceError } from "@/modules/tool-state/interface";
+
+/** No Jive session on this machine, or the server no longer honours it. */
+export class NotLoggedInError extends e.Data.TaggedError("NotLoggedInError")<{
+  readonly reason?: string;
+}> {}
 
 export class BadArgumentError extends e.Data.TaggedError("BadArgumentError")<{
   readonly argument: string;

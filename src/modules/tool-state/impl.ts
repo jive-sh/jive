@@ -4,91 +4,27 @@ import { implementing, type EffectGen } from "effective-modules";
 import { OSPlatform } from "jive-abstract-library";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { modules } from "@/modules";
-import { GithubAccessTokenType } from "@/modules/github/interface";
 import { WORKSPACE_DIR } from "./constants";
 import {
   NotInWorkspaceError,
   RepoIntegrityCompromisedReason,
   VerifyRepoIntegrityError,
-  type CurrentUserState,
   type IToolState,
   type RepoLocation,
-  type TokenExpirationState,
-  type TokenState,
 } from "./interface";
 import type { RepoIdentifier } from "./repo-identifier";
 
-const USERS_DIR = "users";
-const CURRENT_USER_FILE = "current.json";
-
-interface CurrentUserStateJson {
-  readonly username: string;
-  readonly email: string;
-  readonly accessTokenState: {
-    readonly tokenType: "OAuthApp" | "GithubApp";
-    readonly token: string;
-    readonly scope: string;
-    readonly expiration: {
-      readonly tokenExpiresAt: number;
-      readonly refreshToken: string;
-      readonly refreshTokenExpiresAt: number;
-    } | null;
-  };
-}
-
 /**
  * The workspace is the nearest directory, from the current one upward, holding a `.jive` directory; its loaded
- * repos live at `@<org>/<repo>` under it and its signed-in user's state under `.jive/users`.
+ * repos live at `@<org>/<repo>` under it.
  */
 export class ToolStateImpl extends implementing(modules.toolState).uses(OSPlatform, e.FileSystem.FileSystem) implements IToolState {
-  *markWorkspace(root: string): EffectGen<{ readonly ignoreAdded: boolean }, BadPreconditionsError> {
-    const fs = this.getDependency(e.FileSystem.FileSystem);
-    yield* this.ensureDirectory(path.join(root, WORKSPACE_DIR));
-    // The directory holds the workspace's GitHub tokens, so git must never pick it up.
-    const gitignore = path.join(root, ".gitignore");
-    const existing = (yield* this.pathExists(gitignore)) ? yield* e.Effect.orDie(fs.readFileString(gitignore)) : "";
-    const ignored = existing.split("\n").some((line) => [WORKSPACE_DIR, `${WORKSPACE_DIR}/`, `/${WORKSPACE_DIR}`, `/${WORKSPACE_DIR}/`].includes(line.trim()));
-    if (ignored) return { ignoreAdded: false };
-    const separator = existing === "" || existing.endsWith("\n") ? "" : "\n";
-    yield* e.pipe(
-      fs.writeFileString(gitignore, `${existing}${separator}/${WORKSPACE_DIR}/\n`),
-      e.Effect.mapError(({ message }) => BadPreconditionsError.withoutFix(`Failed to add /${WORKSPACE_DIR}/ to ${gitignore}`, message)),
-    );
-    return { ignoreAdded: true };
-  }
-
   *assertInWorkspace(): EffectGen<{ workspaceRoot: string }, NotInWorkspaceError> {
     const maybeWorkspaceRoot = yield* this.findWorkspaceRoot();
     if (e.Option.isNone(maybeWorkspaceRoot)) {
       return yield* new NotInWorkspaceError({ path: yield* this.dependencies.OSPlatform.getCurrentDirectory() });
     }
     return { workspaceRoot: maybeWorkspaceRoot.value };
-  }
-
-  *readCurrentUserState(): EffectGen<e.Option.Option<CurrentUserState>> {
-    const currentUserJson = yield* this.readJsonObject(yield* this.currentUserFilePath());
-    if (e.Option.isNone(currentUserJson)) {
-      return e.Option.none();
-    }
-
-    const username = typeof currentUserJson.value["username"] === "string" ? currentUserJson.value["username"] : "";
-    const email = typeof currentUserJson.value["email"] === "string" ? currentUserJson.value["email"] : "";
-    const accessTokenState = parseTokenState(currentUserJson.value["accessTokenState"]);
-    if (!username || !email || e.Option.isNone(accessTokenState)) {
-      return e.Option.none();
-    }
-
-    return e.Option.some({ username, email, accessTokenState: accessTokenState.value });
-  }
-
-  *clearCurrentUserState(): EffectGen<void> {
-    yield* this.removePathIfPresent(yield* this.currentUserFilePath());
-  }
-
-  *setUser({ email, username, accessToken }: { email: string; username: string; accessToken: TokenState }): EffectGen<CurrentUserState> {
-    const newUserState: CurrentUserState = { username, email, accessTokenState: accessToken };
-    yield* this.writeCurrentUserState(newUserState);
-    return newUserState;
   }
 
   *verifyRepoIntegrity(repo: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError | BadArgumentError> {
@@ -151,17 +87,6 @@ export class ToolStateImpl extends implementing(modules.toolState).uses(OSPlatfo
     }
   }
 
-  /** User state is kept beside the workspace when there is one, and beside the current directory otherwise. */
-  private *usersDirectoryPath(): EffectGen<string> {
-    const maybeRoot = yield* this.findWorkspaceRoot();
-    const rootPath = e.Option.isSome(maybeRoot) ? maybeRoot.value : yield* this.dependencies.OSPlatform.getCurrentDirectory();
-    return path.join(rootPath, WORKSPACE_DIR, USERS_DIR);
-  }
-
-  private *currentUserFilePath(): EffectGen<string> {
-    return path.join(yield* this.usersDirectoryPath(), CURRENT_USER_FILE);
-  }
-
   private *pathExists(targetPath: string): EffectGen<boolean> {
     return yield* e.pipe(
       this.getDependency(e.FileSystem.FileSystem).exists(targetPath),
@@ -176,93 +101,4 @@ export class ToolStateImpl extends implementing(modules.toolState).uses(OSPlatfo
       e.Effect.catchTag("PlatformError", () => e.Effect.succeed(false)),
     );
   }
-
-  private *ensureDirectory(targetPath: string): EffectGen<void> {
-    yield* e.Effect.orDie(this.getDependency(e.FileSystem.FileSystem).makeDirectory(targetPath, { recursive: true }));
-  }
-
-  private *removePathIfPresent(targetPath: string): EffectGen<void> {
-    yield* e.pipe(
-      this.getDependency(e.FileSystem.FileSystem).remove(targetPath, { recursive: true, force: true }),
-      e.Effect.catchTag("PlatformError", () => e.Effect.void),
-    );
-  }
-
-  private *readJsonObject(targetPath: string): EffectGen<e.Option.Option<Record<string, unknown>>> {
-    const maybeContents = yield* e.pipe(
-      this.getDependency(e.FileSystem.FileSystem).readFileString(targetPath),
-      e.Effect.map(e.Option.some),
-      e.Effect.catchTag("PlatformError", () => e.Effect.succeed(e.Option.none<string>())),
-    );
-    if (e.Option.isNone(maybeContents)) {
-      return e.Option.none();
-    }
-    try {
-      const parsed: unknown = JSON.parse(maybeContents.value);
-      return parsed !== null && typeof parsed === "object" ? e.Option.some(parsed as Record<string, unknown>) : e.Option.none();
-    } catch {
-      return e.Option.none();
-    }
-  }
-
-  private *writeCurrentUserState(state: CurrentUserState): EffectGen<void> {
-    const currentUserFilePath = yield* this.currentUserFilePath();
-    yield* this.ensureDirectory(path.dirname(currentUserFilePath));
-    const serialized: CurrentUserStateJson = {
-      username: state.username,
-      email: state.email,
-      accessTokenState: {
-        tokenType: state.accessTokenState.tokenType._tag,
-        token: state.accessTokenState.token,
-        scope: state.accessTokenState.scope,
-        expiration: e.Option.match(state.accessTokenState.expiration, {
-          onNone: () => null,
-          onSome: expiration => ({
-            tokenExpiresAt: expiration.tokenExpiresAt,
-            refreshToken: expiration.refreshToken,
-            refreshTokenExpiresAt: expiration.refreshTokenExpiresAt,
-          }),
-        }),
-      },
-    };
-    yield* e.Effect.orDie(this.getDependency(e.FileSystem.FileSystem).writeFileString(
-      currentUserFilePath,
-      JSON.stringify(serialized, undefined, 2),
-      { mode: 0o600 },
-    ));
-  }
-
-}
-
-function parseTokenExpiration(value: unknown): e.Option.Option<TokenExpirationState> {
-  if (!value || typeof value !== "object") {
-    return e.Option.none();
-  }
-  const expiration = value as Record<string, unknown>;
-  const tokenExpiresAt = typeof expiration["tokenExpiresAt"] === "number" ? expiration["tokenExpiresAt"] : NaN;
-  const refreshToken = typeof expiration["refreshToken"] === "string" ? expiration["refreshToken"] : "";
-  const refreshTokenExpiresAt =
-    typeof expiration["refreshTokenExpiresAt"] === "number" ? expiration["refreshTokenExpiresAt"] : NaN;
-  if (!Number.isFinite(tokenExpiresAt) || !refreshToken || !Number.isFinite(refreshTokenExpiresAt)) {
-    return e.Option.none();
-  }
-  return e.Option.some({ tokenExpiresAt, refreshToken, refreshTokenExpiresAt });
-}
-
-function parseTokenState(value: unknown): e.Option.Option<TokenState> {
-  if (!value || typeof value !== "object") {
-    return e.Option.none();
-  }
-  const tokenState = value as Record<string, unknown>;
-  const token = typeof tokenState["token"] === "string" ? tokenState["token"] : "";
-  const scope = typeof tokenState["scope"] === "string" ? tokenState["scope"] : "";
-  if (!token || !scope) {
-    return e.Option.none();
-  }
-  return e.Option.some({
-    tokenType: tokenState["tokenType"] === "GithubApp" ? GithubAccessTokenType.GithubApp() : GithubAccessTokenType.OAuthApp(),
-    token,
-    scope,
-    expiration: parseTokenExpiration(tokenState["expiration"]),
-  });
 }

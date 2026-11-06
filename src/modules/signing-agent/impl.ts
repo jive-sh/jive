@@ -12,7 +12,7 @@ export class SigningAgentImpl extends implementing(modules.signingAgent).uses(mo
 
     const maybeKey = yield* accountKey.cached();
     if (e.Option.isNone(maybeKey)) {
-      yield* e.Effect.logWarning("No account public key on this machine yet; run `jive git setup` to fetch it");
+      yield* e.Effect.logWarning("No account public key on this machine yet; run `jive login` to fetch it");
       return request._tag === "RequestIdentities" ? identitiesAnswer([]) : failure();
     }
     const identity = parsePublicKeyLine(maybeKey.value.publicKey);

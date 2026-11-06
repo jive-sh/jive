@@ -16,10 +16,19 @@ export interface OpenedSignInRequest {
   readonly approvalDevices: number;
 }
 
-/** A program's session on the server: the token every call takes, and when the server stops honouring it. */
+/**
+ * A program's session on the server: the token every call takes, and when the server last said it ends. Each use of a
+ * person's session moves its end on, so a saved `expiresAt` can be in the past while the server still honours it.
+ */
 export interface Session {
   readonly sessionToken: string;
   readonly expiresAt: number;
+}
+
+/** Whose a live session is, and when it ends unless used before then: each use moves its end a day on. */
+export interface SessionAccount {
+  readonly username: string;
+  readonly sessionExpiresAt: number;
 }
 
 export type SignInClaim = e.Data.TaggedEnum<{
@@ -62,10 +71,10 @@ export interface IJiveServer {
    * with its reason.
    */
   signInPipeline(idToken: string): EffectGen<Session, JiveServerError>;
-  /** The session's account handle, or none when the server no longer honours the session (expired or revoked). */
-  accountOf(session: Session): EffectGen<e.Option.Option<{ readonly username: string }>, JiveServerError>;
-  /** The account's OpenSSH public key, creating the key on the server on the first call. */
-  createSshKey(session: Session): EffectGen<{ readonly publicKey: string }, JiveServerError>;
+  /** The session's account (`accounts:me`), or none when the server no longer honours the session (expired or revoked). */
+  accountOf(session: Session): EffectGen<e.Option.Option<SessionAccount>, JiveServerError>;
+  /** The account's OpenSSH public key (`ssh:publicKey`); every account has one from sign-up. */
+  sshPublicKey(session: Session): EffectGen<string, JiveServerError>;
   /**
    * Signs `data` with the account's SSH key on the server. The signature comes back in SSH's encoding
    * (`string "ssh-ed25519" || string <signature>`), what an SSH agent answers a sign request with.

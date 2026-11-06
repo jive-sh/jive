@@ -19,6 +19,17 @@ export class TerminalSignInPromptImpl extends implementing(modules.signInPrompt)
   }
 }
 
+/**
+ * For the extension daemon: the Jive browser extension asked for the sign-in, so the request goes to the extension,
+ * which opens the page itself. The daemon's log names it too.
+ */
+export class ExtensionSignInPromptImpl extends implementing(modules.signInPrompt).uses(modules.extensionSignIn) implements ISignInPrompt {
+  *show(request: OpenedSignInRequest): EffectGen<void> {
+    yield* e.Effect.log(`The Jive extension asked to sign in: it opens ${request.loginUrl}`);
+    yield* this.dependencies.extensionSignIn.opened(request);
+  }
+}
+
 /** For the signing agent, which runs at login with no terminal: opens the page; the agent's log names it too. */
 export class DesktopSignInPromptImpl extends implementing(modules.signInPrompt).uses(modules.browser) implements ISignInPrompt {
   *show(request: OpenedSignInRequest): EffectGen<void> {

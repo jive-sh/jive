@@ -43,7 +43,7 @@ export interface PackageToDeleteRow {
 export type CliCommandStatus = "Implemented" | "Stub" | "Group";
 
 export interface CliCommandRow {
-  /** The full command: "jive git setup". */
+  /** The full command: "jive login". */
   readonly command: string;
   readonly status: CliCommandStatus;
   readonly description: Option.Option<string>;

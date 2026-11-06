@@ -7,7 +7,7 @@ import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { jiveHomePaths } from "@/jive-home";
 import { modules } from "@/modules";
 import type { AccountKey } from "@/modules/account-key/interface";
-import type { CurrentUser } from "@/modules/auth/interface";
+import { GITHUB_HTTPS, GITHUB_SSH, githubHttpsUrl, repoOfGitHubRemote } from "./github-remote";
 import { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
 import type { IGit } from "./interface";
 
@@ -18,7 +18,7 @@ const SUBMODULE_URL_LINE = /^(submodule\..+\.url) (.+)$/;
 /** Submodules nest at most this deep; a loop past it means a submodule names itself. */
 const MAX_SUBMODULE_DEPTH = 16;
 
-export class GitImpl extends implementing(modules.git).uses(modules.toolState, modules.github, OSPlatform, e.FileSystem.FileSystem) implements IGit {
+export class GitImpl extends implementing(modules.git).uses(modules.toolState, OSPlatform, e.FileSystem.FileSystem) implements IGit {
   *removeSubmodule(repoId: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError> {
     const { relativePath } = yield* this.dependencies.toolState.repoPath(repoId);
     const workspaceRoot = yield* this.workspaceRoot();
@@ -65,20 +65,19 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return submodules.some(submodule => submodule.equals(repoId));
   }
 
-  *cloneAsSubmodule(repoId: RepoIdentifier, user: CurrentUser): EffectGen<void, BadArgumentError | BadPreconditionsError> {
+  *cloneAsSubmodule(repoId: RepoIdentifier, accountKey: AccountKey): EffectGen<void, BadArgumentError | BadPreconditionsError> {
     const { relativePath, absolutePath } = yield* this.dependencies.toolState.repoPath(repoId);
-    const { https } = this.dependencies.github.remoteUrls(repoId);
     const workspaceRoot = yield* this.workspaceRoot();
-    yield* this.git([...yield* this.fetchConfig(user.accountKey), "submodule", "add", https, relativePath], workspaceRoot);
-    yield* this.checkOutSubmodulesOverHttps(absolutePath, user);
+    yield* this.git([...yield* this.fetchConfig(accountKey), "submodule", "add", githubHttpsUrl(repoId), relativePath], workspaceRoot);
+    yield* this.checkOutSubmodulesOverHttps(absolutePath, accountKey);
     for (const repository of yield* this.repositoriesUnder(absolutePath)) {
-      yield* this.configureRepository(repository, user);
+      yield* this.configureRepository(repository, accountKey);
     }
   }
 
   *getSubmodules(): EffectGen<RepoIdentifier[], BadArgumentError | BadPreconditionsError> {
     const urls = yield* this.submoduleUrls(yield* this.workspaceRoot());
-    return urls.flatMap(({ url }) => e.Option.toArray(this.dependencies.github.repoOfRemote(url)));
+    return urls.flatMap(({ url }) => e.Option.toArray(repoOfGitHubRemote(url)));
   }
 
   *repositoryRoot(directory: string): EffectGen<string, BadPreconditionsError> {
@@ -106,12 +105,11 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
   }
 
   private *useHttpsSubmoduleUrls(repository: string): EffectGen<number, BadPreconditionsError> {
-    const { github } = this.dependencies;
     let changed = 0;
     for (const { key, url } of yield* this.submoduleUrls(repository)) {
-      const maybeRepo = github.repoOfRemote(url);
+      const maybeRepo = repoOfGitHubRemote(url);
       if (e.Option.isNone(maybeRepo)) continue;
-      const { https } = github.remoteUrls(maybeRepo.value);
+      const https = githubHttpsUrl(maybeRepo.value);
       if (url === https) continue;
       yield* this.git(["config", "-f", ".gitmodules", key, https], repository, "capture");
       changed += 1;
@@ -120,8 +118,8 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
   }
 
   /** Returns how many submodules it checked out. */
-  private *fetchSubmodules(root: string, user: CurrentUser): EffectGen<number, BadPreconditionsError> {
-    const fetchConfig = yield* this.fetchConfig(user.accountKey);
+  private *fetchSubmodules(root: string, accountKey: AccountKey): EffectGen<number, BadPreconditionsError> {
+    const fetchConfig = yield* this.fetchConfig(accountKey);
     yield* this.git([...fetchConfig, "submodule", "sync", "--recursive"], root, "capture");
     let checkedOut = 0;
     for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
@@ -142,21 +140,14 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return yield* BadPreconditionsError.withoutFix(`Submodules under ${root} nest more than ${MAX_SUBMODULE_DEPTH} deep`);
   }
 
-  *configureRepository(repository: string, user: CurrentUser): EffectGen<void, BadPreconditionsError> {
-    const config = yield* this.signingConfig({ name: user.username, email: user.email }, user.accountKey);
-    for (const [key, value] of Object.entries(config)) {
+  *configureRepository(repository: string, accountKey: AccountKey): EffectGen<void, BadPreconditionsError> {
+    for (const [key, value] of Object.entries(yield* this.repositoryConfig(accountKey))) {
       yield* this.git(["config", "--local", key, value], repository, "capture");
     }
-    const { stdout } = yield* this.gitAllowingFailure(["config", "--get", "remote.origin.url"], repository);
-    const maybeRepo = this.dependencies.github.repoOfRemote(stdout);
-    if (e.Option.isNone(maybeRepo)) return;
-    const { ssh, https } = this.dependencies.github.remoteUrls(maybeRepo.value);
-    yield* this.git(["remote", "set-url", "origin", https], repository, "capture");
-    yield* this.git(["remote", "set-url", "--push", "origin", ssh], repository, "capture");
   }
 
   /** Each pass checks out the level of submodules the previous one revealed, until a pass rewrites nothing. */
-  *checkOutSubmodulesOverHttps(root: string, user: CurrentUser): EffectGen<number, BadPreconditionsError> {
+  *checkOutSubmodulesOverHttps(root: string, accountKey: AccountKey): EffectGen<number, BadPreconditionsError> {
     let rewritten = 0;
     for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
       const repositories = yield* this.repositoriesUnder(root);
@@ -166,7 +157,7 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
       }
       let checkedOut = 0;
       for (const repository of repositories) {
-        checkedOut += yield* this.fetchSubmodules(repository, user);
+        checkedOut += yield* this.fetchSubmodules(repository, accountKey);
       }
       rewritten += changed;
       // A checkout can reveal a .gitmodules not yet rewritten, so only a pass that does neither is the last.
@@ -186,28 +177,28 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
   }
 
   /**
-   * The git config that signs with the account key and pushes through the signing agent. Signing runs
-   * `jive-ssh-keygen`, which is ssh-keygen pointed at the agent; `user.signingKey` and ssh's identity name the public
-   * key, the only part of the key this machine has. `core.sshCommand` points these repositories at the agent without
-   * changing where the person's ssh config sends every other github.com connection.
+   * Everything jive sets in a repository, and nothing else (the design Alex aligned on, 2026-11-01: "the agent talks
+   * to the jive server and forwards the ssh signature request and the jive server does it"). Commits are signed by
+   * `jive-ssh-keygen`, which is ssh-keygen pointed at the agent, with the account key's public half as
+   * `user.signingKey`; fetches and pushes go over SSH through the agent, the https URLs being rewritten to SSH ones.
+   * No GitHub sign-in or token is involved.
    */
-  private *signingConfig(identity: { readonly name: string; readonly email: string }, accountKey: AccountKey): EffectGen<Record<string, string>> {
+  private *repositoryConfig(accountKey: AccountKey): EffectGen<Record<string, string>> {
     return {
-      "user.name": identity.name,
-      "user.email": identity.email,
-      "user.signingKey": accountKey.publicKeyFile,
       "gpg.format": "ssh",
-      "gpg.ssh.program": yield* this.installedCommand(SSH_KEYGEN_COMMAND_NAME),
+      "user.signingKey": accountKey.publicKeyFile,
       "commit.gpgSign": "true",
-      "tag.gpgSign": "true",
+      "gpg.ssh.program": yield* this.installedCommand(SSH_KEYGEN_COMMAND_NAME),
       "core.sshCommand": yield* this.sshCommand(accountKey),
+      [`url.${GITHUB_SSH}.insteadOf`]: GITHUB_HTTPS,
     };
   }
 
-  /** For one git command that fetches: a nested submodule its .gitmodules names over SSH fetches through the agent. */
+  /** For one git command that fetches a submodule not yet configured: over SSH, through the agent. */
   private *fetchConfig(accountKey: AccountKey): EffectGen<ReadonlyArray<string>> {
     return [
       "-c", `core.sshCommand=${yield* this.sshCommand(accountKey)}`,
+      "-c", `url.${GITHUB_SSH}.insteadOf=${GITHUB_HTTPS}`,
     ];
   }
 

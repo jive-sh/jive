@@ -1,30 +1,29 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import * as e from "effect";
 import { BunServices } from "@effect/platform-bun";
-import { Cli, OSPlatformImpl } from "jive-abstract-library";
+import { Cli, OSPlatform, OSPlatformImpl } from "jive-abstract-library";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { AccountKeyImpl } from "@/modules/account-key/impl";
-import { AccountKeyError } from "@/modules/account-key/interface";
+import type { AccountKey } from "@/modules/account-key/interface";
 import { ProvisioningImpl } from "@/modules/provisioning/impl";
-import { AuthImpl } from "@/modules/auth/impl";
-import type { CurrentUser } from "@/modules/auth/interface";
-import { GithubAccessTokenType } from "@/modules/github/interface";
 import { ModulesLayer } from "@/modules/runtime";
 import { jive } from "@/program";
 
 /**
  * Runs `jive load`, `on` and `unload` against a scratch workspace. Nothing reaches GitHub: a git config the test
  * owns (GIT_CONFIG_GLOBAL) rewrites https://github.com/ to a directory of local bare repos, and sign-in is a fake
- * user. `bun link` writes under a scratch BUN_INSTALL instead of the real global link directory.
+ * user. HOME, which every tool jive starts reads, is a scratch directory too, and so is BUN_INSTALL, where `bun link`
+ * registers packages.
  */
 
 const scratch = realpathSync(mkdtempSync(path.join(tmpdir(), "jive-program-test-")));
 const remotes = path.join(scratch, "remotes");
 const workspace = path.join(scratch, "workspace");
 const bunHome = path.join(scratch, "bun-home");
+const home = path.join(scratch, "home");
 const originalDirectory = process.cwd();
 const originalEnv = { ...process.env };
 
@@ -37,15 +36,17 @@ function sh(command: ReadonlyArray<string>, cwd: string): string {
 
 beforeAll(() => {
   mkdirSync(remotes, { recursive: true });
+  mkdirSync(home);
   const gitConfig = path.join(scratch, "gitconfig");
   writeFileSync(gitConfig, [
-    `[url "file://${remotes}/"]`, `\tinsteadOf = https://github.com/`,
+    // The acme repos only: longer than jive's own https://github.com/ rewrite to SSH, so git takes this one.
+    `[url "file://${remotes}/acme/"]`, `\tinsteadOf = https://github.com/acme/`,
     `[protocol "file"]`, `\tallow = always`,
     `[user]`, `\tname = Jive Test`, `\temail = test@example.com`,
     `[init]`, `\tdefaultBranch = main`,
     `[commit]`, `\tgpgSign = false`,
   ].join("\n"));
-  Object.assign(process.env, { GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1", BUN_INSTALL: bunHome });
+  Object.assign(process.env, { GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1", BUN_INSTALL: bunHome, HOME: home });
 
   // The repo `jive load acme widget` clones: no dependencies, so `bun install` stays offline, and a postinstall
   // script that marks the directory `bun install` ran in.
@@ -81,25 +82,25 @@ beforeAll(() => {
 
 afterAll(() => {
   process.chdir(originalDirectory);
-  for (const name of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "BUN_INSTALL"]) {
+  for (const name of ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "BUN_INSTALL", "HOME"]) {
     if (originalEnv[name] === undefined) delete process.env[name];
     else process.env[name] = originalEnv[name];
   }
   rmSync(scratch, { recursive: true, force: true });
 });
 
-const fakeUser = e.Effect.sync(() => {
+const fakeAccountKey = (): AccountKey => {
   const publicKeyFile = path.join(scratch, "account.pub");
   const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl jive-test@jive.sh";
   writeFileSync(publicKeyFile, `${publicKey}\n`);
-  const user: CurrentUser = {
-    username: "jive-test",
-    email: "test@example.com",
-    githubAccessToken: { accessToken: "not-a-token", tokenType: GithubAccessTokenType.OAuthApp() },
-    accountKey: { publicKey, publicKeyFile },
-  };
-  return user;
-});
+  return { publicKey, publicKeyFile };
+};
+
+/** The host as jive sees it, with its home in the scratch directory: Bun reads HOME once, at startup. */
+const scratchHost = e.Layer.effect(OSPlatform, e.Effect.gen(function* () {
+  const real = yield* OSPlatform;
+  return Object.assign(Object.create(real), { *getHomeDirectory() { return home; } });
+})).pipe(e.Layer.provide(OSPlatformImpl.Layer));
 
 interface Outcome {
   readonly stdout: string;
@@ -109,15 +110,13 @@ interface Outcome {
 /** Runs jive in this process on `args`, the way the entrypoint does, with sign-in replaced by the fake user. */
 async function runJive(args: ReadonlyArray<string>): Promise<Outcome> {
   const stdout: Array<string> = [];
-  const user = await e.Effect.runPromise(e.pipe(fakeUser, e.Effect.provide(BunServices.layer)));
   const exit = await e.Effect.runPromise(e.pipe(
     Cli.run(jive, { version: "0.0.0-test" }),
-    e.Effect.provide(AuthImpl.mockLayer({ *ensureLoggedIn() { return user; } })),
-    // No test signs in to Jive: one that reaches the account key would open a sign-in page in the browser.
-    e.Effect.provide(AccountKeyImpl.mockLayer({ *ensure() { return yield* new AccountKeyError({ reason: "tests do not sign in" }); } })),
+    // No test signs in to Jive: the account key is a fake, so nothing opens a sign-in page in the browser.
+    e.Effect.provide(AccountKeyImpl.mockLayer({ *ensure() { return fakeAccountKey(); } })),
     e.Effect.provide(ProvisioningImpl.mockLayer({ *ensure(input: { kind: string; instance: unknown }) { provisioned.push(input); return { instanceId: "fake-instance" }; } })),
     e.Effect.provide(ModulesLayer),
-    e.Effect.provide(OSPlatformImpl.Layer),
+    e.Effect.provide(scratchHost),
     e.Effect.provide(e.Stdio.layerTest({
       args: e.Effect.succeed(args),
       stdout: () => e.Sink.forEach((chunk: string | Uint8Array) => e.Effect.sync(() => {
@@ -137,26 +136,26 @@ const widget = () => path.join(workspace, "@acme", "widget");
 const gitConfigIn = (directory: string, key: string) => sh(["git", "config", "--local", "--get", key], directory);
 
 describe("jive in a workspace", () => {
-  test("load clones the repo as a submodule, configures it for the user, installs and links it", async () => {
+  test("load clones the repo as a submodule, configures it to sign and push through jive, and installs it", async () => {
     const { exit } = await runJive(["load", "acme", "widget"]);
     expect(exit).toEqual(e.Exit.void);
 
     expect(JSON.parse(readFileSync(path.join(widget(), "package.json"), "utf8")).name).toBe("@acme/widget");
-    expect(readFileSync(path.join(workspace, ".gitmodules"), "utf8")).toContain("url = https://github.com/acme/widget.git");
-    expect(gitConfigIn(widget(), "remote.origin.url")).toBe("https://github.com/acme/widget.git");
-    expect(gitConfigIn(widget(), "remote.origin.pushurl")).toBe("git@github.com:acme/widget.git");
-    expect(gitConfigIn(widget(), "user.email")).toBe("test@example.com");
+    expect(readFileSync(path.join(workspace, ".gitmodules"), "utf8")).toContain("url = https://github.com/acme/widget\n");
+    expect(gitConfigIn(widget(), "url.git@github.com:.insteadOf")).toBe("https://github.com/");
+    expect(gitConfigIn(widget(), "gpg.format")).toBe("ssh");
+    expect(gitConfigIn(widget(), "commit.gpgSign")).toBe("true");
     expect(gitConfigIn(widget(), "user.signingKey")).toBe(path.join(scratch, "account.pub"));
     expect(gitConfigIn(widget(), "gpg.ssh.program")).toEndWith("jive-ssh-keygen");
-    expect(gitConfigIn(widget(), "tag.gpgSign")).toBe("true");
-    expect(gitConfigIn(widget(), "core.sshCommand")).toContain(`IdentityAgent=${JSON.stringify(path.join(homedir(), ".jive", "signing-agent.sock"))}`);
+    expect(gitConfigIn(widget(), "core.sshCommand")).toContain(`IdentityAgent=${JSON.stringify(path.join(home, ".jive", "signing-agent.sock"))}`);
     // The widget's own submodule is fetched and configured too; .gitmodules records only https URLs.
     expect(readFileSync(path.join(widget(), "gadget", "gadget.txt"), "utf8")).toBe("gadget\n");
     expect(gitConfigIn(path.join(widget(), "gadget"), "gpg.ssh.program")).toEndWith("jive-ssh-keygen");
     expect(readFileSync(path.join(workspace, ".gitmodules"), "utf8")).not.toContain("git@");
     expect(readFileSync(path.join(widget(), "installed-here.txt"), "utf8").trim()).toBe(widget());
-    expect(existsSync(path.join(bunHome, "install", "global", "node_modules", "@acme", "widget"))).toBe(true);
-  });
+    // Nothing registers in bun's global folder, where a registration would shadow a global install of the same name.
+    expect(existsSync(path.join(bunHome, "install", "global", "node_modules", "@acme", "widget"))).toBe(false);
+  }, 30_000);
 
   test("Tab lists the workspace's orgs, then the repos loaded under one", async () => {
     expect((await runJive(["--compgen", "on", ""])).stdout).toBe("acme\n");

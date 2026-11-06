@@ -4,7 +4,7 @@ import { BunServices } from "@effect/platform-bun";
 import { OSPlatformImpl } from "jive-abstract-library";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import * as path from "node:path";
 import { jiveHomePaths } from "@/jive-home";
 import { AccountKeyImpl } from "@/modules/account-key/impl";
@@ -66,14 +66,14 @@ const fakeServer = JiveServerImpl.mockLayer({
     return SignInClaim.Approved({ session: { sessionToken, expiresAt: Date.now() + 3_600_000 } });
   },
   *accountOf(session: Session) {
-    return server.liveTokens.has(session.sessionToken) ? e.Option.some({ username: "tester" }) : e.Option.none();
+    return server.liveTokens.has(session.sessionToken) ? e.Option.some({ username: "tester", sessionExpiresAt: Date.now() + 86_400_000 }) : e.Option.none();
   },
   *signInPipeline(idToken: string) {
     server.pipelineIdTokens.push(idToken);
     server.liveTokens.add("jive_pipeline_session");
     return { sessionToken: "jive_pipeline_session", expiresAt: Date.now() + 3_600_000 };
   },
-  *createSshKey() { return { publicKey: publicKeyLine }; },
+  *sshPublicKey() { return publicKeyLine; },
   *signWithSshKey(session: Session, data: Uint8Array) {
     if (!server.liveTokens.has(session.sessionToken)) {
       return yield* new JiveServerError({ call: "ssh:sign", reason: "The session token opens no live session." });
@@ -175,12 +175,65 @@ test("a stored session signs without asking the person again", async () => {
   expect(server.signedWith).toEqual(["jive_session_3", "jive_session_3"]);
 });
 
-test("a session revoked before its expiry is dropped and signed in again once", async () => {
+test("a session the server has ended (unused for a day, or revoked) is dropped and signed in again once", async () => {
   server.liveTokens.clear();
   await signAndVerify();
   expect(server.promptsShown).toBe(2);
   expect(server.signedWith.at(-1)).toBe("jive_session_4");
 });
+
+// The Jive key beyond git and GitHub, as the README's "Using your Jive key for other SSH" shows it: jive writes nothing
+// to ~/.ssh, so the person points ssh or ssh-keygen at the agent's socket and the public key themselves.
+
+test("signs anything else with ssh-keygen -Y sign, under a namespace other than git", async () => {
+  const document = path.join(scratch, "release.tar");
+  writeFileSync(document, "any bytes\n");
+  const signed = await run(["ssh-keygen", "-Y", "sign", "-n", "file", "-f", paths.accountPublicKeyFile, document]);
+  expect(signed.exitCode).toBe(0);
+  const allowedSigners = path.join(scratch, "allowed_signers_file");
+  writeFileSync(allowedSigners, `tester@jive.sh ${publicKeyLine}\n`);
+  const verified = await run(
+    ["ssh-keygen", "-Y", "verify", "-f", allowedSigners, "-I", "tester@jive.sh", "-n", "file", "-s", `${document}.sig`],
+    readFileSync(document, "utf8"),
+  );
+  expect(verified.stdout).toContain('Good "file" signature for tester@jive.sh');
+});
+
+test("logs in to an SSH server that is not GitHub, with the key in its authorized_keys", async () => {
+  // An sshd on this machine, running as the person running the test, accepting only the account key.
+  const sshdDir = path.join(scratch, "sshd");
+  mkdirSync(sshdDir);
+  const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  const { port } = listener;
+  listener.stop(true);
+  const hostKey = path.join(sshdDir, "host_key");
+  expect(Bun.spawnSync(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", hostKey]).exitCode).toBe(0);
+  writeFileSync(path.join(sshdDir, "authorized_keys"), `${publicKeyLine}\n`);
+  writeFileSync(path.join(sshdDir, "sshd_config"), [
+    `Port ${port}`, "ListenAddress 127.0.0.1", `HostKey ${hostKey}`,
+    `AuthorizedKeysFile ${path.join(sshdDir, "authorized_keys")}`, `PidFile ${path.join(sshdDir, "sshd.pid")}`,
+    "StrictModes no", "UsePAM no", "PasswordAuthentication no", "KbdInteractiveAuthentication no", "PermitUserRC no", "",
+  ].join("\n"));
+  const sshdLog = path.join(sshdDir, "sshd.log");
+  expect(Bun.spawnSync(["/usr/sbin/sshd", "-f", path.join(sshdDir, "sshd_config"), "-E", sshdLog]).exitCode).toBe(0);
+  for (let attempt = 0; attempt < 50 && !existsSync(path.join(sshdDir, "sshd.pid")); attempt += 1) await Bun.sleep(100);
+  const sshdPid = Number.parseInt(readFileSync(path.join(sshdDir, "sshd.pid"), "utf8"), 10);
+  try {
+    // The README's command, with absolute paths for the scratch home, and no ~/.ssh read on either side.
+    const loggedIn = await run([
+      "ssh", "-F", "/dev/null",
+      "-o", `IdentityAgent=${paths.agentSocket}`, "-o", `IdentityFile=${paths.accountPublicKeyFile}`, "-o", "IdentitiesOnly=yes",
+      "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+      "-p", String(port), `${userInfo().username}@127.0.0.1`, "echo signed-in-through-jive",
+    ]);
+    expect(loggedIn.stderr).not.toContain("Permission denied");
+    expect(loggedIn.stdout.trim()).toBe("signed-in-through-jive");
+    expect(readFileSync(sshdLog, "utf8")).toContain("Accepted publickey");
+    expect(server.signedWith.at(-1)).toBe("jive_session_4");
+  } finally {
+    process.kill(sshdPid, "SIGTERM");
+  }
+}, 30_000);
 
 test("refuses to sign for a key it does not hold", async () => {
   const other = generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" }).x!;
@@ -205,12 +258,23 @@ test("a CI/CD job signs in by exchanging its ID token for Jive's audience, and t
   expect(server.promptsShown).toBe(2);
 });
 
-test("a sign-in after the stored session expired names that session, so the server can ask the account's phones", async () => {
-  writeFileSync(paths.sessionFile, `${JSON.stringify({ sessionToken: "jive_expired_session", expiresAt: Date.now() - 1000 })}\n`);
+// Each use extends a session on the server, so a saved end in the past proves nothing: only the server's refusal ends it.
+
+test("a stored session past its saved end still signs, without asking the person, while the server honours it", async () => {
+  server.liveTokens.add("jive_session_used_daily");
+  writeFileSync(paths.sessionFile, `${JSON.stringify({ sessionToken: "jive_session_used_daily", expiresAt: Date.now() - 1000 })}\n`);
+  const prompts = server.promptsShown;
+  await signAndVerify();
+  expect(server.promptsShown).toBe(prompts);
+  expect(server.signedWith.at(-1)).toBe("jive_session_used_daily");
+});
+
+test("a sign-in after the server ended the stored session names that session, so the server can ask the account's phones", async () => {
+  writeFileSync(paths.sessionFile, `${JSON.stringify({ sessionToken: "jive_ended_session", expiresAt: Date.now() - 1000 })}\n`);
   server.previousSessionTokens.length = 0;
-  await e.Effect.runPromise(e.pipe(
-    e.Effect.gen(function* () { return yield* (yield* modules.session).ensureSignedIn(); }),
-    e.Effect.provide(agentLayer),
-  ));
-  expect(server.previousSessionTokens).toEqual(["jive_expired_session"]);
+  const prompts = server.promptsShown;
+  await signAndVerify();
+  expect(server.promptsShown).toBe(prompts + 1);
+  expect(server.previousSessionTokens).toEqual(["jive_ended_session"]);
+  expect(JSON.parse(readFileSync(paths.sessionFile, "utf8")).sessionToken).toBe(server.signedWith.at(-1));
 });

@@ -1,0 +1,3 @@
+[test]
+# Every test's child processes run with a home inside this package, never the person's own.
+preload = ["./src/test-home.ts"]

@@ -1,29 +1,9 @@
 import * as e from "effect";
-import type { GithubAccessTokenType } from "@/modules/github/interface";
 import type { EffectGen } from "effective-modules";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { TOOL_NAME } from "@/constants";
 import { RepoIdentifier } from "./repo-identifier";
 export { RepoIdentifier } from "./repo-identifier";
-
-export interface CurrentUserState {
-  readonly username: string;
-  readonly email: string;
-  readonly accessTokenState: TokenState;
-}
-
-export interface TokenState {
-  readonly tokenType: GithubAccessTokenType;
-  readonly token: string;
-  readonly scope: string;
-  readonly expiration: e.Option.Option<TokenExpirationState>;
-}
-
-export interface TokenExpirationState {
-  readonly tokenExpiresAt: number;
-  readonly refreshToken: string;
-  readonly refreshTokenExpiresAt: number;
-}
 
 export type RepoIntegrityCompromisedReason = e.Data.TaggedEnum<{
   OrgMissing: {};
@@ -66,14 +46,6 @@ export interface RepoLocation {
 
 export interface IToolState {
   assertInWorkspace(): EffectGen<{ workspaceRoot: string }, NotInWorkspaceError>;
-  /** Makes `root` a workspace: creates its `.jive` directory and adds it to the root's .gitignore when missing. */
-  markWorkspace(root: string): EffectGen<{ readonly ignoreAdded: boolean }, BadPreconditionsError>;
-  // User state
-  readCurrentUserState(): EffectGen<e.Option.Option<CurrentUserState>>;
-  clearCurrentUserState(): EffectGen<void>;
-  setUser(opts: { email: string; username: string; accessToken: TokenState }): EffectGen<CurrentUserState>;
-
-  // Repos
   /** Where a loaded repo is, failing when it is not a configured submodule with a package.json. */
   verifyRepoIntegrity(repo: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError | BadArgumentError>;
   orgPath(repoId: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError>;

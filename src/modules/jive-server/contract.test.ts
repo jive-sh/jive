@@ -28,9 +28,9 @@ const contract: {
   readonly pipelineSignIn: Decodes<typeof PipelineSignInValue, typeof api.pipelineSessions.signIn>;
   readonly provision: Decodes<typeof ProvisionValue, typeof api.provision.default>;
   readonly account: Decodes<typeof AccountValue, typeof api.accounts.me>;
-  readonly createKey: Decodes<typeof PublicKeyValue, typeof api.ssh.createKey>;
+  readonly publicKey: Decodes<typeof PublicKeyValue, typeof api.ssh.publicKey>;
   readonly sign: Decodes<typeof SignatureValue, typeof api.ssh.sign>;
-} = { open: true, claim: true, pipelineSignIn: true, provision: true, account: true, createKey: true, sign: true };
+} = { open: true, claim: true, pipelineSignIn: true, provision: true, account: true, publicKey: true, sign: true };
 
 const roundTrip = (value: Value) => jsonToConvex(JSON.parse(JSON.stringify(convexToJson(value))));
 

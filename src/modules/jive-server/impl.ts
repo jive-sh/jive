@@ -14,7 +14,7 @@ import {
   PublicKeyValue,
   SignatureValue,
 } from "./contract";
-import { JiveServerError, ProvisionAnswer, SignInClaim, type IJiveServer, type OpenedSignInRequest, type Session } from "./interface";
+import { JiveServerError, ProvisionAnswer, SignInClaim, type IJiveServer, type OpenedSignInRequest, type Session, type SessionAccount } from "./interface";
 
 /**
  * Calls the server through Convex's HTTP API (`POST <deployment>/api/<query|action>`) in `convex_encoded_json`, the
@@ -52,13 +52,14 @@ export class JiveServerImpl extends implementing(modules.jiveServer).uses(HttpCl
     return { sessionToken: outcome.sessionToken, expiresAt: outcome.expiresAt };
   }
 
-  *accountOf(session: Session): EffectGen<e.Option.Option<{ readonly username: string }>, JiveServerError> {
+  *accountOf(session: Session): EffectGen<e.Option.Option<SessionAccount>, JiveServerError> {
     const account = yield* this.call("query", api.accounts.me, { sessionToken: session.sessionToken }, AccountValue);
     return e.Option.fromNullOr(account);
   }
 
-  *createSshKey(session: Session): EffectGen<{ readonly publicKey: string }, JiveServerError> {
-    return yield* this.call("action", api.ssh.createKey, { sessionToken: session.sessionToken }, PublicKeyValue);
+  *sshPublicKey(session: Session): EffectGen<string, JiveServerError> {
+    const { publicKey } = yield* this.call("query", api.ssh.publicKey, { sessionToken: session.sessionToken }, PublicKeyValue);
+    return publicKey;
   }
 
   *signWithSshKey(session: Session, data: Uint8Array): EffectGen<Uint8Array, JiveServerError> {

@@ -17,13 +17,13 @@ export interface AccountKey {
 export class AccountKeyError extends e.Data.TaggedError("AccountKeyError")<{ readonly reason: string }> {}
 
 export interface IAccountKey {
-  /** Signs in when needed, has the server create the key on first use, and keeps its public key on this machine. */
+  /** Signs in when needed, fetches the account key's public half from the server (`ssh:publicKey`), and keeps it on this machine. */
   ensure(): EffectGen<AccountKey, AccountKeyError>;
   /** The public key this machine kept, without reaching the server. */
   cached(): EffectGen<e.Option.Option<AccountKey>>;
   /**
-   * Signs `data` with the account's key, signing in first when there is no session. A session the server stopped
-   * honouring before its expiry (revoked) is dropped and signed in again once.
+   * Signs `data` with the account's key, signing in first when there is no session. A session the server has ended
+   * (unused for a day, or revoked) is dropped and signed in again once, as `ensure` does.
    */
   sign(data: Uint8Array): EffectGen<Uint8Array, AccountKeyError>;
 }

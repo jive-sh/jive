@@ -12,7 +12,7 @@ purpose), **still to port** (wanted, not built yet).
 
 | ozy-cli | What it does | Status | Reason |
 | --- | --- | --- | --- |
-| `ozy git setup [owner/repo]` | GitHub OAuth; registers one key on GitHub as auth and signing key; points `~/.ssh/config`'s `github.com` at the agent; sets signing config in the repo and its submodules; can clone | replaced | Alex: "git setup probably goes away". `jive login` gets the account key; `jive load` registers it on GitHub and configures the repo and its submodules |
+| `ozy git setup [owner/repo]` | GitHub OAuth; registers one key on GitHub as auth and signing key; points `~/.ssh/config`'s `github.com` at the agent; sets signing config in the repo and its submodules; can clone | replaced | Alex: "git setup probably goes away". `jive login` gets the account key; `jive load` registers it on GitHub and configures the repo and its submodules. Alex, 2026-11-06: jive never writes to `~/.ssh`; other SSH uses go through `~/.jive/ssh/account.pub` and the agent (README, "Using your Jive key for other SSH") |
 | submodule repair inside `ozy git setup` (`git/submodule/*`) | Repairs `.git/modules`, gitlinks and submodule config left inconsistent | dropped | Not signing setup; `jive load` and `jive unload` add and remove submodules through git itself |
 | `ozy git hosts` | Lists `github.com` hosts in `~/.ssh/config` | dropped | jive leaves `~/.ssh/config` alone and points each repo at the agent through `core.sshCommand` |
 | `ozy pkg publish` / `package` module | Creates the GitHub repo, first npm publish, trusted publisher | replaced | The pipeline's deploy: `jive login --cicd`, then `jive provision connector-package-registry …` (still to port, below) |
@@ -35,10 +35,10 @@ purpose), **still to port** (wanted, not built yet).
 
 | jive | What it does | Status | Reason |
 | --- | --- | --- | --- |
-| `jive login` | Passkey sign-in request (`signInRequests:open`/`claim`), then the account key (`ssh:createKey`), kept at `~/.jive/ssh/account.pub` | ported | One of the two ways to a session (Alex: "only 2 of them are available via cli") |
+| `jive login` | Passkey sign-in request (`signInRequests:open`/`claim`), then the account key's public half (`ssh:publicKey`), kept at `~/.jive/ssh/account.pub` | ported | One of the two ways to a session (Alex: "only 2 of them are available via cli") |
 | `jive login --cicd` | Exchanges the job's GitHub ID token (audience `https://api.jive.sh`) for a pipeline session (`pipelineSessions:signIn`) | ported | The other way to a session; the deploy hook's first step |
 | `jive whoami` | Prints the session's account (`accounts:me`) | ported | |
-| `jive load <org> <repo>` | Adds the repo as a submodule by its https URL, runs `git submodule update --init --recursive` for it, registers the account key on GitHub, and configures the repo and every submodule under it to sign with the account key and push through the agent | ported | Takes over `git setup`'s registration and signing config. Pushes go over SSH by config (`remote.origin.pushurl`, `core.sshCommand`); `.gitmodules` holds only https URLs |
+| `jive load <org> <repo>` | Adds the repo as a submodule by its https URL, checks out its submodules, and configures it and them as `jive init` does | ported | Takes over `git setup`'s signing config. Fetches and pushes go over SSH by config (`url."git@github.com:".insteadOf`, `core.sshCommand`); `.gitmodules` holds only https URLs |
 | `jive unload`, `jive on` | Remove a loaded repo; run a command in one | ported | |
 | `jive daemons`, `jive upgrade` | As in ozy-cli | ported | |
 | `jive provision <kind> <name>` | Makes sure a resource instance exists, e.g. `jive provision connector-package-registry @jive-sh/server-client`; the organization's configured implementation (npm for jive-sh) does it | ported (0.4.0) | Calls `provision` (docs/jive_server_provision_api.md section 2); the instance is `jive.resources.<kind>.<name>` in `./package.json` or `--instance`. The server's `provision` isn't deployed yet, so it answers an error until then |
@@ -47,8 +47,8 @@ purpose), **still to port** (wanted, not built yet).
 | `jive-signing-agent` (daemon), `jive-ssh-keygen` | The agent, and git's signing program | ported | |
 | `session`, `account-key`, `jive-server`, `pipeline-identity`, `signing-agent` modules | Session file and sign-in; the account key; calls to `@jive-sh/server`; the job's ID token; the agent protocol | ported | New with this migration |
 | `browser` module | Opens a URL with the platform's opener (`open`, `xdg-open`, `start`) | ported | The sign-in page; tests never use the real one |
-| `auth`, `github` modules | The workspace's GitHub sign-in (two OAuth passes, kept in `.jive/users`) and key registration | ported | `jive load` needs a GitHub token to clone and to register the key |
-| `tool-state` module | The workspace: its root, loaded repos, the GitHub user's tokens | ported | Lost its local SSH key handling |
+| `auth`, `github` modules | The workspace's GitHub sign-in (OAuth, kept in `.jive/users`) and key registration on GitHub | dropped (deleted) | The aligned design (Alex, 2026-11-01): "the agent talks to the jive server and forwards the ssh signature request and the jive server does it"; jive signs in to nothing but Jive, and fetches and pushes over SSH through the agent |
+| `tool-state` module | The workspace: its root, loaded repos, the GitHub user's tokens | ported | Lost its local SSH key handling and the GitHub user and tokens |
 | `bun` module | `bun install` and `bun link` in a loaded repo | ported | |
 | `oauth2` module | An interface for refresh-token storage nothing implemented | dropped (deleted) | Dead; GitHub OAuth lives in `github/oauth` |
 | `templates` module and `jive create` | Listed no templates; `create` only printed a line | dropped (deleted) | Templates were removed for abstracts (26e7176); `jive create <kind>` will resolve `jive-abstract-<kind>` when built |
@@ -85,8 +85,8 @@ value:  { status: "found", fetchUrl: string, pushUrl: string }   // e.g. https:/
 
 The server answers through the organization's configured `connector-code-repository` implementation (GitHub for
 jive-sh), the same one-implementation-per-kind lookup as `resources:provision`. A person's session may call it.
-`jive load` writes `fetchUrl` into `.gitmodules` and `remote.origin.url`, and `pushUrl` into
-`remote.origin.pushurl`; `github.remoteUrls` is then deleted.
+`jive init` and `jive load` write `fetchUrl` into `.gitmodules`; `githubHttpsUrl` in `src/modules/git/github-remote.ts` is
+then deleted.
 
 ## The jive block shape `jive provision` reads
 
@@ -112,11 +112,12 @@ nothing here stops or edits it, so rolling back is only git config (step 5).
 
 **State on 2026-11-01 (read-only check):** `@jive-sh/jive` 0.4.1 is installed globally (`~/.bun/bin/jive`) and its
 `jive-signing-agent` runs (launchd, `~/.jive/signing-agent.sock`), with no session and no account key. The chaine root
-and its 11 submodules sign through `ozy-ssh-keygen`; 10 more repositories under `packages/` are git repositories the
-root doesn't track (`@jive-sh/server`, `@jive-sh/daemon`, `@jive-sh/extension`, `jive-abstract-app-expo`,
+and its 11 submodules sign through `ozy-ssh-keygen`; 9 more repositories under `packages/` are git repositories the
+root doesn't track (`@jive-sh/server`, `@jive-sh/extension`, `jive-abstract-app-expo`,
 `jive-abstract-backend-convex`, `jive-abstract-resource`, `jive-abstract-resource-connector`,
 `jive-abstract-resource-connector-package-registry`, `jive-resource-connector-package-registry-npm`,
-`@chaine-dance/jive-test-package`). The root `.gitmodules` names 12 `git@github.com:` URLs and has a staged change
+`@chaine-dance/jive-test-package`). A tenth, a separate extension daemon package, has since moved into jive as
+`jive-extension-daemon` (2026-11-05) and is deleted. The root `.gitmodules` names 12 `git@github.com:` URLs and has a staged change
 from another thread.
 
 ### 1. Upgrade jive (no prompt)
@@ -136,23 +137,26 @@ jive login
 The jive.sh sign-in page opens; approve with the jive.sh passkey. It prints `Signed in to Jive until …` and where the
 account's public key went (`~/.jive/ssh/account.pub`); the server creates the key on this first call.
 
-### 3. Make the chaine checkout a jive workspace (one GitHub approval)
+
+### 3. Point every repository at jive (no prompt)
 
 ```sh
 cd /Users/alex/github.com/chaine-dance/chaine && jive init
 ```
 
-GitHub's authorization page opens once; approve it. `jive init` then:
-- creates `.jive/` (the workspace's GitHub token) and adds `/.jive/` to `.gitignore`;
-- registers the account key on GitHub as an authentication key and a signing key;
-- rewrites the 12 `git@` URLs in `.gitmodules` to https, in the working tree only (the other thread's staged change
-  is kept), and runs `git submodule sync`; no submodule is missing, so none is checked out and none moves;
-- configures the root, the 11 submodules and the 10 untracked repositories: `user.signingKey ~/.jive/ssh/account.pub`,
-  `gpg.ssh.program …/@jive-sh/jive/bin/jive-ssh-keygen`, commit and tag signing on, `core.sshCommand` through
-  `~/.jive/signing-agent.sock`, origin fetching over https and pushing to
-  `git@github.com:…`.
+`jive init` asks for nothing: there is no GitHub sign-in. It rewrites every `.gitmodules` URL at every depth to
+`https://github.com/<owner>/<repo>` in the working tree only (the other thread's staged change stays staged), runs
+`git submodule sync`, checks out any submodule not checked out (none moves), and sets exactly these in the root, its
+submodules and the untracked repositories under `packages/`:
 
-It ends with `12 submodule URLs moved to https; 22 repositories sign as ozyman42 <…> and push through jive's agent`.
+```text
+gpg.format          ssh
+user.signingkey     ~/.jive/ssh/account.pub
+commit.gpgsign      true
+gpg.ssh.program     …/@jive-sh/jive/bin/jive-ssh-keygen
+core.sshCommand     ssh -o IdentityAgent="~/.jive/signing-agent.sock" -o IdentityFile="~/.jive/ssh/account.pub" -o IdentitiesOnly=yes
+url.git@github.com:.insteadOf   https://github.com/
+```
 
 ### 4. Check Alex's bar (every line must hold)
 
@@ -162,31 +166,29 @@ jive daemons | grep jive-signing-agent
 jive whoami
 SSH_AUTH_SOCK=$HOME/.jive/signing-agent.sock ssh-add -L | diff - $HOME/.jive/ssh/account.pub && echo "agent holds the account key"
 ssh -o IdentityAgent=$HOME/.jive/signing-agent.sock -o IdentityFile=$HOME/.jive/ssh/account.pub -o IdentitiesOnly=yes -T git@github.com
-for d in . $(git submodule foreach --quiet --recursive pwd) $(git ls-files --others --exclude-standard --directory | sed -n 's#/$##p'); do [ -e "$d/.git" ] || continue; p=$(git -C "$d" config gpg.ssh.program); s=$(git -C "$d" config core.sshCommand); u=$(git -C "$d" config remote.origin.pushurl); case "$p$s$u" in *jive-ssh-keygen*signing-agent.sock*git@github.com:*) ;; *) echo "NOT ON JIVE: $d";; esac; done; echo "repo check done"
+for d in . $(git submodule foreach --quiet --recursive pwd) $(git ls-files --others --exclude-standard --directory | sed -n 's#/$##p'); do [ -e "$d/.git" ] || continue; p=$(git -C "$d" config gpg.ssh.program); s=$(git -C "$d" config core.sshCommand); u=$(git -C "$d" config url.git@github.com:.insteadOf); case "$p$s$u" in *jive-ssh-keygen*signing-agent.sock*https://github.com/*) ;; *) echo "NOT ON JIVE: $d";; esac; done; echo "repo check done"
 for f in .gitmodules $(git submodule foreach --quiet --recursive 'test -f .gitmodules && echo "$toplevel/$sm_path/.gitmodules"'); do grep -H "url = git@" "$f"; done; echo ".gitmodules check done"
-cd packages/@chaine-dance/jive-test-package && git commit --allow-empty -m "jive signing check" && git push && gh api repos/chaine-dance/jive-test-package/commits/HEAD --jq .commit.verification.verified
 ```
 
-Expect: the agent `running`; `<handle>@jive.sh`; `agent holds the account key`; `Hi ozyman42! You've successfully
-authenticated`; no `NOT ON JIVE` line before `repo check done`; no `url = git@` line before `.gitmodules check done`;
-and `true` (GitHub shows the signed commit, pushed over jive's SSH connection, as Verified). The last line uses the
-throwaway test package, whose deploy skips a push that doesn't change its version.
+Expect: the agent `running`; the account's handle; `agent holds the account key`; `Hi ozyman42! You've successfully
+authenticated` (GitHub knows the account key; `Permission denied (publickey)` means it doesn't, and jive adds no
+GitHub sign-in to fix that); no `NOT ON JIVE` line before `repo check done`; no `url = git@` line before
+`.gitmodules check done`. Then a signed commit in a scratch repository verifies with `ssh-keygen -Y verify`, and
+`git ls-remote` and a push of a scratch branch (deleted afterwards) to a jive-sh repository go through the agent.
 
 ### 5. Roll back to ozy (if any check fails)
 
 ```sh
 cd /Users/alex/github.com/chaine-dance/chaine
 for d in . $(git submodule foreach --quiet --recursive pwd) $(git ls-files --others --exclude-standard --directory | sed -n 's#/$##p'); do [ -e "$d/.git" ] || continue; [ -f "$d/.gitmodules" ] && git -C "$d" restore --worktree .gitmodules; done
-git restore --worktree .gitignore && git submodule sync --recursive
+git submodule sync --recursive
 for d in . $(git submodule foreach --quiet --recursive pwd) $(git ls-files --others --exclude-standard --directory | sed -n 's#/$##p'); do [ -e "$d/.git" ] || continue
   git -C "$d" config gpg.ssh.program /Users/alex/.bun/install/global/node_modules/@ozyman42/ozy-cli/bin/ozy-ssh-keygen
   git -C "$d" config user.signingkey /Users/alex/.ssh/jive-immense-shadowed-camp.pub
-  git -C "$d" config --unset core.sshCommand; git -C "$d" config --unset remote.origin.pushurl
-  url=$(git -C "$d" config remote.origin.url) && git -C "$d" remote set-url origin "$(echo "$url" | sed 's#^https://github.com/#git@github.com:#')"
+  git -C "$d" config --unset core.sshCommand; git -C "$d" config --unset url.git@github.com:.insteadOf
 done
 ```
 
-This puts back ozy's `gpg.ssh.program`, signing key and SSH origins, and removes jive's push config.
-`git restore --worktree` returns each `.gitmodules` to its staged version (the other thread's change stays staged)
-and `.gitignore` to its committed one, before `submodule sync` and before the origins are set back. ozy's agent never stopped, so signing works again at once. `jive` stays installed
-and idle; `bun remove -g @jive-sh/jive` removes it and its daemon.
+This restores each `.gitmodules` to its staged version (the other thread's change stays staged) and syncs it back into
+the submodules' remotes, then puts back ozy's `gpg.ssh.program` and signing key and removes jive's SSH config. ozy's
+agent never stopped, so signing works again at once. `jive` stays installed and idle.

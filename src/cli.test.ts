@@ -14,7 +14,7 @@ afterAll(() => rmSync(workspace, { recursive: true, force: true }));
 
 async function jive(...args: ReadonlyArray<string>) {
   // Async spawn, so the test process stays responsive while the child runs.
-  const proc = Bun.spawn(["bun", entrypoint, ...args], { cwd: workspace, stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(["bun", entrypoint, ...args], { cwd: workspace, env: process.env, stdout: "pipe", stderr: "pipe" });
   const [exitCode, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   return { exitCode, stdout, stderr };
 }
@@ -26,7 +26,7 @@ test("--version prints the package's version", async () => {
 test("--help lists the commands", async () => {
   const { exitCode, stdout } = await jive("--help");
   expect(exitCode).toBe(0);
-  for (const command of ["load", "unload", "on", "login", "whoami"]) expect(stdout).toContain(command);
+  for (const command of ["load", "unload", "link", "on", "login", "whoami"]) expect(stdout).toContain(command);
   expect(stdout).not.toMatch(/^  version/m);
 });
 
