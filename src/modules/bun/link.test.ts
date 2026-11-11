@@ -133,11 +133,7 @@ describe("linking the workspace's packages", () => {
     expect(spawned).toEqual([]);
   });
 
-  test("a scope links into one package, or into and out of one package", async () => {
-    const into = await linkAll(LinkScope.Into({ directory: directory("pinned-locally") }));
-    expect(new Set(into.map(link => link.dependent))).toEqual(new Set(["pinned-locally"]));
-    expect(pointsAt("app", "built")).toBe("registry copy");
-
+  test("a scope links into and out of one package", async () => {
     const touching = await linkAll(LinkScope.Touching({ directory: directory("built") }));
     expect(touching.map(link => `${link.dependency} into ${link.dependent}`).sort()).toEqual(["built into app", "built into pinned-locally"]);
   });

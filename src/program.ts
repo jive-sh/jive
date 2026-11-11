@@ -5,6 +5,7 @@ import { PACKAGE_NAME, TOOL_NAME } from "@/constants";
 import { BadArgumentError, BadPreconditionsError, NotLoggedInError } from "@/errors";
 import { modules } from "@/modules";
 import { LinkResult, LinkScope, type WorkspaceLink } from "@/modules/bun/interface";
+import { sshArgumentsThroughAgent, sshKeygenEnvironmentThroughAgent } from "@/modules/signing-agent/ssh-clients";
 import { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
 
 /** Tab after an org lists the repos already loaded under it in this workspace. */
@@ -69,22 +70,33 @@ export const jive = Cli.make(TOOL_NAME, {
         return yield* new BadArgumentError({ argument: "command", reason: `give the command to run after ${repo.org} ${repo.repo}` });
       }
       const { absolutePath } = yield* (yield* modules.toolState).verifyRepoIntegrity(repo);
-      const osPlatform = yield* OSPlatform;
-      if (e.Option.isNone(yield* osPlatform.findExecutable(command))) {
-        return yield* BadPreconditionsError.commandNotFound(command);
-      }
-      const { exitCode } = yield* e.pipe(
-        e.Effect.gen(() => osPlatform.spawnProcess({
-          command, args: commandArgs, cwd: absolutePath, stdin: "inherit", stdout: "inherit", stderr: "inherit",
-        })),
-        e.Effect.mapError(message => BadPreconditionsError.withoutFix(`Failed to run ${command}`, message)),
-      );
-      if (exitCode !== 0) {
-        // The command has shown its own output; jive only passes its exit code on.
-        return yield* new Cli.CliError({ message: `${command} exited with code ${exitCode}`, exitCode });
-      }
+      yield* runInThisTerminal({ command, args: commandArgs, cwd: absolutePath });
     },
   }))),
+
+  ssh: {
+    connect: Cli.passThroughCommand({
+      description: "run ssh with your Jive account key, through jive's agent, and no other key; every word after connect goes to ssh, e.g. `connect git@github.com` or `connect user@host -p 2222`",
+      *run({ args }) {
+        const { publicKeyFile } = yield* accountKeyOnThisMachine();
+        const homeDirectory = yield* (yield* OSPlatform).getHomeDirectory();
+        yield* runInThisTerminal({ command: "ssh", args: [...sshArgumentsThroughAgent({ homeDirectory, publicKeyFile }), ...args] });
+      },
+    }),
+    sign: Cli.passThroughCommand({
+      description: "sign with your Jive account key, through jive's agent: runs `ssh-keygen -Y sign -f <your account.pub>` with the words after sign, e.g. `sign -n file notes.txt` writes notes.txt.sig",
+      *run({ args }) {
+        const { publicKeyFile } = yield* accountKeyOnThisMachine();
+        const homeDirectory = yield* (yield* OSPlatform).getHomeDirectory();
+        const inherited = yield* e.Effect.sync(() => process.env);
+        yield* runInThisTerminal({
+          command: "ssh-keygen",
+          args: ["-Y", "sign", "-f", publicKeyFile, ...args],
+          env: sshKeygenEnvironmentThroughAgent({ inherited, homeDirectory }),
+        });
+      },
+    }),
+  },
 
   login: Cli.command({
     description: "sign in to Jive with your jive.sh passkey and fetch your account's public key, which git signing and pushes use",
@@ -143,17 +155,6 @@ export const jive = Cli.make(TOOL_NAME, {
       }
       yield* e.Effect.log(`${rewritten} submodule URL${rewritten === 1 ? "" : "s"} moved to https; ${repositories.length} repositor${repositories.length === 1 ? "y signs" : "ies sign"} with your Jive account key and fetch and push over SSH through jive's agent`);
       yield* logLinks({ workspaceRoot: root, links: yield* (yield* modules.bun).linkWorkspace({ repositories, scope: LinkScope.Workspace() }) });
-    },
-  }),
-
-  link: Cli.command({
-    description: "link the workspace's packages with each other again, as `load` does (a `bun install` in a package puts its registry copies back); give a package's directory to link only into that package",
-    *run({ args: [directory] }) {
-      const { workspaceRoot, repositories } = yield* workspaceRepositories();
-      const scope = directory === undefined
-        ? LinkScope.Workspace()
-        : LinkScope.Into({ directory: path.resolve(yield* (yield* OSPlatform).getCurrentDirectory(), directory) });
-      yield* logLinks({ workspaceRoot, links: yield* (yield* modules.bun).linkWorkspace({ repositories, scope }) });
     },
   }),
 
@@ -244,6 +245,39 @@ function accountKey() {
   });
 }
 
+/** The account key this machine keeps, fetched first as `accountKey()` does when it keeps none. */
+function accountKeyOnThisMachine() {
+  return e.Effect.gen(function* () {
+    const maybeKept = yield* (yield* modules.accountKey).cached();
+    return e.Option.isSome(maybeKept) ? maybeKept.value : yield* accountKey();
+  });
+}
+
+/**
+ * Runs a command on this terminal, its input and output being the person's own, and passes its exit code on as
+ * jive's. The command shows its own errors, so a nonzero exit adds nothing to them.
+ */
+function runInThisTerminal({ command, args, cwd, env }: {
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+  readonly cwd?: string;
+  readonly env?: Record<string, string | undefined>;
+}) {
+  return e.Effect.gen(function* () {
+    const osPlatform = yield* OSPlatform;
+    if (e.Option.isNone(yield* osPlatform.findExecutable(command))) {
+      return yield* BadPreconditionsError.commandNotFound(command);
+    }
+    const { exitCode } = yield* e.pipe(
+      e.Effect.gen(() => osPlatform.spawnProcess({ command, args, cwd, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" })),
+      e.Effect.mapError(message => BadPreconditionsError.withoutFix(`Failed to run ${command}`, message)),
+    );
+    if (exitCode !== 0) {
+      return yield* new Cli.CliError({ message: `${command} exited with code ${exitCode}`, exitCode });
+    }
+  });
+}
+
 /** The workspace's root and every repository in it: its submodules at any depth and the clones git doesn't track. */
 function workspaceRepositories() {
   return e.Effect.gen(function* () {
@@ -258,7 +292,7 @@ function workspaceRepositories() {
 /** One line per link made or not made, then a count, so a person sees which packages run their checkout. */
 function logLinks({ workspaceRoot, links }: { readonly workspaceRoot: string; readonly links: ReadonlyArray<WorkspaceLink> }) {
   return e.Effect.gen(function* () {
-    const rebuild = `run \`bun run jive:cicd:build\` in it, then \`${TOOL_NAME} link\``;
+    const rebuild = `run \`bun run jive:cicd:build\` in it, then \`${TOOL_NAME} init\``;
     for (const link of links) {
       const into = `${link.dependency} into ${link.dependent}`;
       yield* e.Effect.log(e.pipe(link.result, LinkResult.$match({

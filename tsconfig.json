@@ -21,7 +21,7 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "incremental": true,
-    // `jive link` makes a workspace package's node_modules entry a symlink to its checkout; resolving its imports from
+    // `jive init` and `jive load` make a workspace package's node_modules entry a symlink to its checkout; resolving its imports from
     // the link keeps one copy of a shared peer such as effect, where the checkout's own node_modules would add a second.
     "preserveSymlinks": true,
 

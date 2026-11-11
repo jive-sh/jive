@@ -7,8 +7,6 @@ import type { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
 export type LinkScope = e.Data.TaggedEnum<{
   /** Every package's workspace dependencies, in every package. */
   Workspace: {};
-  /** The workspace's packages into the package in this directory. */
-  Into: { readonly directory: string };
   /** The workspace's packages into the package in this directory, and it into every package that depends on it. */
   Touching: { readonly directory: string };
 }>;

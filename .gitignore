@@ -4,3 +4,4 @@ node_modules/
 .jive/
 package.schema.json
 tsconfig.tsbuildinfo
+.scratch/

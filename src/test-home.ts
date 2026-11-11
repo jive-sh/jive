@@ -1,5 +1,5 @@
 import { afterAll } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 
 /**
@@ -13,7 +13,15 @@ const testHomes = path.join(import.meta.dir, "..", "node_modules", ".cache", "ji
 mkdirSync(testHomes, { recursive: true });
 const home = mkdtempSync(path.join(testHomes, "home-"));
 for (const directory of [".config", ".cache"]) mkdirSync(path.join(home, directory));
+// A sign-in a broken build starts opens the jive.sh page with the platform's opener; these refuse instead, so no test
+// puts a browser tab on the person's screen.
+const refusingOpeners = path.join(home, "refusing-openers");
+mkdirSync(refusingOpeners);
+for (const opener of ["open", "xdg-open"]) {
+  writeFileSync(path.join(refusingOpeners, opener), "#!/bin/sh\necho 'tests never open a browser' >&2\nexit 1\n", { mode: 0o755 });
+}
 Object.assign(process.env, {
+  PATH: `${refusingOpeners}${path.delimiter}${process.env["PATH"]}`,
   HOME: home,
   XDG_CONFIG_HOME: path.join(home, ".config"),
   XDG_CACHE_HOME: path.join(home, ".cache"),

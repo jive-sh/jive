@@ -108,11 +108,12 @@ Installing registers `jive-signing-agent` and `jive-extension-daemon` to start a
 | `jive login` | Opens `https://jive.sh/login?request=…`, where you sign in with your jive.sh passkey, and waits; then fetches your account's public key (`ssh:publicKey`) into `~/.jive/ssh/account.pub`. |
 | `jive login --cicd` | In a GitHub Actions job with `id-token: write`: exchanges the job's ID token for a session of its pipeline. |
 | `jive whoami` | Prints the handle of the Jive account this machine is signed in as. |
-| `jive init` | In the git repository you are in, rewrites every .gitmodules at every depth to `https://github.com/<owner>/<repo>`, syncs them, checks out every submodule not yet checked out (one already checked out keeps its HEAD), and configures the root, every submodule and every untracked repository inside it: `gpg.format=ssh`, `user.signingKey` (the account key's public half), `commit.gpgSign=true`, `gpg.ssh.program=jive-ssh-keygen`, `core.sshCommand` through `jive-signing-agent`, and `url."git@github.com:".insteadOf "https://github.com/"` so https URLs fetch and push over SSH. Then links the packages among those repositories with each other, as `jive link` does. Nothing else, and no GitHub sign-in. |
+| `jive init` | In the git repository you are in, rewrites every .gitmodules at every depth to `https://github.com/<owner>/<repo>`, syncs them, checks out every submodule not yet checked out (one already checked out keeps its HEAD), and configures the root, every submodule and every untracked repository inside it: `gpg.format=ssh`, `user.signingKey` (the account key's public half), `commit.gpgSign=true`, `gpg.ssh.program=jive-ssh-keygen`, `core.sshCommand` through `~/.jive/signing-agent.sock`, and `url."git@github.com:".insteadOf "https://github.com/"` so https URLs fetch and push over SSH. Then links the packages among those repositories with each other (see Workspace links). Nothing else, and no GitHub sign-in. Safe to run again: a submodule already checked out keeps its HEAD, and the links are made again. |
 | `jive load <org> <repo>` | Adds a GitHub repo to the workspace as a submodule by its https URL, fetches its submodules, configures it and them as `jive init` does, runs `bun install` in it, then links it with the workspace's packages: its workspace dependencies into it, and it into every workspace package that depends on it. |
 | `jive unload <org> <repo>` | Removes every workspace link into the repo, running `bun install` in each package that had one so it gets its registry copy back, then removes the repo. |
-| `jive link [<directory>]` | Links the workspace's packages with each other again (a `bun install` in a package puts its registry copies back); with a package's directory, links only into that package. Prints each link made or left, and why. |
 | `jive on <org> <repo> -- <command…>` | Runs a command in a loaded repo's directory; its exit code is jive's. |
+| `jive ssh connect <ssh arguments…>` | Runs `ssh -o IdentityAgent=~/.jive/signing-agent.sock -o IdentityFile=~/.jive/ssh/account.pub -o IdentitiesOnly=yes <ssh arguments…>` on this terminal, so ssh signs in with your Jive key and offers no other key. Every word after `connect` goes to ssh, flags included (`jive ssh connect user@host -p 2222`); ssh's exit code is jive's. Fetches `account.pub` first when this machine has none, signing in if needed. |
+| `jive ssh sign <ssh-keygen -Y sign arguments…>` | Runs `ssh-keygen -Y sign -f ~/.jive/ssh/account.pub <arguments…>` with `SSH_AUTH_SOCK` set to the agent's socket, so the server signs with your Jive key (`jive ssh sign -n file notes.txt` writes `notes.txt.sig`). ssh-keygen's exit code is jive's. |
 | `jive provision <kind> <name>` | Makes sure a resource instance exists, e.g. `jive provision connector-package-registry @scope/name`. The instance is `./package.json`'s `jive.resources.<kind>.<name>`, or `--instance '<json>'`. Needs a pipeline session. |
 | `jive daemons` | Lists every Jive daemon registered on this machine, with its state, executable and log. |
 | `jive upgrade` | Upgrades jive with the package manager that installed it. |
@@ -126,13 +127,15 @@ A workspace's packages are separate repositories, each with its own `package.jso
 makes them use each other the way a monorepo's members do, without changing what any of them installs in CI.
 
 Every repository in the workspace whose `package.json` names a package is a member. Wherever one member depends on
-another, `jive link` (and `jive load`, `jive init`) replaces the dependent's `node_modules/<name>` with a relative
+another, `jive load` and `jive init` replace the dependent's `node_modules/<name>` with a relative
 symlink to the dependency's checkout:
 
 ```
-$ jive link packages/@jive-sh/jive
+$ jive init
+…
+0 submodule URLs moved to https; 12 repositories sign with your Jive account key and fetch and push over SSH through jive's agent
 Linked effective-modules into @jive-sh/jive: packages/effective-modules/dist/base (0.3.6)
-Left jive-abstract-library into @jive-sh/jive: jive-abstract-library's build is 0.7.0-local and its checkout 0.13.1; run `bun run jive:cicd:build` in it, then `jive link`
+Left jive-abstract-library into @jive-sh/jive: jive-abstract-library's build is 0.7.0-local and its checkout 0.13.1; run `bun run jive:cicd:build` in it, then `jive init`
 1 workspace link in place; 1 left as installed
 ```
 
@@ -147,7 +150,7 @@ Left jive-abstract-library into @jive-sh/jive: jive-abstract-library's build is 
 - **Left as installed:** a dependency the dependent names locally itself (`link:`, `file:`, `workspace:`), one `bun
   install` didn't install there (a peer dependency), one with no build or a build of another version, and a name two
   members share.
-- **A `bun install` or `bun add` in a dependent puts the registry copies back.** Run `jive link` again afterwards.
+- **A `bun install` or `bun add` in a dependent puts the registry copies back.** Run `jive init` again afterwards.
 - **Shared peers.** A linked package resolves its own imports from its checkout, so a peer it shares with the
   dependent (`effect`) is a second copy there. TypeScript needs `"preserveSymlinks": true` in the dependent's
   tsconfig to type-check against one copy, as jive's has; at run time Bun has no such option, so two copies load.
@@ -186,10 +189,17 @@ key. `jive-signing-agent` must be running (`jive daemons`).
 then:
 
 ```sh
+jive ssh connect user@host
+```
+
+which runs:
+
+```sh
 ssh -o IdentityAgent=~/.jive/signing-agent.sock -o IdentityFile=~/.jive/ssh/account.pub -o IdentitiesOnly=yes user@host
 ```
 
-To skip the flags, add a block like this to your own `~/.ssh/config`:
+`jive init` writes the same options into each repository's `core.sshCommand`, from the same code. To use them without
+jive, for example from a GUI client, add a block like this to your own `~/.ssh/config`:
 
 ```
 Host myserver
@@ -204,13 +214,21 @@ Host myserver
 with an `allowed_signers` file to check it:
 
 ```sh
-SSH_AUTH_SOCK=~/.jive/signing-agent.sock ssh-keygen -Y sign -n file -f ~/.jive/ssh/account.pub release.tar
+jive ssh sign -n file release.tar
 ```
 
-This writes `release.tar.sig`.
+which runs `SSH_AUTH_SOCK=~/.jive/signing-agent.sock ssh-keygen -Y sign -f ~/.jive/ssh/account.pub -n file release.tar`
+and writes `release.tar.sig`.
 
-What is tested, in [`src/modules/signing-agent/signing-agent.test.ts`](src/modules/signing-agent/signing-agent.test.ts)
-on macOS, with a scratch home and a fake Jive server that signs with a key the test makes:
+What is tested, in [`src/ssh.test.ts`](src/ssh.test.ts) and
+[`src/modules/signing-agent/signing-agent.test.ts`](src/modules/signing-agent/signing-agent.test.ts), with a scratch
+home and a fake Jive server that signs with a key the test makes:
+- `jive ssh connect` with no `account.pub` fetches it, then logs in to the sshd below through the agent and runs a
+  command there; with `account.pub` kept it asks the server for no key, passes ssh's exit code on, and gives ssh a real
+  terminal (`ssh -t` under `script`).
+- `jive ssh sign -n file` writes a signature `ssh-keygen -Y verify` accepts, and passes ssh-keygen's exit code on.
+- `jive ssh connect` and `jive init` build ssh's options from the same function, and `core.sshCommand` is unchanged
+  from 0.6.0, character for character.
 - `ssh` logs in to an sshd on the same machine and runs a command there. The sshd runs as the person running the
   test, and only the account key is in its `authorized_keys`. The test passes the `ssh` options above with absolute
   paths, and with `-F /dev/null`, so no `~/.ssh/config` is read.

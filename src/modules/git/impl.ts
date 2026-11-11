@@ -4,7 +4,7 @@ import { implementing, type EffectGen } from "effective-modules";
 import { OSPlatform } from "jive-abstract-library";
 import { SSH_KEYGEN_COMMAND_NAME, TOOL_NAME, installedCommandPath } from "@/constants";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
-import { jiveHomePaths } from "@/jive-home";
+import { sshCommandLineThroughAgent } from "@/modules/signing-agent/ssh-clients";
 import { modules } from "@/modules";
 import type { AccountKey } from "@/modules/account-key/interface";
 import { GITHUB_HTTPS, GITHUB_SSH, githubHttpsUrl, repoOfGitHubRemote } from "./github-remote";
@@ -203,8 +203,7 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, O
   }
 
   private *sshCommand(accountKey: AccountKey): EffectGen<string> {
-    const { agentSocket } = jiveHomePaths(yield* this.dependencies.OSPlatform.getHomeDirectory());
-    return `ssh -o IdentityAgent=${JSON.stringify(agentSocket)} -o IdentityFile=${JSON.stringify(accountKey.publicKeyFile)} -o IdentitiesOnly=yes`;
+    return sshCommandLineThroughAgent({ homeDirectory: yield* this.dependencies.OSPlatform.getHomeDirectory(), publicKeyFile: accountKey.publicKeyFile });
   }
 
   private *installedCommand(commandName: string): EffectGen<string> {

@@ -212,7 +212,6 @@ function dependenciesOf(manifest: PackageManifest): ReadonlyMap<string, string> 
 function inScope({ scope, scopeDirectory, dependent, dependency }: { readonly scope: LinkScope; readonly scopeDirectory: e.Option.Option<string>; readonly dependent: string; readonly dependency: string }): boolean {
   return e.pipe(scope, LinkScope.$match({
     Workspace: () => true,
-    Into: () => e.Option.contains(scopeDirectory, dependent),
     Touching: () => e.Option.contains(scopeDirectory, dependent) || e.Option.contains(scopeDirectory, dependency),
   }));
 }

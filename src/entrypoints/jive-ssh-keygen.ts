@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { jiveHomePaths } from "@/jive-home";
+import { sshKeygenEnvironmentThroughAgent } from "@/modules/signing-agent/ssh-clients";
 
 /**
  * What git runs to sign (`gpg.ssh.program`): ssh-keygen with its arguments untouched, pointed at the signing agent,
@@ -9,7 +9,7 @@ const result = Bun.spawnSync(["ssh-keygen", ...Bun.argv.slice(2)], {
   stdin: "inherit",
   stdout: "inherit",
   stderr: "inherit",
-  env: { ...process.env, SSH_AUTH_SOCK: jiveHomePaths(homedir()).agentSocket },
+  env: sshKeygenEnvironmentThroughAgent({ inherited: process.env, homeDirectory: homedir() }),
 });
 
 process.exit(result.exitCode ?? 1);
