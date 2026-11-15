@@ -2,7 +2,7 @@ import * as e from "effect";
 import { implementing, type EffectGen } from "effective-modules";
 import { TOOL_NAME } from "@/constants";
 import { modules } from "@/modules";
-import { ProvisionAnswer } from "@/modules/jive-server/interface";
+import { ProvisionAnswer, jiveServerFailure } from "@/modules/jive-server/interface";
 import { ProvisionFailed, type IProvisioning } from "./interface";
 
 const IN_PROGRESS_TIMEOUT_MS = 10 * 60 * 1000;
@@ -19,7 +19,7 @@ export class ProvisioningImpl extends implementing(modules.provisioning).uses(mo
     while (true) {
       const answer = yield* e.pipe(
         e.Effect.gen(() => jiveServer.provision({ session: maybeSession.value, kind, instance })),
-        e.Effect.mapError(({ reason }) => new ProvisionFailed({ reason: `the server could not provision ${kind}: ${reason}` })),
+        e.Effect.mapError((error) => new ProvisionFailed({ reason: `the server could not provision ${kind}: ${jiveServerFailure(error)}` })),
       );
       if (ProvisionAnswer.$is("Ready")(answer)) return { instanceId: answer.instanceId };
       if (ProvisionAnswer.$is("Refused")(answer)) {

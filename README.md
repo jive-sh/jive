@@ -98,28 +98,38 @@ versions it builds with.
 bun add -g @jive-sh/jive
 ```
 
-Installing registers `jive-signing-agent` and `jive-extension-daemon` to start at login (a LaunchAgent on macOS, a
-`systemctl --user` unit on Linux, a scheduled task on Windows).
+Installing registers `jive-daemon` to start at login (a LaunchAgent on macOS, a
+`systemctl --user` unit on Linux, which starts at boot because the installer turns on `loginctl enable-linger` for
+you, a scheduled task on Windows).
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `jive login` | Opens `https://jive.sh/login?request=…`, where you sign in with your jive.sh passkey, and waits; then fetches your account's public key (`ssh:publicKey`) into `~/.jive/ssh/account.pub`. |
+| `jive login` | Opens `https://jive.sh/login?request=…`, where you sign in with your jive.sh passkey, and waits; then prints the account you signed in as, saves its handle beside the session, and fetches your account's public key (`ssh:publicKey`) into `~/.jive/ssh/account.pub`. |
 | `jive login --cicd` | In a GitHub Actions job with `id-token: write`: exchanges the job's ID token for a session of its pipeline. |
-| `jive whoami` | Prints the handle of the Jive account this machine is signed in as. |
-| `jive init` | In the git repository you are in, rewrites every .gitmodules at every depth to `https://github.com/<owner>/<repo>`, syncs them, checks out every submodule not yet checked out (one already checked out keeps its HEAD), and configures the root, every submodule and every untracked repository inside it: `gpg.format=ssh`, `user.signingKey` (the account key's public half), `commit.gpgSign=true`, `gpg.ssh.program=jive-ssh-keygen`, `core.sshCommand` through `~/.jive/signing-agent.sock`, and `url."git@github.com:".insteadOf "https://github.com/"` so https URLs fetch and push over SSH. Then links the packages among those repositories with each other (see Workspace links). Nothing else, and no GitHub sign-in. Safe to run again: a submodule already checked out keeps its HEAD, and the links are made again. |
+| `jive whoami` | Prints the handle of the Jive account this machine is signed in as, as `jive-daemon` reports it. When the server can't be reached it prints the handle saved at the last check, followed by `(not confirmed: can't reach Jive's server)`. |
+| `jive init` | In the git repository you are in, rewrites every .gitmodules at every depth to `https://github.com/<owner>/<repo>`, syncs them, checks out every submodule not yet checked out (one already checked out keeps its HEAD), and configures the root, every submodule and every untracked repository inside it: `gpg.format=ssh`, `user.signingKey` (the account key's public half), `commit.gpgSign=true`, `gpg.ssh.program=jive-ssh-sign`, `core.sshCommand=jive-ssh`, `ssh.variant=ssh`, and `url."git@github.com:".insteadOf "https://github.com/"` so https URLs fetch and push over SSH. Then links the packages among those repositories with each other (see Workspace links). Nothing else, and no GitHub sign-in. Safe to run again: a submodule already checked out keeps its HEAD, and the links are made again. |
 | `jive load <org> <repo>` | Adds a GitHub repo to the workspace as a submodule by its https URL, fetches its submodules, configures it and them as `jive init` does, runs `bun install` in it, then links it with the workspace's packages: its workspace dependencies into it, and it into every workspace package that depends on it. |
 | `jive unload <org> <repo>` | Removes every workspace link into the repo, running `bun install` in each package that had one so it gets its registry copy back, then removes the repo. |
 | `jive on <org> <repo> -- <command…>` | Runs a command in a loaded repo's directory; its exit code is jive's. |
-| `jive ssh connect <ssh arguments…>` | Runs `ssh -o IdentityAgent=~/.jive/signing-agent.sock -o IdentityFile=~/.jive/ssh/account.pub -o IdentitiesOnly=yes <ssh arguments…>` on this terminal, so ssh signs in with your Jive key and offers no other key. Every word after `connect` goes to ssh, flags included (`jive ssh connect user@host -p 2222`); ssh's exit code is jive's. Fetches `account.pub` first when this machine has none, signing in if needed. |
-| `jive ssh sign <ssh-keygen -Y sign arguments…>` | Runs `ssh-keygen -Y sign -f ~/.jive/ssh/account.pub <arguments…>` with `SSH_AUTH_SOCK` set to the agent's socket, so the server signs with your Jive key (`jive ssh sign -n file notes.txt` writes `notes.txt.sig`). ssh-keygen's exit code is jive's. |
 | `jive provision <kind> <name>` | Makes sure a resource instance exists, e.g. `jive provision connector-package-registry @scope/name`. The instance is `./package.json`'s `jive.resources.<kind>.<name>`, or `--instance '<json>'`. Needs a pipeline session. |
 | `jive daemons` | Lists every Jive daemon registered on this machine, with its state, executable and log. |
 | `jive upgrade` | Upgrades jive with the package manager that installed it. |
 
 `--help`, `--version` and Tab completion (`jive --setup-completion`) work as for every command built with
 `jive-abstract-library`'s `Cli`.
+
+Two more commands are installed beside `jive`, for git and for you:
+
+| Command | What it does |
+| --- | --- |
+| `jive-ssh <ssh arguments…>` | ssh with your Jive key and no other: runs `ssh -o IdentityAgent=~/.jive/signing-agent.sock -o IdentityFile=~/.jive/ssh/account.pub -o IdentitiesOnly=yes <ssh arguments…>`, after asking `jive-daemon` whether the key can sign (see How signing works). git runs it as `core.sshCommand`. ssh's exit code is its own; a refusal exits 255, as ssh does. |
+| `jive-ssh-sign <ssh-keygen arguments…>` | git's `gpg.ssh.program`: stock ssh-keygen with every argument unchanged and `SSH_AUTH_SOCK` set to the agent's socket, so `-Y sign -f ~/.jive/ssh/account.pub` signs with your Jive key. Before `-Y sign` it makes the same check; git's other uses (`-Y verify`, `-Y find-principals`, `-Y check-novalidate`) and anything else run as plain ssh-keygen would. ssh-keygen's exit code is its own. |
+
+`jive-ssh-keygen`, the signing program jive 0.7.0 configured, is still installed but only refuses: git shows
+`jive-ssh-keygen was replaced by jive-ssh-sign in jive 0.8.0; run jive init in <repository> to update its git config`.
+A repository 0.7.0 configured keeps pushing, since its `core.sshCommand` names the same agent socket.
 
 ## Workspace links
 
@@ -165,41 +175,60 @@ you run), and its links are undone by the same `bun install`.
 
 Your SSH key lives with your Jive account on [`@jive-sh/server`](https://github.com/jive-sh/server); this machine keeps
 only its public key (`~/.jive/ssh/account.pub`). A session comes only from your passkey (`jive login`) or, for a
-pipeline, its GitHub OIDC token (`jive login --cicd`), and is kept in `~/.jive/session.json` (owner-only). A passkey
-session ends a day after its last use: each signature moves its end a day on, on the server, so a machine that signs at
-least daily stays signed in, and jive asks you to sign in again only when the server refuses the session. A pipeline's
-session lasts an hour.
-`jive-signing-agent` serves the SSH agent protocol on `~/.jive/signing-agent.sock`: it lists the public key and sends
-each request's bytes to the server's `ssh:sign`, opening the sign-in page itself when no session is live. That covers
+pipeline, its GitHub OIDC token (`jive login --cicd`), and is kept in `~/.jive/session.json` (owner-only), with the
+handle of its account as the server last confirmed it. A passkey session ends a day after its last use: each signature
+moves its end a day on, on the server, so a machine that signs at least daily stays signed in; once the server refuses
+the session, signing stops and says to run `jive login`. A pipeline's session lasts an hour.
+`jive-daemon` serves the SSH agent protocol on `~/.jive/signing-agent.sock`: it lists the public key and sends
+each request's bytes to the server's `ssh:sign`. It never signs you in: with no live session it refuses. That covers
 git commit signatures and GitHub's SSH authentication alike: each repository `jive init` or `jive load` configures signs
-through `jive-ssh-keygen` (ssh-keygen pointed at the agent), and fetches and pushes over SSH with `core.sshCommand`
-through the agent. jive holds no GitHub token and never signs in to GitHub; GitHub must know the account key's public
-half as an SSH and signing key. Signing needs `ssh-keygen` (OpenSSH) on PATH.
+through `jive-ssh-sign` and fetches and pushes over SSH through `jive-ssh`. jive holds no GitHub token and never signs
+in to GitHub; GitHub must know the account key's public half as an SSH and signing key. Signing needs `ssh` and
+`ssh-keygen` (OpenSSH) on PATH.
+
+The SSH agent protocol refuses with one byte and no reason, which ssh reports as `agent refused operation` and then
+`Permission denied (publickey)`. So before ssh or ssh-keygen runs, `jive-ssh` and `jive-ssh-sign` ask `jive-daemon` on
+its own socket, `~/.jive/jive-daemon.sock`, who is signed in (`GetSession`, which checks with the server), and stop
+with the reason when the key can't sign:
+
+```text
+jive-ssh: not signed in to Jive; run `jive login`
+jive-ssh: your computer can't reach Jive's server (https://…) to sign as <you>; reconnect and run the command again
+jive-ssh: jive's daemon is not running; run `jive daemons` to see why; `jive upgrade` registers and starts it again, and so does logging in again
+```
+
+`jive-ssh-sign` says the same, named `jive-ssh-sign:`. The server check gives up after 5 seconds, so a network that
+swallows requests reads as unreachable.
 
 jive never writes to `~/.ssh`: no key file and no `~/.ssh/config` block. Everything it sets up is per repository.
 
 ## Using your Jive key for other SSH
 
-Your Jive key works for anything that takes an SSH key, not only git and GitHub. Point the tool at two files jive
-keeps: the public key, `~/.jive/ssh/account.pub`, and the agent's socket, `~/.jive/signing-agent.sock`. The agent
-signs any request for that key, opening the sign-in page when no session is live, and refuses requests for any other
-key. `jive-signing-agent` must be running (`jive daemons`).
+Your Jive key works for anything that takes an SSH key, not only git and GitHub. `jive-ssh` stands in for ssh and
+`jive-ssh-sign` for ssh-keygen; signing with either needs `jive-daemon` running (`jive daemons`).
 
 **Sign in to an SSH server.** Add the contents of `~/.jive/ssh/account.pub` to `~/.ssh/authorized_keys` on the server,
 then:
 
 ```sh
-jive ssh connect user@host
+jive-ssh user@host
 ```
 
-which runs:
+Every argument goes to ssh after jive's three options. ssh keeps the first value of an option, so `jive-ssh` names on
+stderr each option of yours that changes nothing or more than you may expect:
 
-```sh
-ssh -o IdentityAgent=~/.jive/signing-agent.sock -o IdentityFile=~/.jive/ssh/account.pub -o IdentitiesOnly=yes user@host
+```text
+$ jive-ssh -o IdentitiesOnly=no -o IdentityFile=~/.ssh/other -A user@host
+jive-ssh: warning: -o IdentitiesOnly=no has no effect: jive-ssh passes IdentitiesOnly=yes first, and ssh keeps the first value
+jive-ssh: warning: -o IdentityFile=~/.ssh/other adds a second key: ssh offers your Jive account key, ~/.jive/ssh/account.pub, first, then ~/.ssh/other
+jive-ssh: warning: -A forwards jive's agent: while you are connected, the remote host can sign as <you> with your Jive key
 ```
 
-`jive init` writes the same options into each repository's `core.sshCommand`, from the same code. To use them without
-jive, for example from a GUI client, add a block like this to your own `~/.ssh/config`:
+`-i` is refused, even naming the Jive key: `jive-ssh` always logs in with your Jive key, so log in with another key
+with plain `ssh -i <key>`. `-G`, which only prints ssh's configuration, runs without asking the daemon.
+
+To use the key without jive, for example from a GUI client, add a block like this to your own `~/.ssh/config`. That
+client talks to the agent directly, so a refusal there reads only `agent refused operation`; `jive whoami` says why.
 
 ```
 Host myserver
@@ -210,43 +239,54 @@ Host myserver
   IdentitiesOnly yes
 ```
 
-**Sign a file, or anything else.** Use `ssh-keygen -Y sign` with your own namespace (`-n`), and `ssh-keygen -Y verify`
-with an `allowed_signers` file to check it:
+**Sign a file, or anything else.** Use `jive-ssh-sign -Y sign` with your own namespace (`-n`), and `ssh-keygen -Y
+verify` with an `allowed_signers` file to check it:
 
 ```sh
-jive ssh sign -n file release.tar
+jive-ssh-sign -Y sign -f ~/.jive/ssh/account.pub -n file release.tar
 ```
 
-which runs `SSH_AUTH_SOCK=~/.jive/signing-agent.sock ssh-keygen -Y sign -f ~/.jive/ssh/account.pub -n file release.tar`
-and writes `release.tar.sig`.
+which runs `SSH_AUTH_SOCK=~/.jive/signing-agent.sock ssh-keygen -Y sign -f ~/.jive/ssh/account.pub -n file
+release.tar` and writes `release.tar.sig`.
 
-What is tested, in [`src/ssh.test.ts`](src/ssh.test.ts) and
-[`src/modules/signing-agent/signing-agent.test.ts`](src/modules/signing-agent/signing-agent.test.ts), with a scratch
-home and a fake Jive server that signs with a key the test makes:
-- `jive ssh connect` with no `account.pub` fetches it, then logs in to the sshd below through the agent and runs a
-  command there; with `account.pub` kept it asks the server for no key, passes ssh's exit code on, and gives ssh a real
-  terminal (`ssh -t` under `script`).
-- `jive ssh sign -n file` writes a signature `ssh-keygen -Y verify` accepts, and passes ssh-keygen's exit code on.
-- `jive ssh connect` and `jive init` build ssh's options from the same function, and `core.sshCommand` is unchanged
-  from 0.6.0, character for character.
-- `ssh` logs in to an sshd on the same machine and runs a command there. The sshd runs as the person running the
-  test, and only the account key is in its `authorized_keys`. The test passes the `ssh` options above with absolute
-  paths, and with `-F /dev/null`, so no `~/.ssh/config` is read.
-- `ssh-keygen -Y sign -n file` signs a file through the agent, and `ssh-keygen -Y verify -n file` accepts the
-  signature.
+What is tested, in [`src/ssh.test.ts`](src/ssh.test.ts),
+[`src/modules/signing-agent/signing-agent.test.ts`](src/modules/signing-agent/signing-agent.test.ts) and
+[`src/workspace-cutover.test.ts`](src/workspace-cutover.test.ts), with a scratch home and a fake Jive server that
+signs with a key the test makes and can be made unreachable:
+- `jive-ssh` and `jive-ssh-sign` run as processes, as git runs them, against jive-daemon's two sockets. `jive-ssh` logs
+  in to an sshd on the same machine that accepts only the account key, passes git's `-o SendEnv=GIT_PROTOCOL` and
+  ssh's exit code on, and prints nothing of its own. `jive-ssh-sign -Y sign` signs through the agent, and
+  `-Y verify`, `-Y find-principals`, `-Y check-novalidate`, `-l` and key generation pass to ssh-keygen unchanged
+  without asking the daemon.
+- Not signed in, the server unreachable and the daemon not running: each command prints exactly the line above, exits
+  255, and nothing signs or opens a sign-in. `-i` in each spelling is refused with its message; the ignored `-o`
+  options and `-A` warn with the lines above; `-G` prints exactly what plain ssh with jive's options prints.
+- `jive whoami` prints the confirmed account, the saved one marked unconfirmed while offline, and the fix when signed
+  out or when no daemon runs.
+- Upgrading from 0.7.0 ([`src/upgrade-from-0.7.0.test.ts`](src/upgrade-from-0.7.0.test.ts)): the built installer removes the
+  `jive-signing-agent` and `jive-extension-daemon` registrations and stops them, and `jive-daemon`, registered in their
+  place, waits for them to exit and serves both sockets. The service manager is a fake that, like launchd's `bootout`,
+  returns before a stopped daemon has exited; the test needs `bun run jive:cicd:build` first, and CI runs it.
+- The agent refuses a sign request with no session, and one whose session the server has ended, without opening a
+  sign-in; an unreachable server fails a sign request without asking the server a second time.
+- After `jive init`, a commit is signed through `jive-ssh-sign`, verifies, and is pushed through `jive-ssh` to the
+  sshd.
 
-Not tested: a remote server, the `~/.ssh/config` block (it sets the same options as the command), and Linux.
+Not tested: a remote server, the `~/.ssh/config` block (it sets the same options as `jive-ssh`), and Linux.
 
 ## The Jive browser extension
 
 The Jive browser extension (`@jive-sh/extension`, a proof of concept) signs this machine in to Jive and collects
 credentials from the person's own signed-in browser, such as an npm token. It never holds the session: it asks
-`jive-extension-daemon`, which uses the same session `jive login` keeps in `~/.jive/session.json`. The session goes
+`jive-daemon`, which uses the same session `jive login` keeps in `~/.jive/session.json`. The session goes
 from Jive to the daemon and never passes through the browser or the extension.
 
 - **Native host.** Chrome starts a program when the extension calls `chrome.runtime.connectNative("sh.jive.daemon")`.
   Chrome can only start a host, never attach to a running process, so `jive-native-host` relays each message to the
-  daemon's socket, `~/.jive/extension-daemon.sock` (owner-only), without reading it.
+  daemon's socket, `~/.jive/jive-daemon.sock` (owner-only), without reading it.
+- **Page script.** On `https://www.npmjs.com/*` and `https://npmjs.com/*`, `page.js` runs in the page's own world at
+  the start of the document and wraps `navigator.credentials.create` and `get` only when the call carries `publicKey`.
+  An isolated script relays that ask to the service worker, which is the only extension page that calls `connectNative`.
 - **Registration with Chrome.** At each start the daemon writes the host manifest,
   `~/Library/Application Support/{Google/Chrome,Chromium}/NativeMessagingHosts/sh.jive.daemon.json` on macOS and
   `~/.config/{google-chrome,chromium}/NativeMessagingHosts/` on Linux, only where that browser is installed. It allows
@@ -261,11 +301,13 @@ mismatch is refused with which side to upgrade.
 
 | Request | Response |
 | --- | --- |
-| `GetSession` | `SignedOut`, `SigningIn { loginUrl, expiresAt }` or `SignedIn { expiresAt }` |
+| `GetSession` | `SignedOut`, `SigningIn { loginUrl, expiresAt }`, `SignedIn { username, expiresAt, confirmedByServer, unreachableServerUrl }`, or `Failed { message }` when the server refused to check the session. `confirmedByServer` is false when the server could not be reached: `username` and `expiresAt` are then the ones saved at the last check, and `unreachableServerUrl` names the server. `jive-ssh`, `jive-ssh-sign` and `jive whoami` send it on the daemon socket directly. |
 | `StartSignIn` | `SigningIn`, or `SignInFailed { reason }` when Jive can't be reached |
-| `SignOut` | `SignedOut`. Forgets this machine's session, so `jive` and `jive-signing-agent` sign in again too. |
+| `SignOut` | `SignedOut`. Forgets this machine's session, so `jive` signs in again too. |
 | `GetNpmConnectionReadiness` | `Ready` or `NotReady { reason }`. The extension asks this before it changes anything on npm. |
-| `PostNpmCredential { credential: { npmUser, token, totpSecret } }` | `Posted` or `Refused { reason }` |
+| `PostNpmCredential { credential: { npmUser, token } }` | `Posted` or `Refused { reason }` |
+| `PrepareSigningPasskey { repositoryOwner, repositoryName }` | `SigningPasskeyPrepared`. Stores that repository in `~/.jive/signing-passkey-repository.json` and uses it after a restart. Sent on the daemon socket by the program that opens npm's page, because the page does not name a repository. |
+| `AnswerSecurityKey { kind, challenge, rpId, origin, crossOrigin }` | `SecurityKeyAnswer` or `SecurityKeyRefused { reason }`. `kind` is `create` or `get`. `challenge` is the page's challenge, base64url. The answer's byte strings are standard base64: `credentialId`, `clientDataJSON`, `authenticatorData`, `signature`, and `attestationObject` on `create` only. The daemon sends `authenticatorData` concatenated with the SHA-256 of `clientDataJSON` to `signingPasskey:sign`. The server returns raw ECDSA `r‖s` and does not interpret those bytes. |
 
 No response carries the session token, the claim secret or a credential.
 

@@ -3,10 +3,12 @@ import { name } from "../package.json";
 
 export const PACKAGE_NAME = name;
 export const TOOL_NAME = "jive";
-/** What git runs to sign (`gpg.ssh.program`): ssh-keygen, pointed at the signing agent's socket. */
-export const SSH_KEYGEN_COMMAND_NAME = "jive-ssh-keygen";
-/** The daemon that answers the Jive browser extension (`src/daemons/`). */
-export const EXTENSION_DAEMON_NAME = "jive-extension-daemon";
+/** ssh with the account key through the signing agent (`src/entrypoints/jive-ssh.ts`): git's `core.sshCommand`. */
+export const SSH_COMMAND_NAME = "jive-ssh";
+/** ssh-keygen's signing through the signing agent (`src/entrypoints/jive-ssh-sign.ts`): git's `gpg.ssh.program`. */
+export const SIGNING_COMMAND_NAME = "jive-ssh-sign";
+/** The one daemon (`src/daemons/jive-daemon.ts`): the SSH agent socket and its API socket. */
+export const DAEMON_NAME = "jive-daemon";
 /** What Chrome starts when the extension connects: it relays the extension's messages to the extension daemon. */
 export const NATIVE_HOST_COMMAND_NAME = "jive-native-host";
 

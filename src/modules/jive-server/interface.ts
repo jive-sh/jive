@@ -49,11 +49,33 @@ export type ProvisionAnswer = e.Data.TaggedEnum<{
 }>;
 export const ProvisionAnswer = e.Data.taggedEnum<ProvisionAnswer>();
 
-/** The server could not be reached, or refused the call. Never carries a token, claim secret or signature. */
-export class JiveServerError extends e.Data.TaggedError("JiveServerError")<{
+/**
+ * No answer came from the server at `url`: offline, DNS, TLS or a dropped connection. `transportFailure` is the HTTP
+ * client's own name for it (`TransportError`). Never carries a token, claim secret or signature.
+ */
+export class JiveServerUnreachable extends e.Data.TaggedError("JiveServerUnreachable")<{
+  readonly call: string;
+  readonly url: string;
+  readonly transportFailure: string;
+}> {}
+
+/** The server answered, but with an error or in a shape jive doesn't read. Never carries a token, claim secret or signature. */
+export class JiveServerRefused extends e.Data.TaggedError("JiveServerRefused")<{
   readonly call: string;
   readonly reason: string;
 }> {}
+
+export type JiveServerError = JiveServerUnreachable | JiveServerRefused;
+
+/** What went wrong with a server call, in words for a log or a person. */
+export function jiveServerFailure(error: JiveServerError): string {
+  switch (error._tag) {
+    case "JiveServerUnreachable":
+      return `could not reach ${error.url}: ${error.transportFailure}`;
+    case "JiveServerRefused":
+      return error.reason;
+  }
+}
 
 /** The audience a CI/CD job's ID token is minted for: it names Jive's API, whichever deployment serves it. */
 export const JIVE_API_AUDIENCE = "https://api.jive.sh";
@@ -80,6 +102,26 @@ export interface IJiveServer {
    * (`string "ssh-ed25519" || string <signature>`), what an SSH agent answers a sign request with.
    */
   signWithSshKey(session: Session, data: Uint8Array): EffectGen<Uint8Array, JiveServerError>;
+  /**
+   * The organization's signing passkey (`signingPasskey:ensure`), creating it on the first call. The private key
+   * stays in the accountKeys component. `credentialId` is base64url and `publicKeySpki` is standard base64.
+   */
+  ensureSigningPasskey(input: {
+    readonly session: Session;
+    readonly repositoryOwner: string;
+    readonly repositoryName: string;
+  }): EffectGen<{ readonly credentialId: string; readonly publicKeySpki: string }, JiveServerError>;
+  /**
+   * Signs `challenge` with that passkey (`signingPasskey:sign`). `challenge` is the bytes the passkey signs. The
+   * server returns the raw ECDSA signature, `r‖s`, and does not interpret the bytes. Callers pass
+   * `authenticatorData` concatenated with `sha256(clientDataJSON)`, because the server hashes the bytes once.
+   */
+  signWithSigningPasskey(input: {
+    readonly session: Session;
+    readonly repositoryOwner: string;
+    readonly repositoryName: string;
+    readonly challenge: Uint8Array;
+  }): EffectGen<Uint8Array, JiveServerError>;
   /**
    * Asks the server to make sure one instance of a resource kind exists (`provision`). The caller names the kind,
    * e.g. `connector-package-registry`, never the implementation: the session's organization has one configured.

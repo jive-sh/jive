@@ -5,7 +5,9 @@ import { PACKAGE_NAME, TOOL_NAME } from "@/constants";
 import { BadArgumentError, BadPreconditionsError, NotLoggedInError } from "@/errors";
 import { modules } from "@/modules";
 import { LinkResult, LinkScope, type WorkspaceLink } from "@/modules/bun/interface";
-import { sshArgumentsThroughAgent, sshKeygenEnvironmentThroughAgent } from "@/modules/signing-agent/ssh-clients";
+import { accountKeyFailure } from "@/modules/account-key/interface";
+import { jiveServerFailure } from "@/modules/jive-server/interface";
+import { daemonProblem } from "@/modules/ssh-wrappers/signing-session";
 import { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
 
 /** Tab after an org lists the repos already loaded under it in this workspace. */
@@ -74,30 +76,6 @@ export const jive = Cli.make(TOOL_NAME, {
     },
   }))),
 
-  ssh: {
-    connect: Cli.passThroughCommand({
-      description: "run ssh with your Jive account key, through jive's agent, and no other key; every word after connect goes to ssh, e.g. `connect git@github.com` or `connect user@host -p 2222`",
-      *run({ args }) {
-        const { publicKeyFile } = yield* accountKeyOnThisMachine();
-        const homeDirectory = yield* (yield* OSPlatform).getHomeDirectory();
-        yield* runInThisTerminal({ command: "ssh", args: [...sshArgumentsThroughAgent({ homeDirectory, publicKeyFile }), ...args] });
-      },
-    }),
-    sign: Cli.passThroughCommand({
-      description: "sign with your Jive account key, through jive's agent: runs `ssh-keygen -Y sign -f <your account.pub>` with the words after sign, e.g. `sign -n file notes.txt` writes notes.txt.sig",
-      *run({ args }) {
-        const { publicKeyFile } = yield* accountKeyOnThisMachine();
-        const homeDirectory = yield* (yield* OSPlatform).getHomeDirectory();
-        const inherited = yield* e.Effect.sync(() => process.env);
-        yield* runInThisTerminal({
-          command: "ssh-keygen",
-          args: ["-Y", "sign", "-f", publicKeyFile, ...args],
-          env: sshKeygenEnvironmentThroughAgent({ inherited, homeDirectory }),
-        });
-      },
-    }),
-  },
-
   login: Cli.command({
     description: "sign in to Jive with your jive.sh passkey and fetch your account's public key, which git signing and pushes use",
     flags: {
@@ -111,34 +89,36 @@ export const jive = Cli.make(TOOL_NAME, {
       );
       const ends = new Date(session.expiresAt).toLocaleString();
       if (flags.cicd) return yield* e.Effect.log(`Signed in to Jive until ${ends}`);
+      // Asking whose session it is also saves the username, so jive-daemon can say who is signed in while offline.
+      const maybeAccount = yield* e.pipe(
+        e.Effect.gen(() => sessions.checkWithServer(session)),
+        e.Effect.mapError((error) => BadPreconditionsError.withoutFix("Signed in, but could not ask Jive whose session it is", jiveServerFailure(error))),
+      );
+      if (e.Option.isNone(maybeAccount)) {
+        return yield* BadPreconditionsError.fromNotLoggedInError(new NotLoggedInError({ reason: "Jive ended the new session at once" }));
+      }
       // A person's session moves its end a day on with each use, on the server.
-      yield* e.Effect.log(`Signed in to Jive; the session ends ${ends} unless this machine uses it before then`);
+      yield* e.Effect.log(`Signed in to Jive as ${maybeAccount.value.username}; the session ends ${ends} unless this machine uses it before then`);
       // A person's machine signs with the account key, which lives on the server; this keeps its public half.
       const accountKeys = yield* modules.accountKey;
       const { publicKeyFile } = yield* e.pipe(
         e.Effect.gen(() => accountKeys.ensure()),
-        e.Effect.mapError(({ reason }) => BadPreconditionsError.withoutFix("Could not fetch your account's SSH key", reason)),
+        e.Effect.mapError((error) => BadPreconditionsError.withoutFix("Could not fetch your account's SSH key", accountKeyFailure(error))),
       );
       yield* e.Effect.log(`Your account's public key is at ${publicKeyFile}`);
     },
   }),
 
   whoami: Cli.command({
-    description: "print the handle of the Jive account this machine is signed in as",
+    description: "print the handle of the Jive account this machine is signed in as, as jive-daemon reports it",
     *run() {
-      const sessions = yield* modules.session;
-      const maybeSession = yield* sessions.current();
-      if (e.Option.isNone(maybeSession)) {
-        return yield* BadPreconditionsError.fromNotLoggedInError(new NotLoggedInError({}));
-      }
-      const maybeAccount = yield* e.pipe(
-        e.Effect.gen(() => sessions.checkWithServer(maybeSession.value)),
-        e.Effect.mapError(({ reason }) => BadPreconditionsError.withoutFix("Could not reach the Jive server", reason)),
-      );
-      if (e.Option.isNone(maybeAccount)) {
-        return yield* BadPreconditionsError.fromNotLoggedInError(new NotLoggedInError({ reason: "Jive ended this machine's session" }));
-      }
-      yield* e.Effect.log(maybeAccount.value.username);
+      const daemonClient = yield* modules.daemonClient;
+      const answer = yield* e.Effect.result(e.Effect.gen(() => daemonClient.getSession()));
+      if (e.Result.isFailure(answer)) return yield* new BadPreconditionsError(daemonProblem(answer.failure));
+      const status = answer.success;
+      if (status._tag !== "SignedIn") return yield* BadPreconditionsError.fromNotLoggedInError(new NotLoggedInError({}));
+      const account = status.username !== undefined ? status.username : "an account whose name this machine has not saved yet";
+      yield* e.Effect.log(status.confirmedByServer ? account : `${account} (not confirmed: can't reach Jive's server)`);
     },
   }),
 
@@ -148,7 +128,7 @@ export const jive = Cli.make(TOOL_NAME, {
       const git = yield* modules.git;
       const root = yield* git.repositoryRoot(yield* (yield* OSPlatform).getCurrentDirectory());
       const key = yield* accountKey();
-      const rewritten = yield* git.checkOutSubmodulesOverHttps(root, key);
+      const rewritten = yield* git.checkOutSubmodulesOverHttps(root);
       const repositories = yield* git.repositoriesUnder(root);
       for (const repository of repositories) {
         yield* git.configureRepository(repository, key);
@@ -240,16 +220,8 @@ function accountKey() {
     const accountKeys = yield* modules.accountKey;
     return yield* e.pipe(
       e.Effect.gen(() => accountKeys.ensure()),
-      e.Effect.mapError(({ reason }) => new BadPreconditionsError({ cause: reason, fix: `Run \`${TOOL_NAME} login\`, then this again` })),
+      e.Effect.mapError((error) => new BadPreconditionsError({ cause: accountKeyFailure(error), fix: `Run \`${TOOL_NAME} login\`, then this again` })),
     );
-  });
-}
-
-/** The account key this machine keeps, fetched first as `accountKey()` does when it keeps none. */
-function accountKeyOnThisMachine() {
-  return e.Effect.gen(function* () {
-    const maybeKept = yield* (yield* modules.accountKey).cached();
-    return e.Option.isSome(maybeKept) ? maybeKept.value : yield* accountKey();
   });
 }
 
@@ -257,11 +229,10 @@ function accountKeyOnThisMachine() {
  * Runs a command on this terminal, its input and output being the person's own, and passes its exit code on as
  * jive's. The command shows its own errors, so a nonzero exit adds nothing to them.
  */
-function runInThisTerminal({ command, args, cwd, env }: {
+function runInThisTerminal({ command, args, cwd }: {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly cwd?: string;
-  readonly env?: Record<string, string | undefined>;
 }) {
   return e.Effect.gen(function* () {
     const osPlatform = yield* OSPlatform;
@@ -269,7 +240,7 @@ function runInThisTerminal({ command, args, cwd, env }: {
       return yield* BadPreconditionsError.commandNotFound(command);
     }
     const { exitCode } = yield* e.pipe(
-      e.Effect.gen(() => osPlatform.spawnProcess({ command, args, cwd, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" })),
+      e.Effect.gen(() => osPlatform.spawnProcess({ command, args, cwd, stdin: "inherit", stdout: "inherit", stderr: "inherit" })),
       e.Effect.mapError(message => BadPreconditionsError.withoutFix(`Failed to run ${command}`, message)),
     );
     if (exitCode !== 0) {

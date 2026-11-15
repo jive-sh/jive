@@ -26,7 +26,9 @@ test("--version prints the package's version", async () => {
 test("--help lists the commands", async () => {
   const { exitCode, stdout } = await jive("--help");
   expect(exitCode).toBe(0);
-  for (const command of ["load", "unload", "on", "ssh", "login", "whoami"]) expect(stdout).toContain(command);
+  for (const command of ["load", "unload", "on", "login", "whoami"]) expect(stdout).toContain(command);
+  // ssh runs as `jive-ssh`, and signing as `jive-ssh-sign`.
+  expect(stdout).not.toMatch(/^  ssh /m);
   expect(stdout).not.toMatch(/^  version/m);
   // Relinking is `jive init` run again.
   expect(stdout).not.toMatch(/^  link /m);
@@ -34,19 +36,6 @@ test("--help lists the commands", async () => {
 
 test("Tab answers from the workspace the shell is in", async () => {
   expect(await jive("--compgen", "on", "")).toEqual({ exitCode: 0, stdout: "acme\n", stderr: "" });
-});
-
-test("Tab offers ssh's connect and sign, and nothing after them, since their words are ssh's", async () => {
-  const { exitCode, stdout } = await jive("--compgen", "ssh", "");
-  expect(exitCode).toBe(0);
-  expect(stdout.split("\n").filter(line => line !== "").map(line => line.split("\t")[0])).toEqual(["connect", "sign"]);
-  expect(await jive("--compgen", "ssh", "connect", "user@host", "-")).toEqual({ exitCode: 0, stdout: "", stderr: "" });
-});
-
-test("ssh connect --help shows its help and runs no ssh", async () => {
-  const { exitCode, stdout } = await jive("ssh", "connect", "--help");
-  expect(exitCode).toBe(0);
-  expect(stdout).toStartWith("Usage: jive ssh connect [<arguments>…]\n");
 });
 
 test("no test can open a browser: the openers a sign-in would run refuse", () => {
@@ -64,5 +53,13 @@ test("a refused command prints its cause and fix, without a stack, and exits 1",
     exitCode: 1,
     stdout: "",
     stderr: "ERROR: Malformed submodule configuration for repo @acme/widget\nERROR: Fix: Re-run `jive load acme widget` to re-configure\n",
+  });
+});
+
+test("whoami with no daemon running says so, with the fix", async () => {
+  expect(await jive("whoami")).toEqual({
+    exitCode: 1,
+    stdout: "",
+    stderr: "ERROR: jive's daemon is not running\nERROR: Fix: run `jive daemons` to see why; `jive upgrade` registers and starts it again, and so does logging in again\n",
   });
 });

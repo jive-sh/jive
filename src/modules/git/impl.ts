@@ -2,9 +2,8 @@ import * as e from "effect";
 import * as path from "node:path";
 import { implementing, type EffectGen } from "effective-modules";
 import { OSPlatform } from "jive-abstract-library";
-import { SSH_KEYGEN_COMMAND_NAME, TOOL_NAME, installedCommandPath } from "@/constants";
+import { SIGNING_COMMAND_NAME, SSH_COMMAND_NAME, TOOL_NAME, installedCommandPath } from "@/constants";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
-import { sshCommandLineThroughAgent } from "@/modules/signing-agent/ssh-clients";
 import { modules } from "@/modules";
 import type { AccountKey } from "@/modules/account-key/interface";
 import { GITHUB_HTTPS, GITHUB_SSH, githubHttpsUrl, repoOfGitHubRemote } from "./github-remote";
@@ -68,8 +67,8 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, O
   *cloneAsSubmodule(repoId: RepoIdentifier, accountKey: AccountKey): EffectGen<void, BadArgumentError | BadPreconditionsError> {
     const { relativePath, absolutePath } = yield* this.dependencies.toolState.repoPath(repoId);
     const workspaceRoot = yield* this.workspaceRoot();
-    yield* this.git([...yield* this.fetchConfig(accountKey), "submodule", "add", githubHttpsUrl(repoId), relativePath], workspaceRoot);
-    yield* this.checkOutSubmodulesOverHttps(absolutePath, accountKey);
+    yield* this.git([...yield* this.fetchConfig(), "submodule", "add", githubHttpsUrl(repoId), relativePath], workspaceRoot);
+    yield* this.checkOutSubmodulesOverHttps(absolutePath);
     for (const repository of yield* this.repositoriesUnder(absolutePath)) {
       yield* this.configureRepository(repository, accountKey);
     }
@@ -118,8 +117,8 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, O
   }
 
   /** Returns how many submodules it checked out. */
-  private *fetchSubmodules(root: string, accountKey: AccountKey): EffectGen<number, BadPreconditionsError> {
-    const fetchConfig = yield* this.fetchConfig(accountKey);
+  private *fetchSubmodules(root: string): EffectGen<number, BadPreconditionsError> {
+    const fetchConfig = yield* this.fetchConfig();
     yield* this.git([...fetchConfig, "submodule", "sync", "--recursive"], root, "capture");
     let checkedOut = 0;
     for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
@@ -147,7 +146,7 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, O
   }
 
   /** Each pass checks out the level of submodules the previous one revealed, until a pass rewrites nothing. */
-  *checkOutSubmodulesOverHttps(root: string, accountKey: AccountKey): EffectGen<number, BadPreconditionsError> {
+  *checkOutSubmodulesOverHttps(root: string): EffectGen<number, BadPreconditionsError> {
     let rewritten = 0;
     for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
       const repositories = yield* this.repositoriesUnder(root);
@@ -157,7 +156,7 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, O
       }
       let checkedOut = 0;
       for (const repository of repositories) {
-        checkedOut += yield* this.fetchSubmodules(repository, accountKey);
+        checkedOut += yield* this.fetchSubmodules(repository);
       }
       rewritten += changed;
       // A checkout can reveal a .gitmodules not yet rewritten, so only a pass that does neither is the last.
@@ -179,31 +178,41 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, O
   /**
    * Everything jive sets in a repository, and nothing else (the design Alex aligned on, 2026-11-01: "the agent talks
    * to the jive server and forwards the ssh signature request and the jive server does it"). Commits are signed by
-   * `jive-ssh-keygen`, which is ssh-keygen pointed at the agent, with the account key's public half as
-   * `user.signingKey`; fetches and pushes go over SSH through the agent, the https URLs being rewritten to SSH ones.
-   * No GitHub sign-in or token is involved.
+   * `jive-ssh-sign`, which runs ssh-keygen through the agent, with the account key's public half as `user.signingKey`;
+   * fetches and pushes go over SSH through `jive-ssh`, the https URLs being rewritten to SSH ones. Both ask
+   * `jive-daemon` first, so a missing session or an unreachable server is named before ssh or ssh-keygen runs. No
+   * GitHub sign-in or token is involved.
    */
   private *repositoryConfig(accountKey: AccountKey): EffectGen<Record<string, string>> {
     return {
       "gpg.format": "ssh",
       "user.signingKey": accountKey.publicKeyFile,
       "commit.gpgSign": "true",
-      "gpg.ssh.program": yield* this.installedCommand(SSH_KEYGEN_COMMAND_NAME),
-      "core.sshCommand": yield* this.sshCommand(accountKey),
+      "gpg.ssh.program": yield* this.installedCommand(SIGNING_COMMAND_NAME),
+      ...yield* this.sshConfig(),
       [`url.${GITHUB_SSH}.insteadOf`]: GITHUB_HTTPS,
     };
   }
 
-  /** For one git command that fetches a submodule not yet configured: over SSH, through the agent. */
-  private *fetchConfig(accountKey: AccountKey): EffectGen<ReadonlyArray<string>> {
+  /** For one git command that fetches a submodule not yet configured: over SSH, through `jive-ssh`. */
+  private *fetchConfig(): EffectGen<ReadonlyArray<string>> {
     return [
-      "-c", `core.sshCommand=${yield* this.sshCommand(accountKey)}`,
+      ...Object.entries(yield* this.sshConfig()).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
       "-c", `url.${GITHUB_SSH}.insteadOf=${GITHUB_HTTPS}`,
     ];
   }
 
-  private *sshCommand(accountKey: AccountKey): EffectGen<string> {
-    return sshCommandLineThroughAgent({ homeDirectory: yield* this.dependencies.OSPlatform.getHomeDirectory(), publicKeyFile: accountKey.publicKeyFile });
+  /**
+   * git runs `core.sshCommand` through a shell, so the path is quoted when it holds anything else than a path's plain
+   * characters. `ssh.variant=ssh` tells git it is OpenSSH, so git passes `-o SendEnv=GIT_PROTOCOL` and keeps protocol
+   * v2; `simple` would drop git to protocol v0, and the default makes git guess from the command's name.
+   */
+  private *sshConfig(): EffectGen<Record<string, string>> {
+    const command = yield* this.installedCommand(SSH_COMMAND_NAME);
+    return {
+      "core.sshCommand": /^[\w./+-]+$/.test(command) ? command : `'${command.replaceAll("'", `'\\''`)}'`,
+      "ssh.variant": "ssh",
+    };
   }
 
   private *installedCommand(commandName: string): EffectGen<string> {

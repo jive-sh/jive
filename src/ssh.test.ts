@@ -1,37 +1,43 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import * as e from "effect";
 import { BunServices } from "@effect/platform-bun";
-import { Cli, OSPlatform, OSPlatformImpl } from "jive-abstract-library";
+import { OSPlatformImpl } from "jive-abstract-library";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import * as path from "node:path";
 import { jiveHomePaths } from "@/jive-home";
 import { AccountKeyImpl } from "@/modules/account-key/impl";
+import { ExtensionDaemonImpl } from "@/modules/extension-daemon/impl";
+import { serveExtensionDaemon } from "@/modules/extension-daemon/socket-server";
+import { ExtensionSignInImpl } from "@/modules/extension-sign-in/impl";
 import { JiveServerImpl } from "@/modules/jive-server/impl";
-import type { Session } from "@/modules/jive-server/interface";
-import { ModulesLayer } from "@/modules/runtime";
+import { JiveServerUnreachable, type Session } from "@/modules/jive-server/interface";
+import { NpmCredentialPosterNotDecidedImpl } from "@/modules/npm-credential-poster/not-decided";
+import { GitHubActionsIdentityImpl } from "@/modules/pipeline-identity/impl";
 import { SessionImpl } from "@/modules/session/impl";
+import { TerminalSignInPromptImpl } from "@/modules/session/sign-in-prompt";
 import { SigningAgentImpl } from "@/modules/signing-agent/impl";
 import { sshString } from "@/modules/signing-agent/protocol";
 import { serveSigningAgent } from "@/modules/signing-agent/socket-server";
-import { sshArgumentsThroughAgent, sshCommandLineThroughAgent } from "@/modules/signing-agent/ssh-clients";
-import { jive } from "@/program";
 
 /**
- * `jive ssh connect` and `jive ssh sign` as the CLI runs them, against the real signing agent on a scratch socket, a
- * fake Jive server that signs with a key made here, and an sshd on this machine that accepts only that key. The
- * scratch home starts with no account.pub, so the first command fetches it. No ~/.ssh is read: every ssh run passes
- * `-F /dev/null` and `UserKnownHostsFile=/dev/null` through jive.
+ * `jive-ssh` and `jive-ssh-sign` as git runs them: processes started from their entrypoints, with stock ssh and
+ * ssh-keygen behind them. jive-daemon's two sockets run in this process, the API socket answering `GetSession` and the
+ * signing agent, both on a fake Jive server that signs with a key made here and can be made unreachable. ssh logs in
+ * to an sshd on this machine that accepts only that key. Every process gets HOME in the scratch directory, so the
+ * session file, account.pub and sockets are the test's own; ssh reads no ~/.ssh (`-F /dev/null`).
  */
 
-// Short: the agent's socket path must stay under macOS's 104-byte limit.
+// Short: the sockets' paths must stay under macOS's 104-byte limit.
 const scratch = realpathSync(mkdtempSync(path.join(tmpdir(), "js-")));
 const home = path.join(scratch, "h");
+/** A home with an account key whose daemon never started. */
+const homeWithoutDaemon = path.join(scratch, "n");
 const sshdDir = path.join(scratch, "sshd");
 const paths = jiveHomePaths(home);
 const user = userInfo().username;
-const originalAgentSocket = process.env["SSH_AUTH_SOCK"];
+const SERVER_URL = "https://api.jive.example";
 
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const encoder = new TextEncoder();
@@ -41,44 +47,53 @@ const keyBlob = new Uint8Array([
 ]);
 const publicKeyLine = `ssh-ed25519 ${Buffer.from(keyBlob).toString("base64")} tester@jive.sh`;
 
-/** What the fake server was asked. */
-const server = { publicKeyFetches: 0, signatures: 0 };
+/** What the fake server was asked, and whether it can be reached. */
+const server = { reachable: true, signatures: 0 };
+const unreachable = (call: string) => new JiveServerUnreachable({ call, url: SERVER_URL, transportFailure: "TransportError" });
 const fakeServer = JiveServerImpl.mockLayer({
-  *sshPublicKey() {
-    server.publicKeyFetches += 1;
-    return publicKeyLine;
+  *accountOf(session: Session) {
+    if (!server.reachable) return yield* unreachable("accounts:me");
+    return session.sessionToken === "jive_session" ? e.Option.some({ username: "tester", sessionExpiresAt: Date.now() + 86_400_000 }) : e.Option.none();
   },
   *signWithSshKey(_session: Session, data: Uint8Array) {
+    if (!server.reachable) return yield* unreachable("ssh:sign");
     server.signatures += 1;
     return new Uint8Array([...sshString(encoder.encode("ssh-ed25519")), ...sshString(sign(null, data, privateKey))]);
   },
 });
-// A live session, so nothing opens a sign-in page.
-const signedIn = SessionImpl.mockLayer({
-  *ensureSignedIn() { return { sessionToken: "jive_session", expiresAt: Date.now() + 3_600_000 }; },
-});
+/** A sign-in would show the person a page; no case here may start one. */
+let signInsShown = 0;
+const countingPrompt = TerminalSignInPromptImpl.mockLayer({ *show() { signInsShown += 1; } });
 
-/** The host as jive sees it, with its home in the scratch directory: Bun reads HOME once, at startup. */
-const scratchHost = e.Layer.effect(OSPlatform, e.Effect.gen(function* () {
-  const real = yield* OSPlatform;
-  return Object.assign(Object.create(real), { *getHomeDirectory() { return home; } });
-})).pipe(e.Layer.provide(OSPlatformImpl.Layer));
-
-/** The account key module jive and the agent use here: the real one, on the fake server. The host comes from outside. */
-const accountKeyLayer = e.pipe(
-  AccountKeyImpl.Layer,
-  e.Layer.provideMerge(signedIn),
+const daemonLayer = e.pipe(
+  SigningAgentImpl.Layer,
+  e.Layer.provideMerge(ExtensionDaemonImpl.Layer),
+  e.Layer.provideMerge(AccountKeyImpl.Layer),
+  e.Layer.provideMerge(NpmCredentialPosterNotDecidedImpl.Layer),
+  e.Layer.provideMerge(SessionImpl.Layer),
+  e.Layer.provideMerge(countingPrompt),
+  e.Layer.provideMerge(ExtensionSignInImpl.Layer),
+  e.Layer.provideMerge(GitHubActionsIdentityImpl.mockLayer({})),
   e.Layer.provideMerge(fakeServer),
+  // Bun reads HOME once at startup, so the scratch home reaches the daemon through the platform it asks.
+  e.Layer.provideMerge(OSPlatformImpl.mockLayer({ *getHomeDirectory() { return home; } })),
+  e.Layer.provideMerge(BunServices.layer),
 );
 
-let closeAgent: () => Promise<void> = async () => {};
+const signIn = () => writeFileSync(paths.sessionFile, `${JSON.stringify({ sessionToken: "jive_session", expiresAt: Date.now() + 3_600_000, username: "tester" })}\n`, { mode: 0o600 });
+
+let closeDaemon: () => Promise<void> = async () => {};
 let sshdPid: number | undefined;
 let port = 0;
 
 beforeAll(async () => {
-  // A socket nothing serves, so a child that missed the agent jive points it at fails rather than reaching a real one.
-  process.env["SSH_AUTH_SOCK"] = path.join(scratch, "no-agent.sock");
-  mkdirSync(paths.jiveHome, { recursive: true });
+  for (const directory of [home, homeWithoutDaemon]) {
+    const keyFile = jiveHomePaths(directory).accountPublicKeyFile;
+    mkdirSync(path.dirname(keyFile), { recursive: true });
+    writeFileSync(keyFile, `${publicKeyLine}\n`);
+  }
+  signIn();
+
   mkdirSync(sshdDir);
   const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
   port = listener.port;
@@ -97,115 +112,217 @@ beforeAll(async () => {
 
   const scope = await e.Effect.runPromise(e.Scope.make());
   await e.Effect.runPromise(e.pipe(
-    serveSigningAgent(paths.agentSocket),
+    e.Effect.all([serveSigningAgent(paths.agentSocket), serveExtensionDaemon(paths.daemonSocket)]),
     e.Scope.provide(scope),
-    e.Effect.provide(e.pipe(SigningAgentImpl.Layer, e.Layer.provideMerge(accountKeyLayer), e.Layer.provideMerge(scratchHost), e.Layer.provideMerge(BunServices.layer))),
+    e.Effect.provide(daemonLayer),
   ));
-  closeAgent = () => e.Effect.runPromise(e.Scope.close(scope, e.Exit.void));
+  closeDaemon = () => e.Effect.runPromise(e.Scope.close(scope, e.Exit.void));
 });
 
 afterAll(async () => {
-  await closeAgent();
-  if (originalAgentSocket === undefined) delete process.env["SSH_AUTH_SOCK"];
-  else process.env["SSH_AUTH_SOCK"] = originalAgentSocket;
+  await closeDaemon();
   if (sshdPid !== undefined) process.kill(sshdPid, "SIGTERM");
   rmSync(scratch, { recursive: true, force: true });
 });
 
-/** Runs jive in this process on `args`, the way the entrypoint does; ssh and ssh-keygen get this process's stdio. */
-function runJive(args: ReadonlyArray<string>): Promise<e.Exit.Exit<void, unknown>> {
-  return e.Effect.runPromise(e.pipe(
-    Cli.run(jive, { version: "0.0.0-test" }),
-    e.Effect.provide(accountKeyLayer),
-    e.Effect.provide(ModulesLayer),
-    e.Effect.provide(scratchHost),
-    e.Effect.provide(e.Stdio.layerTest({ args: e.Effect.succeed(args) })),
-    e.Effect.provide(BunServices.layer),
-    e.Effect.exit,
-  ));
+/** Runs `jive-ssh` or `jive-ssh-sign` from source, as git would, with HOME at `homeDirectory`. */
+async function runWrapper({ command, args, homeDirectory = home, stdin }: {
+  readonly command: "jive-ssh" | "jive-ssh-sign";
+  readonly args: ReadonlyArray<string>;
+  readonly homeDirectory?: string;
+  readonly stdin?: string;
+}): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
+  // Async: the daemon answering the child runs on this process's event loop. SSH_AUTH_SOCK names a socket nothing
+  // serves, so a child that missed jive's agent fails rather than reaching a real one.
+  const child = Bun.spawn(["bun", path.join(import.meta.dir, "entrypoints", `${command}.ts`), ...args], {
+    cwd: scratch,
+    env: { ...process.env, HOME: homeDirectory, SSH_AUTH_SOCK: path.join(scratch, "no-agent.sock") },
+    stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  return { exitCode, stdout, stderr };
 }
 
-const errorOf = (exit: e.Exit.Exit<void, unknown>) => e.Option.getOrUndefined(e.Exit.findErrorOption(exit));
-
-/** ssh's words for the sshd here, after `jive ssh connect`: no ~/.ssh read, and the new host key accepted. */
-const toLocalSshd = () => [
-  "-F", "/dev/null", "-n", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-  `${user}@127.0.0.1`, "-p", String(port),
+/** ssh's words for the sshd here: no ~/.ssh read, the new host key accepted, nothing of ssh's own on stderr. */
+const toLocalSshd = (...command: ReadonlyArray<string>) => [
+  "-F", "/dev/null", "-n", "-q", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+  `${user}@127.0.0.1`, "-p", String(port), ...command,
 ];
 
-test("ssh connect and jive init give ssh the same options, built from one place, and init's line is as before", () => {
-  const key = { homeDirectory: "/home/tester", publicKeyFile: "/home/tester/.jive/ssh/account.pub" };
-  expect(sshArgumentsThroughAgent(key)).toEqual([
-    "-o", "IdentityAgent=/home/tester/.jive/signing-agent.sock",
-    "-o", "IdentityFile=/home/tester/.jive/ssh/account.pub",
-    "-o", "IdentitiesOnly=yes",
-  ]);
-  // What jive 0.6.0 wrote into core.sshCommand, character for character.
-  expect(sshCommandLineThroughAgent(key)).toBe(
-    'ssh -o IdentityAgent="/home/tester/.jive/signing-agent.sock" -o IdentityFile="/home/tester/.jive/ssh/account.pub" -o IdentitiesOnly=yes',
-  );
-});
+const fileToSign = () => {
+  const file = path.join(scratch, `commit-${Math.random()}.txt`);
+  writeFileSync(file, `tree ${Math.random()}\n`);
+  return file;
+};
 
-test("with no account.pub, ssh connect fetches it, then logs in with the account key through the agent, passing every word to ssh", async () => {
-  expect(existsSync(paths.accountPublicKeyFile)).toBe(false);
-  const ran = path.join(scratch, "ran-over-ssh.txt");
-  const exit = await runJive(["ssh", "connect", ...toLocalSshd(), `printf through-jive > ${ran}`]);
-  expect(exit).toEqual(e.Exit.void);
-  expect(readFileSync(ran, "utf8")).toBe("through-jive");
-  expect(readFileSync(paths.accountPublicKeyFile, "utf8")).toBe(`${publicKeyLine}\n`);
-  expect(server.publicKeyFetches).toBe(1);
-  expect(server.signatures).toBe(1);
-  expect(readFileSync(path.join(sshdDir, "sshd.log"), "utf8")).toContain("Accepted publickey");
-}, 30_000);
+const allowedSigners = () => {
+  const file = path.join(scratch, "allowed_signers");
+  writeFileSync(file, `tester@jive.sh ${publicKeyLine}\n`);
+  return file;
+};
 
-test("ssh connect uses the account.pub it keeps without asking the server again, and passes ssh's exit code on", async () => {
-  const failing = errorOf(await runJive(["ssh", "connect", ...toLocalSshd(), "exit 7"]));
-  expect(failing instanceof Cli.CliError && failing.exitCode).toBe(7);
-  expect(server.publicKeyFetches).toBe(1);
-}, 30_000);
+describe("signed in, with the server reachable", () => {
+  test("jive-ssh logs in with the account key, passes git's -o SendEnv and ssh's exit code on, and says nothing itself", async () => {
+    const ran = path.join(scratch, "ran-over-ssh.txt");
+    const signatures = server.signatures;
+    // `-i` in the remote command is the command's, not ssh's.
+    const loggedIn = await runWrapper({ command: "jive-ssh", args: ["-o", "SendEnv=GIT_PROTOCOL", ...toLocalSshd(`ls -i /dev/null > /dev/null && printf through-jive > ${ran}`)] });
+    expect(loggedIn).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    expect(readFileSync(ran, "utf8")).toBe("through-jive");
+    expect(server.signatures).toBe(signatures + 1);
+    expect(readFileSync(path.join(sshdDir, "sshd.log"), "utf8")).toContain("Accepted publickey");
+    expect((await runWrapper({ command: "jive-ssh", args: toLocalSshd("exit 7") })).exitCode).toBe(7);
+  }, 30_000);
 
-test("ssh connect gives ssh this terminal, so an interactive session gets a real one", async () => {
-  // The jive entrypoint under `script`, which gives it a terminal; the remote command records whether ssh -t had one to
-  // pass on. HOME is the scratch home, where account.pub is kept, so nothing reaches the server.
-  const ran = path.join(scratch, "terminal.txt");
-  const command = ["bun", path.join(import.meta.dir, "entrypoints", "jive.ts"), "ssh", "connect", ...toLocalSshd().filter((word) => word !== "-n"), "-t", `tty -s && echo has-a-terminal > ${ran}`];
-  const quoted = command.map((word) => `'${word.replaceAll("'", "'\\''")}'`).join(" ");
-  const underScript = process.platform === "darwin" ? ["script", "-q", "/dev/null", ...command] : ["script", "-qec", quoted, "/dev/null"];
-  // This jive is the real entrypoint, on the real server's address; a proxy nothing serves keeps a broken build that
-  // asks the server anyway from reaching it.
-  const unreachable = "http://127.0.0.1:9";
-  const child = Bun.spawn(underScript, {
-    env: { ...process.env, HOME: home, HTTPS_PROXY: unreachable, HTTP_PROXY: unreachable, NO_PROXY: "" },
-    stdin: "ignore", stdout: "pipe", stderr: "pipe",
+  test("jive-ssh-sign signs git's -Y sign through the agent, and passes -Y verify to ssh-keygen, which accepts the signature", async () => {
+    const file = fileToSign();
+    const signed = await runWrapper({ command: "jive-ssh-sign", args: ["-Y", "sign", "-n", "git", "-f", paths.accountPublicKeyFile, file] });
+    expect(signed.exitCode).toBe(0);
+    expect(signed.stderr).not.toContain("jive-ssh-sign:");
+    const verified = await runWrapper({
+      command: "jive-ssh-sign",
+      args: ["-Y", "verify", "-f", allowedSigners(), "-I", "tester@jive.sh", "-n", "git", "-s", `${file}.sig`],
+      stdin: readFileSync(file, "utf8"),
+    });
+    expect(verified.stdout).toContain('Good "git" signature for tester@jive.sh');
+    expect(verified.exitCode).toBe(0);
   });
-  const [output, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-  expect(output).not.toContain("Pseudo-terminal will not be allocated");
-  expect(exitCode).toBe(0);
-  expect(readFileSync(ran, "utf8")).toBe("has-a-terminal\n");
-}, 30_000);
 
-test("ssh sign signs a file through the agent, and ssh-keygen -Y verify accepts the signature against account.pub", async () => {
-  const notes = path.join(scratch, "notes.txt");
-  writeFileSync(notes, "signed by jive\n");
-  const signaturesBefore = server.signatures;
-  expect(await runJive(["ssh", "sign", "-n", "file", notes])).toEqual(e.Exit.void);
-  expect(server.signatures).toBe(signaturesBefore + 1);
-  const allowedSigners = path.join(scratch, "allowed_signers");
-  writeFileSync(allowedSigners, `tester@jive.sh ${readFileSync(paths.accountPublicKeyFile, "utf8")}`);
-  const verified = Bun.spawnSync(
-    ["ssh-keygen", "-Y", "verify", "-f", allowedSigners, "-I", "tester@jive.sh", "-n", "file", "-s", `${notes}.sig`],
-    { stdin: new Blob([readFileSync(notes)]), stdout: "pipe", stderr: "pipe" },
-  );
-  expect(verified.stdout.toString()).toContain('Good "file" signature for tester@jive.sh');
+  test("jive-ssh-sign passes everything but -Y sign to ssh-keygen unchanged, without asking the daemon: git's checks, -l, even making a key", async () => {
+    const file = fileToSign();
+    expect((await runWrapper({ command: "jive-ssh-sign", args: ["-Y", "sign", "-n", "git", "-f", paths.accountPublicKeyFile, file] })).exitCode).toBe(0);
+    // The home whose daemon never started: none of these asks it.
+    const homeDirectory = homeWithoutDaemon;
+    const principals = await runWrapper({ command: "jive-ssh-sign", args: ["-Y", "find-principals", "-f", allowedSigners(), "-s", `${file}.sig`], homeDirectory });
+    expect({ exitCode: principals.exitCode, stdout: principals.stdout.trim() }).toEqual({ exitCode: 0, stdout: "tester@jive.sh" });
+    const checked = await runWrapper({ command: "jive-ssh-sign", args: ["-Y", "check-novalidate", "-n", "git", "-s", `${file}.sig`], stdin: readFileSync(file, "utf8"), homeDirectory });
+    expect(checked.exitCode).toBe(0);
+    const fingerprint = await runWrapper({ command: "jive-ssh-sign", args: ["-l", "-f", paths.accountPublicKeyFile], homeDirectory });
+    const plainFingerprint = Bun.spawnSync(["ssh-keygen", "-l", "-f", paths.accountPublicKeyFile], { stdout: "pipe", stderr: "pipe" });
+    expect(fingerprint).toEqual({ exitCode: 0, stdout: plainFingerprint.stdout.toString(), stderr: "" });
+    const newKey = path.join(scratch, "new-key");
+    expect((await runWrapper({ command: "jive-ssh-sign", args: ["-q", "-t", "ed25519", "-N", "", "-f", newKey], homeDirectory })).exitCode).toBe(0);
+    expect(existsSync(newKey)).toBe(true);
+  });
+
+  test("ssh options jive-ssh's own override, or that add a key or forward the agent, are each named on stderr, and ssh still logs in", async () => {
+    const loggedIn = await runWrapper({
+      command: "jive-ssh",
+      args: ["-o", "IdentityAgent=/elsewhere.sock", "-oIdentitiesOnly=no", "-o", "IdentityFile /nowhere/key", "-A", ...toLocalSshd("true")],
+    });
+    expect(loggedIn).toEqual({
+      exitCode: 0,
+      stdout: "",
+      stderr: [
+        "jive-ssh: warning: -o IdentityAgent=/elsewhere.sock has no effect: jive-ssh passes IdentityAgent=~/.jive/signing-agent.sock first, and ssh keeps the first value",
+        "jive-ssh: warning: -o IdentitiesOnly=no has no effect: jive-ssh passes IdentitiesOnly=yes first, and ssh keeps the first value",
+        "jive-ssh: warning: -o IdentityFile /nowhere/key adds a second key: ssh offers your Jive account key, ~/.jive/ssh/account.pub, first, then /nowhere/key",
+        "jive-ssh: warning: -A forwards jive's agent: while you are connected, the remote host can sign as tester with your Jive key",
+        "",
+      ].join("\n"),
+    });
+    const forwarded = await runWrapper({ command: "jive-ssh", args: [...toLocalSshd(), "-o", "ForwardAgent=yes", "true"] });
+    expect(forwarded.stderr).toBe("jive-ssh: warning: -o ForwardAgent=yes forwards jive's agent: while you are connected, the remote host can sign as tester with your Jive key\n");
+  }, 30_000);
 });
 
-test("ssh sign passes ssh-keygen's exit code on", async () => {
-  const missing = path.join(scratch, "no-such-file.txt");
-  // Async: the agent ssh-keygen may ask runs on this process's event loop.
-  const direct = await Bun.spawn(["ssh-keygen", "-Y", "sign", "-f", paths.accountPublicKeyFile, "-n", "file", missing], {
-    env: { ...process.env, SSH_AUTH_SOCK: paths.agentSocket }, stdout: "ignore", stderr: "ignore",
-  }).exited;
-  expect(direct).not.toBe(0);
-  const failing = errorOf(await runJive(["ssh", "sign", "-n", "file", missing]));
-  expect(failing instanceof Cli.CliError && failing.exitCode).toBe(direct);
+describe("refusals, each before ssh or ssh-keygen runs", () => {
+  test("-i is refused, even naming the Jive key itself, in either spelling and after the destination", async () => {
+    const signatures = server.signatures;
+    for (const args of [
+      ["-i", paths.accountPublicKeyFile, ...toLocalSshd("true")],
+      [`-i${paths.accountPublicKeyFile}`, ...toLocalSshd("true")],
+      [`${user}@127.0.0.1`, "-i", paths.accountPublicKeyFile, "true"],
+    ]) {
+      expect(await runWrapper({ command: "jive-ssh", args })).toEqual({
+        exitCode: 255,
+        stdout: "",
+        stderr: `jive-ssh: -i is not accepted. jive-ssh always logs in with your Jive account key, ~/.jive/ssh/account.pub, signed in as tester. To log in with another key, use plain ssh -i ${paths.accountPublicKeyFile}. If you need -i with jive-ssh, tell us what for.\n`,
+      });
+    }
+    expect(server.signatures).toBe(signatures);
+  });
+
+  const causes = [
+    {
+      name: "not signed in",
+      arrange: () => rmSync(paths.sessionFile, { force: true }),
+      homeDirectory: home,
+      message: "not signed in to Jive; run `jive login`",
+    },
+    {
+      name: "the server unreachable",
+      arrange: () => { server.reachable = false; },
+      homeDirectory: home,
+      message: `your computer can't reach Jive's server (${SERVER_URL}) to sign as tester; reconnect and run the command again`,
+    },
+    {
+      name: "the daemon not running",
+      arrange: () => {},
+      homeDirectory: homeWithoutDaemon,
+      message: "jive's daemon is not running; run `jive daemons` to see why; `jive upgrade` registers and starts it again, and so does logging in again",
+    },
+  ];
+
+  test.each(causes)("with $name, jive-ssh and jive-ssh-sign say so and exit 255, and nothing signs or opens a sign-in", async ({ arrange, homeDirectory, message }) => {
+    const signatures = server.signatures;
+    arrange();
+    try {
+      expect(await runWrapper({ command: "jive-ssh", args: toLocalSshd("true"), homeDirectory })).toEqual({ exitCode: 255, stdout: "", stderr: `jive-ssh: ${message}\n` });
+      const file = fileToSign();
+      expect(await runWrapper({ command: "jive-ssh-sign", args: ["-Y", "sign", "-n", "git", "-f", jiveHomePaths(homeDirectory).accountPublicKeyFile, file], homeDirectory })).toEqual({ exitCode: 255, stdout: "", stderr: `jive-ssh-sign: ${message}\n` });
+      expect(existsSync(`${file}.sig`)).toBe(false);
+    } finally {
+      server.reachable = true;
+      signIn();
+    }
+    expect(server.signatures).toBe(signatures);
+    expect(signInsShown).toBe(0);
+  }, 30_000);
+
+  test("-G prints what plain ssh with jive's options prints, even while the daemon is not running", async () => {
+    const withoutDaemon = jiveHomePaths(homeWithoutDaemon);
+    const printed = await runWrapper({ command: "jive-ssh", args: ["-G", "-F", "/dev/null", "example.com"], homeDirectory: homeWithoutDaemon });
+    const plain = Bun.spawnSync([
+      "ssh", "-o", `IdentityAgent=${withoutDaemon.agentSocket}`, "-o", `IdentityFile=${withoutDaemon.accountPublicKeyFile}`, "-o", "IdentitiesOnly=yes",
+      "-G", "-F", "/dev/null", "example.com",
+    ], { env: { ...process.env, HOME: homeWithoutDaemon }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    expect(printed).toEqual({ exitCode: plain.exitCode, stdout: plain.stdout.toString(), stderr: plain.stderr.toString() });
+    expect(printed.exitCode).toBe(0);
+    expect(printed.stdout + printed.stderr).toContain(`identityagent ${withoutDaemon.agentSocket}\n`);
+  });
+});
+
+describe("jive whoami asks the same daemon", () => {
+  const whoami = async () => {
+    const child = Bun.spawn(["bun", path.join(import.meta.dir, "entrypoints", "jive.ts"), "whoami"], {
+      cwd: scratch, env: { ...process.env, HOME: home }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return { exitCode, stdout, stderr };
+  };
+
+  test("prints the account the server confirms", async () => {
+    expect(await whoami()).toEqual({ exitCode: 0, stdout: "tester\n", stderr: "" });
+  });
+
+  test("offline, prints the saved account, marked unconfirmed", async () => {
+    server.reachable = false;
+    try {
+      expect(await whoami()).toEqual({ exitCode: 0, stdout: "tester (not confirmed: can't reach Jive's server)\n", stderr: "" });
+    } finally {
+      server.reachable = true;
+    }
+  });
+
+  test("signed out, says so with the fix", async () => {
+    rmSync(paths.sessionFile);
+    try {
+      expect(await whoami()).toEqual({ exitCode: 1, stdout: "", stderr: "ERROR: You are not logged in\nERROR: Fix: Run `jive login`\n" });
+    } finally {
+      signIn();
+    }
+  });
 });

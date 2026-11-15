@@ -146,11 +146,13 @@ describe("jive in a workspace", () => {
     expect(gitConfigIn(widget(), "gpg.format")).toBe("ssh");
     expect(gitConfigIn(widget(), "commit.gpgSign")).toBe("true");
     expect(gitConfigIn(widget(), "user.signingKey")).toBe(path.join(scratch, "account.pub"));
-    expect(gitConfigIn(widget(), "gpg.ssh.program")).toEndWith("jive-ssh-keygen");
-    expect(gitConfigIn(widget(), "core.sshCommand")).toContain(`IdentityAgent=${JSON.stringify(path.join(home, ".jive", "signing-agent.sock"))}`);
+    expect(gitConfigIn(widget(), "gpg.ssh.program")).toEndWith("/jive-ssh-sign");
+    expect(gitConfigIn(widget(), "core.sshCommand")).toEndWith("/jive-ssh");
+    expect(gitConfigIn(widget(), "ssh.variant")).toBe("ssh");
     // The widget's own submodule is fetched and configured too; .gitmodules records only https URLs.
     expect(readFileSync(path.join(widget(), "gadget", "gadget.txt"), "utf8")).toBe("gadget\n");
-    expect(gitConfigIn(path.join(widget(), "gadget"), "gpg.ssh.program")).toEndWith("jive-ssh-keygen");
+    expect(gitConfigIn(path.join(widget(), "gadget"), "gpg.ssh.program")).toEndWith("/jive-ssh-sign");
+    expect(gitConfigIn(path.join(widget(), "gadget"), "core.sshCommand")).toEndWith("/jive-ssh");
     expect(readFileSync(path.join(workspace, ".gitmodules"), "utf8")).not.toContain("git@");
     expect(readFileSync(path.join(widget(), "installed-here.txt"), "utf8").trim()).toBe(widget());
     // Nothing registers in bun's global folder, where a registration would shadow a global install of the same name.

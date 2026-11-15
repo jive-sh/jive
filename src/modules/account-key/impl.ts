@@ -5,7 +5,8 @@ import * as path from "node:path";
 import { jiveHomePaths } from "@/jive-home";
 import { modules } from "@/modules";
 import type { JiveServerError, Session } from "@/modules/jive-server/interface";
-import { AccountKeyError, type AccountKey, type IAccountKey } from "./interface";
+import type { SignInFailed } from "@/modules/session/interface";
+import { AccountKeyNotSaved, NoJiveSession, type AccountKey, type IAccountKey } from "./interface";
 
 const OPENSSH_ED25519_PUBLIC_KEY = /^ssh-ed25519 [A-Za-z0-9+/]+=* \S+$/;
 
@@ -15,10 +16,10 @@ export class AccountKeyImpl extends implementing(modules.accountKey).uses(
   OSPlatform,
   e.FileSystem.FileSystem,
 ) implements IAccountKey {
-  *ensure(): EffectGen<AccountKey, AccountKeyError> {
-    const { jiveServer } = this.dependencies;
+  *ensure(): EffectGen<AccountKey, SignInFailed | JiveServerError | AccountKeyNotSaved> {
+    const { jiveServer, session: sessions } = this.dependencies;
     const publicKey = yield* this.withSession({
-      failure: "the server could not return your SSH key",
+      session: () => sessions.ensureSignedIn(),
       call: (session) => jiveServer.sshPublicKey(session),
     });
     const publicKeyFile = yield* this.publicKeyFile();
@@ -28,7 +29,7 @@ export class AccountKeyImpl extends implementing(modules.accountKey).uses(
         yield* fs.makeDirectory(path.dirname(publicKeyFile), { recursive: true, mode: 0o700 });
         yield* fs.writeFileString(publicKeyFile, `${publicKey}\n`);
       }),
-      e.Effect.mapError((error) => new AccountKeyError({ reason: `could not write ${publicKeyFile}: ${error.message}` })),
+      e.Effect.mapError((error) => new AccountKeyNotSaved({ publicKeyFile, detail: error.message })),
     );
     return { publicKey, publicKeyFile };
   }
@@ -45,41 +46,33 @@ export class AccountKeyImpl extends implementing(modules.accountKey).uses(
     );
   }
 
-  *sign(data: Uint8Array): EffectGen<Uint8Array, AccountKeyError> {
-    const { jiveServer } = this.dependencies;
-    return yield* this.withSession({ failure: "the server could not sign", call: (session) => jiveServer.signWithSshKey(session, data) });
+  *sign(data: Uint8Array): EffectGen<Uint8Array, NoJiveSession | JiveServerError> {
+    const { jiveServer, session: sessions } = this.dependencies;
+    return yield* this.withSession({
+      *session() {
+        const maybeSession = yield* sessions.current();
+        return e.Option.isSome(maybeSession) ? maybeSession.value : yield* new NoJiveSession();
+      },
+      call: (session) => jiveServer.signWithSshKey(session, data),
+    });
   }
 
   /**
-   * Runs `call` with this machine's session, signing in first when there is none. When `call` fails, the server is
-   * asked whether it still honours the session before the session is blamed (a server that cannot be reached fails
-   * both); one it has ended is dropped, and `call` runs once more after signing in again.
+   * Runs `call` with the session `session` gives. When `call` is refused, the server is asked whether it still
+   * honours the session before the session is blamed; one it has ended is dropped, and `call` runs once more with
+   * what `session` gives then. An unreachable server can't answer that question either, so it fails at once.
    */
-  private *withSession<A>({ failure, call }: {
-    readonly failure: string;
+  private *withSession<A, E>({ session, call }: {
+    readonly session: () => EffectGen<Session, E>;
     readonly call: (session: Session) => EffectGen<A, JiveServerError>;
-  }): EffectGen<A, AccountKeyError> {
-    const { session: sessions } = this.dependencies;
-    const session = yield* this.session();
-    const first = yield* e.Effect.result(e.Effect.gen(() => call(session)));
-    if (e.Result.isSuccess(first)) return first.success;
-    const maybeLive = yield* e.pipe(
-      e.Effect.gen(() => sessions.checkWithServer(session)),
-      e.Effect.mapError(({ reason }) => new AccountKeyError({ reason: `${failure}: ${first.failure.reason}; ${reason}` })),
-    );
-    if (e.Option.isSome(maybeLive)) return yield* new AccountKeyError({ reason: `${failure}: ${first.failure.reason}` });
-    const renewed = yield* this.session();
-    return yield* e.pipe(
-      e.Effect.gen(() => call(renewed)),
-      e.Effect.mapError(({ reason }) => new AccountKeyError({ reason: `${failure}: ${reason}` })),
-    );
-  }
-
-  private *session(): EffectGen<Session, AccountKeyError> {
-    return yield* e.pipe(
-      e.Effect.gen(() => this.dependencies.session.ensureSignedIn()),
-      e.Effect.mapError(({ reason }) => new AccountKeyError({ reason: `not signed in to Jive: ${reason}` })),
-    );
+  }): EffectGen<A, E | JiveServerError> {
+    const first = yield* session();
+    const attempt = yield* e.Effect.result(e.Effect.gen(() => call(first)));
+    if (e.Result.isSuccess(attempt)) return attempt.success;
+    if (attempt.failure._tag === "JiveServerUnreachable") return yield* e.Effect.fail(attempt.failure);
+    const maybeLive = yield* this.dependencies.session.checkWithServer(first);
+    if (e.Option.isSome(maybeLive)) return yield* e.Effect.fail(attempt.failure);
+    return yield* call(yield* session());
   }
 
   private *publicKeyFile(): EffectGen<string> {

@@ -4,18 +4,20 @@ import { OSPlatform } from "jive-abstract-library";
 import * as path from "node:path";
 import { jiveHomePaths } from "@/jive-home";
 import { modules } from "@/modules";
-import { JIVE_API_AUDIENCE, SignInClaim, type JiveServerError, type OpenedSignInRequest, type Session } from "@/modules/jive-server/interface";
-import { SignInFailed, type ISession } from "./interface";
+import { JIVE_API_AUDIENCE, SignInClaim, jiveServerFailure, type JiveServerError, type JiveServerRefused, type OpenedSignInRequest, type Session } from "@/modules/jive-server/interface";
+import { SignedInAccount, SignInFailed, type ISession } from "./interface";
 
 const CLAIM_INTERVAL = e.Duration.seconds(2);
 
 /**
  * The session file. A session the server refused stays, marked `endedByServer`, so the next sign-in can name it to the
- * server, which then asks that account's phones.
+ * server, which then asks that account's phones. `username` is the account the server last confirmed the session
+ * belongs to, so `jive-daemon` can say who is signed in while the server can't be reached.
  */
 const StoredSession = e.Schema.Struct({
   sessionToken: e.Schema.NonEmptyString,
   expiresAt: e.Schema.Number,
+  username: e.Schema.optionalKey(e.Schema.NonEmptyString),
   endedByServer: e.Schema.optionalKey(e.Schema.Literal(true)),
 });
 const decodeStoredSession = e.Schema.decodeUnknownOption(e.Schema.fromJsonString(StoredSession));
@@ -39,7 +41,7 @@ export class SessionImpl extends implementing(modules.session).uses(
     const request = yield* e.pipe(
       // The last session, even one the server has ended, tells it whose phones to ask.
       e.Effect.gen(function* () { return yield* jiveServer.openSignInRequest({ previousSession: yield* self.stored() }); }),
-      e.Effect.mapError(({ reason }) => new SignInFailed({ reason: `could not open a sign-in request: ${reason}` })),
+      e.Effect.mapError((error) => new SignInFailed({ reason: `could not open a sign-in request: ${jiveServerFailure(error)}` })),
     );
     yield* signInPrompt.show(request);
     const session = yield* this.claimWhenApproved(request);
@@ -55,7 +57,7 @@ export class SessionImpl extends implementing(modules.session).uses(
     );
     const session = yield* e.pipe(
       e.Effect.gen(() => jiveServer.signInPipeline(idToken)),
-      e.Effect.mapError(({ reason }) => new SignInFailed({ reason })),
+      e.Effect.mapError((error) => new SignInFailed({ reason: jiveServerFailure(error) })),
     );
     yield* this.store(session);
     return session;
@@ -76,13 +78,32 @@ export class SessionImpl extends implementing(modules.session).uses(
     const isStored = e.Option.exists(yield* this.stored(), (stored) => stored.sessionToken === session.sessionToken);
     const renewed = { sessionToken: session.sessionToken, expiresAt: e.Option.isSome(maybeAccount) ? maybeAccount.value.sessionExpiresAt : session.expiresAt };
     if (isStored) {
-      // A file left as it was costs only a stale end, or one more refused call before the next sign-in.
+      // A file left as it was costs only a stale end or username, or one more refused call before the next sign-in.
       yield* e.pipe(
-        e.Effect.gen(() => this.store(e.Option.isSome(maybeAccount) ? renewed : { ...renewed, endedByServer: true })),
+        e.Effect.gen(() => this.store(e.Option.isSome(maybeAccount) ? { ...renewed, username: maybeAccount.value.username } : { ...renewed, endedByServer: true })),
         e.Effect.catchTag("SignInFailed", ({ reason }) => e.Effect.logWarning(reason)),
       );
     }
     return e.Option.map(maybeAccount, ({ username }) => ({ username, session: renewed }));
+  }
+
+  *whoIsSignedIn(): EffectGen<SignedInAccount, JiveServerRefused> {
+    const maybeStored = e.Option.filter(yield* this.stored(), (stored) => stored.endedByServer !== true);
+    if (e.Option.isNone(maybeStored)) return SignedInAccount.SignedOut();
+    const stored = maybeStored.value;
+    const session = { sessionToken: stored.sessionToken, expiresAt: stored.expiresAt };
+    return yield* e.pipe(
+      e.Effect.gen(() => this.checkWithServer(session)),
+      e.Effect.map(e.Option.match({
+        onNone: () => SignedInAccount.SignedOut(),
+        onSome: (account) => SignedInAccount.Confirmed(account),
+      })),
+      e.Effect.catchTag("JiveServerUnreachable", ({ url }) => e.Effect.succeed(SignedInAccount.Unconfirmed({
+        maybeUsername: e.Option.fromUndefinedOr(stored.username),
+        session,
+        unreachableUrl: url,
+      }))),
+    );
   }
 
   *forget(): EffectGen<void> {
@@ -103,7 +124,7 @@ export class SessionImpl extends implementing(modules.session).uses(
     while (Date.now() < request.expiresAt) {
       const claim = yield* e.pipe(
         e.Effect.gen(() => jiveServer.claimSignInRequest(request)),
-        e.Effect.mapError(({ reason }) => new SignInFailed({ reason: `could not claim the sign-in: ${reason}` })),
+        e.Effect.mapError((error) => new SignInFailed({ reason: `could not claim the sign-in: ${jiveServerFailure(error)}` })),
       );
       if (SignInClaim.$is("Approved")(claim)) return claim.session;
       if (SignInClaim.$is("Gone")(claim)) {

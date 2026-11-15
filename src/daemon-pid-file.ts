@@ -42,3 +42,15 @@ export function holdPidFile(pidFile: string): void {
     } catch {}
   });
 }
+
+/**
+ * As `standDownIfAnotherServes`, for a daemon only an older jive ran (0.7.0's `jive-signing-agent` and
+ * `jive-extension-daemon`). Upgrading removes its registration and then starts this one, but launchd's `bootout`
+ * returns before that daemon has exited, so this one first waits up to `waitMs` for it to go. Standing down at once
+ * would leave nothing serving the sockets until the next login: exiting zero is not restarted.
+ */
+export function standDownIfStillServedAfter(input: { readonly daemonName: string; readonly pidFile: string; readonly served: string; readonly waitMs: number }): void {
+  const deadline = Date.now() + input.waitMs;
+  while (incumbentPid(input.pidFile) !== undefined && Date.now() < deadline) Bun.sleepSync(100);
+  standDownIfAnotherServes(input);
+}

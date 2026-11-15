@@ -21,7 +21,7 @@ purpose), **still to port** (wanted, not built yet).
 | `ozy daemons` | Lists every registered Jive daemon | ported | `jive daemons` |
 | `ozy upgrade` | Reinstalls the latest version with the installing package manager | ported | `jive upgrade` (jive-abstract-library's `upgrade`) |
 | `ssh-agent` module, `ozy-signing-agent` daemon | SSH agent; key derived from a passkey PRF on a `localhost` page and cached | replaced | `jive-signing-agent` holds no key: it forwards each sign request to `@jive-sh/server`'s `ssh:sign` with the session (Alex: "the ssh key is no longer stored client side") |
-| `ozy-ssh-keygen` | `gpg.ssh.program`: ssh-keygen pointed at the agent's socket | ported | `jive-ssh-keygen` |
+| `ozy-ssh-keygen` | `gpg.ssh.program`: ssh-keygen pointed at the agent's socket | ported | `jive-ssh-sign`, which also checks with `jive-daemon` before signing |
 | `agent-client` module | RPC from the CLI to the agent (`Setup`, `StartSession`) | dropped | The CLI and the agent share `~/.jive/session.json` and `~/.jive/ssh/account.pub`; nothing to call |
 | `ozy-virtual-security-key` | Virtual HID experiment that only logs bytes | dropped | Experiment; no local key |
 | `npm` module | npm login, publish, trusted publishers, placeholders, deprecations | replaced | `@jive-sh/server` with `jive-resource-connector-package-registry-npm`, reached through `jive provision` |
@@ -44,7 +44,7 @@ purpose), **still to port** (wanted, not built yet).
 | `jive provision <kind> <name>` | Makes sure a resource instance exists, e.g. `jive provision connector-package-registry @jive-sh/server-client`; the organization's configured implementation (npm for jive-sh) does it | ported (0.4.0) | Calls `provision` (docs/jive_server_provision_api.md section 2); the instance is `jive.resources.<kind>.<name>` in `./package.json` or `--instance`. The server's `provision` isn't deployed yet, so it answers an error until then |
 | deploy hook on `jive login --cicd` + `jive provision` | jive-abstract-library's deploy runs `bun x @jive-sh/jive@0.4.1 login --cicd`, then `provision connector-package-registry <name> --instance {"packageName":…}` | ported (jive-abstract-library 0.11.0) | The only provisioning path. The direct `packages:provision` call, the library's ID-token fetch and the switch were deleted after a real deploy signed in and reached `provision` |
 | package git URLs through `connector-code-repository` | `jive load` asks the server for the repo's URLs; the organization's configured code-repository implementation (GitHub for jive-sh) answers | still to port | Needs a server call (proposed below). Until then `github.remoteUrls` builds `https://github.com/<org>/<repo>.git` and `git@github.com:…` itself |
-| `jive-signing-agent` (daemon), `jive-ssh-keygen` | The agent, and git's signing program | ported | |
+| `jive-signing-agent` (daemon), `jive-ssh-sign` | The agent, and git's signing program | ported | |
 | `session`, `account-key`, `jive-server`, `pipeline-identity`, `signing-agent` modules | Session file and sign-in; the account key; calls to `@jive-sh/server`; the job's ID token; the agent protocol | ported | New with this migration |
 | `browser` module | Opens a URL with the platform's opener (`open`, `xdg-open`, `start`) | ported | The sign-in page; tests never use the real one |
 | `auth`, `github` modules | The workspace's GitHub sign-in (OAuth, kept in `.jive/users`) and key registration on GitHub | dropped (deleted) | The aligned design (Alex, 2026-11-01): "the agent talks to the jive server and forwards the ssh signature request and the jive server does it"; jive signs in to nothing but Jive, and fetches and pushes over SSH through the agent |
@@ -126,7 +126,7 @@ from another thread.
 jive upgrade && jive --version && jive daemons
 ```
 
-Expect the new version, then `jive-signing-agent — @jive-sh/jive: running`.
+Expect the new version, then `jive-daemon — @jive-sh/jive: running`.
 
 ### 2. Sign in to Jive (one passkey approval)
 
@@ -134,7 +134,7 @@ Expect the new version, then `jive-signing-agent — @jive-sh/jive: running`.
 jive login
 ```
 
-The jive.sh sign-in page opens; approve with the jive.sh passkey. It prints `Signed in to Jive until …` and where the
+The jive.sh sign-in page opens; approve with the jive.sh passkey. It prints `Signed in to Jive as <handle>; the session ends …` and where the
 account's public key went (`~/.jive/ssh/account.pub`); the server creates the key on this first call.
 
 
@@ -153,8 +153,9 @@ submodules and the untracked repositories under `packages/`:
 gpg.format          ssh
 user.signingkey     ~/.jive/ssh/account.pub
 commit.gpgsign      true
-gpg.ssh.program     …/@jive-sh/jive/bin/jive-ssh-keygen
-core.sshCommand     ssh -o IdentityAgent="~/.jive/signing-agent.sock" -o IdentityFile="~/.jive/ssh/account.pub" -o IdentitiesOnly=yes
+gpg.ssh.program     …/@jive-sh/jive/bin/jive-ssh-sign
+core.sshCommand     …/@jive-sh/jive/bin/jive-ssh
+ssh.variant         ssh
 url.git@github.com:.insteadOf   https://github.com/
 ```
 
@@ -162,11 +163,11 @@ url.git@github.com:.insteadOf   https://github.com/
 
 ```sh
 cd /Users/alex/github.com/chaine-dance/chaine
-jive daemons | grep jive-signing-agent
+jive daemons | grep jive-daemon
 jive whoami
 SSH_AUTH_SOCK=$HOME/.jive/signing-agent.sock ssh-add -L | diff - $HOME/.jive/ssh/account.pub && echo "agent holds the account key"
-ssh -o IdentityAgent=$HOME/.jive/signing-agent.sock -o IdentityFile=$HOME/.jive/ssh/account.pub -o IdentitiesOnly=yes -T git@github.com
-for d in . $(git submodule foreach --quiet --recursive pwd) $(git ls-files --others --exclude-standard --directory | sed -n 's#/$##p'); do [ -e "$d/.git" ] || continue; p=$(git -C "$d" config gpg.ssh.program); s=$(git -C "$d" config core.sshCommand); u=$(git -C "$d" config url.git@github.com:.insteadOf); case "$p$s$u" in *jive-ssh-keygen*signing-agent.sock*https://github.com/*) ;; *) echo "NOT ON JIVE: $d";; esac; done; echo "repo check done"
+jive-ssh -T git@github.com
+for d in . $(git submodule foreach --quiet --recursive pwd) $(git ls-files --others --exclude-standard --directory | sed -n 's#/$##p'); do [ -e "$d/.git" ] || continue; p=$(git -C "$d" config gpg.ssh.program); s=$(git -C "$d" config core.sshCommand); v=$(git -C "$d" config ssh.variant); u=$(git -C "$d" config url.git@github.com:.insteadOf); case "$p,$s,$v,$u" in */jive-ssh-sign,*/jive-ssh,ssh,https://github.com/) ;; *) echo "NOT ON JIVE: $d";; esac; done; echo "repo check done"
 for f in .gitmodules $(git submodule foreach --quiet --recursive 'test -f .gitmodules && echo "$toplevel/$sm_path/.gitmodules"'); do grep -H "url = git@" "$f"; done; echo ".gitmodules check done"
 ```
 
@@ -185,7 +186,7 @@ git submodule sync --recursive
 for d in . $(git submodule foreach --quiet --recursive pwd) $(git ls-files --others --exclude-standard --directory | sed -n 's#/$##p'); do [ -e "$d/.git" ] || continue
   git -C "$d" config gpg.ssh.program /Users/alex/.bun/install/global/node_modules/@ozyman42/ozy-cli/bin/ozy-ssh-keygen
   git -C "$d" config user.signingkey /Users/alex/.ssh/jive-immense-shadowed-camp.pub
-  git -C "$d" config --unset core.sshCommand; git -C "$d" config --unset url.git@github.com:.insteadOf
+  git -C "$d" config --unset core.sshCommand; git -C "$d" config --unset ssh.variant; git -C "$d" config --unset url.git@github.com:.insteadOf
 done
 ```
 

@@ -1,6 +1,7 @@
 import * as e from "effect";
 import { implementing, type EffectGen } from "effective-modules";
 import { modules } from "@/modules";
+import { accountKeyFailure } from "@/modules/account-key/interface";
 import type { ISigningAgent } from "./interface";
 import { failure, identitiesAnswer, parsePublicKeyLine, parseRequest, sameBytes, signResponse } from "./protocol";
 
@@ -24,7 +25,7 @@ export class SigningAgentImpl extends implementing(modules.signingAgent).uses(mo
     }
     const signed = yield* e.Effect.result(e.Effect.gen(() => accountKey.sign(request.data)));
     if (e.Result.isFailure(signed)) {
-      yield* e.Effect.logError(`Could not sign: ${signed.failure.reason}`);
+      yield* e.Effect.logError(`Could not sign: ${accountKeyFailure(signed.failure)}`);
       return failure();
     }
     yield* e.Effect.log(`Signed ${request.data.length} bytes`);

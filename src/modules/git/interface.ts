@@ -24,10 +24,10 @@ export interface IGit {
    * into git config, and checks out every submodule not yet checked out, at any depth. A submodule already checked
    * out keeps its HEAD and working tree. Returns how many URLs it rewrote.
    */
-  checkOutSubmodulesOverHttps(root: string, accountKey: AccountKey): EffectGen<number, BadPreconditionsError>;
+  checkOutSubmodulesOverHttps(root: string): EffectGen<number, BadPreconditionsError>;
   /**
-   * Sets exactly what jive needs in `repository`: commits signed with the account key through `jive-ssh-keygen`, and
-   * GitHub's https URLs fetched and pushed over SSH through the signing agent.
+   * Sets exactly what jive needs in `repository`: commits signed with the account key through `jive-ssh-sign`, and
+   * GitHub's https URLs fetched and pushed over SSH through `jive-ssh`.
    */
   configureRepository(repository: string, accountKey: AccountKey): EffectGen<void, BadPreconditionsError>;
 }

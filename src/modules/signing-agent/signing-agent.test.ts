@@ -9,7 +9,7 @@ import * as path from "node:path";
 import { jiveHomePaths } from "@/jive-home";
 import { AccountKeyImpl } from "@/modules/account-key/impl";
 import { JiveServerImpl } from "@/modules/jive-server/impl";
-import { JiveServerError, SignInClaim, type OpenedSignInRequest, type Session } from "@/modules/jive-server/interface";
+import { JiveServerRefused, JiveServerUnreachable, SignInClaim, type OpenedSignInRequest, type Session } from "@/modules/jive-server/interface";
 import { SessionImpl } from "@/modules/session/impl";
 import { GitHubActionsIdentityImpl } from "@/modules/pipeline-identity/impl";
 import { modules } from "@/modules";
@@ -37,11 +37,14 @@ const publicKeyLine = `ssh-ed25519 ${Buffer.from(keyBlob).toString("base64")} te
 const server = {
   liveTokens: new Set<string>(),
   signedWith: [] as Array<string>,
-  claimsBeforeApproval: 0,
   promptsShown: 0,
   pipelineIdTokens: [] as Array<string>,
   previousSessionTokens: [] as Array<string | undefined>,
   idTokenAudiences: [] as Array<string>,
+  /** Whether the server answers at all, or the network fails as it does offline. */
+  reachable: true,
+  /** How many times `accounts:me` was asked whether a session still holds. */
+  accountChecks: 0,
 };
 
 const request: OpenedSignInRequest = {
@@ -60,12 +63,12 @@ const fakeServer = JiveServerImpl.mockLayer({
   },
   *claimSignInRequest() {
     claims += 1;
-    if (claims <= server.claimsBeforeApproval) return SignInClaim.Pending();
     const sessionToken = `jive_session_${claims}`;
     server.liveTokens.add(sessionToken);
     return SignInClaim.Approved({ session: { sessionToken, expiresAt: Date.now() + 3_600_000 } });
   },
   *accountOf(session: Session) {
+    server.accountChecks += 1;
     return server.liveTokens.has(session.sessionToken) ? e.Option.some({ username: "tester", sessionExpiresAt: Date.now() + 86_400_000 }) : e.Option.none();
   },
   *signInPipeline(idToken: string) {
@@ -75,8 +78,9 @@ const fakeServer = JiveServerImpl.mockLayer({
   },
   *sshPublicKey() { return publicKeyLine; },
   *signWithSshKey(session: Session, data: Uint8Array) {
+    if (!server.reachable) return yield* new JiveServerUnreachable({ call: "ssh:sign", url: "https://api.jive.example", transportFailure: "TransportError" });
     if (!server.liveTokens.has(session.sessionToken)) {
-      return yield* new JiveServerError({ call: "ssh:sign", reason: "The session token opens no live session." });
+      return yield* new JiveServerRefused({ call: "ssh:sign", reason: "The session token opens no live session." });
     }
     server.signedWith.push(session.sessionToken);
     const signature = sign(null, data, privateKey);
@@ -160,26 +164,54 @@ test("lists the account's public key and nothing else", async () => {
   expect(listed.stdout.trim()).toBe(publicKeyLine);
 });
 
-test("with no session, a commit signature signs in once, waiting for approval, then verifies", async () => {
-  server.claimsBeforeApproval = 2;
-  await signAndVerify();
-  expect(server.promptsShown).toBe(1);
-  expect(server.signedWith).toEqual(["jive_session_3"]);
-  expect(JSON.parse(readFileSync(paths.sessionFile, "utf8")).sessionToken).toBe("jive_session_3");
-  expect(statSync(paths.sessionFile).mode & 0o777).toBe(0o600);
+/** Signs a file the way git signs a commit, expecting the agent to refuse; returns ssh-keygen's stderr. */
+async function signRefused(): Promise<string> {
+  const message = path.join(scratch, "refused.txt");
+  writeFileSync(message, "refused\n");
+  rmSync(`${message}.sig`, { force: true });
+  const signed = await run(["ssh-keygen", "-Y", "sign", "-n", "git", "-f", paths.accountPublicKeyFile, message]);
+  expect(signed.exitCode).not.toBe(0);
+  return signed.stderr;
+}
+
+const storeSession = (sessionToken: string) =>
+  writeFileSync(paths.sessionFile, `${JSON.stringify({ sessionToken, expiresAt: Date.now() + 3_600_000 })}\n`, { mode: 0o600 });
+
+test("with no session, a sign request is refused without opening a sign-in or asking the server", async () => {
+  expect(await signRefused()).toContain("agent refused operation");
+  expect(server.promptsShown).toBe(0);
+  expect(server.signedWith).toEqual([]);
+  expect(existsSync(paths.sessionFile)).toBe(false);
 });
 
-test("a stored session signs without asking the person again", async () => {
+test("a stored session signs without asking the person", async () => {
+  server.liveTokens.add("jive_session_1");
+  storeSession("jive_session_1");
   await signAndVerify();
-  expect(server.promptsShown).toBe(1);
-  expect(server.signedWith).toEqual(["jive_session_3", "jive_session_3"]);
+  await signAndVerify();
+  expect(server.promptsShown).toBe(0);
+  expect(server.signedWith).toEqual(["jive_session_1", "jive_session_1"]);
 });
 
-test("a session the server has ended (unused for a day, or revoked) is dropped and signed in again once", async () => {
+test("a session the server has ended (unused for a day, or revoked) is dropped, and the sign request is refused without a sign-in", async () => {
   server.liveTokens.clear();
-  await signAndVerify();
-  expect(server.promptsShown).toBe(2);
-  expect(server.signedWith.at(-1)).toBe("jive_session_4");
+  expect(await signRefused()).toContain("agent refused operation");
+  expect(server.promptsShown).toBe(0);
+  expect(JSON.parse(readFileSync(paths.sessionFile, "utf8"))).toMatchObject({ sessionToken: "jive_session_1", endedByServer: true });
+});
+
+test("an unreachable server refuses the sign request at once, without asking it again whether the session holds", async () => {
+  server.liveTokens.add("jive_session_2");
+  storeSession("jive_session_2");
+  const checks = server.accountChecks;
+  server.reachable = false;
+  try {
+    expect(await signRefused()).toContain("agent refused operation");
+  } finally {
+    server.reachable = true;
+  }
+  expect(server.accountChecks).toBe(checks);
+  expect(JSON.parse(readFileSync(paths.sessionFile, "utf8")).endedByServer).toBeUndefined();
 });
 
 // The Jive key beyond git and GitHub, as the README's "Using your Jive key for other SSH" shows it: jive writes nothing
@@ -229,7 +261,7 @@ test("logs in to an SSH server that is not GitHub, with the key in its authorize
     expect(loggedIn.stderr).not.toContain("Permission denied");
     expect(loggedIn.stdout.trim()).toBe("signed-in-through-jive");
     expect(readFileSync(sshdLog, "utf8")).toContain("Accepted publickey");
-    expect(server.signedWith.at(-1)).toBe("jive_session_4");
+    expect(server.signedWith.at(-1)).toBe("jive_session_2");
   } finally {
     process.kill(sshdPid, "SIGTERM");
   }
@@ -255,7 +287,7 @@ test("a CI/CD job signs in by exchanging its ID token for Jive's audience, and t
   expect(server.pipelineIdTokens).toEqual(["github-id-token"]);
   expect(session.sessionToken).toBe("jive_pipeline_session");
   expect(JSON.parse(readFileSync(paths.sessionFile, "utf8")).sessionToken).toBe("jive_pipeline_session");
-  expect(server.promptsShown).toBe(2);
+  expect(server.promptsShown).toBe(0);
 });
 
 // Each use extends a session on the server, so a saved end in the past proves nothing: only the server's refusal ends it.
@@ -269,12 +301,16 @@ test("a stored session past its saved end still signs, without asking the person
   expect(server.signedWith.at(-1)).toBe("jive_session_used_daily");
 });
 
-test("a sign-in after the server ended the stored session names that session, so the server can ask the account's phones", async () => {
+test("jive login after the server ended the stored session names that session, so the server can ask the account's phones", async () => {
   writeFileSync(paths.sessionFile, `${JSON.stringify({ sessionToken: "jive_ended_session", expiresAt: Date.now() - 1000 })}\n`);
+  expect(await signRefused()).toContain("agent refused operation");
   server.previousSessionTokens.length = 0;
-  const prompts = server.promptsShown;
-  await signAndVerify();
-  expect(server.promptsShown).toBe(prompts + 1);
+  const session = await e.Effect.runPromise(e.pipe(
+    e.Effect.gen(function* () { return yield* (yield* modules.session).signIn(); }),
+    e.Effect.provide(agentLayer),
+  ));
   expect(server.previousSessionTokens).toEqual(["jive_ended_session"]);
-  expect(JSON.parse(readFileSync(paths.sessionFile, "utf8")).sessionToken).toBe(server.signedWith.at(-1));
+  expect(JSON.parse(readFileSync(paths.sessionFile, "utf8")).sessionToken).toBe(session.sessionToken);
+  await signAndVerify();
+  expect(server.signedWith.at(-1)).toBe(session.sessionToken);
 });

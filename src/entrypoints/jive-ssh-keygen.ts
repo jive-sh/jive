@@ -1,15 +1,12 @@
-import { homedir } from "node:os";
-import { sshKeygenEnvironmentThroughAgent } from "@/modules/signing-agent/ssh-clients";
+import { spawnSync } from "node:child_process";
 
 /**
- * What git runs to sign (`gpg.ssh.program`): ssh-keygen with its arguments untouched, pointed at the signing agent,
- * so `ssh-keygen -Y sign -f <account.pub>` asks the agent, which asks the server. Its exit code is ssh-keygen's.
+ * Only refuses. jive 0.7.0 set git's `gpg.ssh.program` to this command; 0.8.0 signs through `jive-ssh-sign`, so a
+ * repository configured by 0.7.0 gets this message instead of git's `cannot exec … No such file or directory`, naming
+ * the fix. There is no fallback to signing: `jive init` rewrites the repository's git config.
  */
-const result = Bun.spawnSync(["ssh-keygen", ...Bun.argv.slice(2)], {
-  stdin: "inherit",
-  stdout: "inherit",
-  stderr: "inherit",
-  env: sshKeygenEnvironmentThroughAgent({ inherited: process.env, homeDirectory: homedir() }),
-});
 
-process.exit(result.exitCode ?? 1);
+const topLevel = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+const repository = topLevel.status === 0 && topLevel.stdout.trim() !== "" ? topLevel.stdout.trim() : "this repository";
+process.stderr.write(`jive-ssh-keygen was replaced by jive-ssh-sign in jive 0.8.0; run jive init in ${repository} to update its git config\n`);
+process.exit(1);

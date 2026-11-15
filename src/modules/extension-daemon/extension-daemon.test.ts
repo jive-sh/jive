@@ -9,7 +9,9 @@ import { jiveHomePaths } from "@/jive-home";
 import { modules } from "@/modules";
 import { ExtensionSignInImpl } from "@/modules/extension-sign-in/impl";
 import { JiveServerImpl } from "@/modules/jive-server/impl";
-import { JiveServerError, SignInClaim, type OpenedSignInRequest, type Session } from "@/modules/jive-server/interface";
+import { JiveServerRefused, JiveServerUnreachable, SignInClaim, type OpenedSignInRequest, type Session } from "@/modules/jive-server/interface";
+import { bytesToBase64, bytesToBase64Url, readBase64 } from "@/modules/security-key/bytes";
+import { buildCeremony } from "@/modules/security-key/webauthn";
 import { NpmCredentialPosterNotDecidedImpl } from "@/modules/npm-credential-poster/not-decided";
 import { GitHubActionsIdentityImpl } from "@/modules/pipeline-identity/impl";
 import { SessionImpl } from "@/modules/session/impl";
@@ -46,11 +48,20 @@ const server = {
   honoured: new Set<string>(),
   /** When the server says every live session now ends: each use has moved it past what the session file holds. */
   sessionEndsAt: Date.now() + 24 * 3_600_000,
+  /** Bytes `signWithSigningPasskey` was asked to sign, in order. */
+  signed: [] as Array<Uint8Array>,
+  /** Whether the server answers at all, or the network fails as it does offline. */
+  reachable: true,
 };
+
+const CREDENTIAL_ID = Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+let signingKey: CryptoKey | undefined;
+let verifyingKey: CryptoKey | undefined;
+let signingSpki = "";
 
 const fakeServer = JiveServerImpl.mockLayer({
   *openSignInRequest() {
-    if (server.refuseToOpen) return yield* new JiveServerError({ call: "signInRequests:open", reason: "the test's server refused" });
+    if (server.refuseToOpen) return yield* new JiveServerRefused({ call: "signInRequests:open", reason: "the test's server refused" });
     yield* e.Effect.sleep(server.openDelayMs);
     const requestId = `request-${server.opened.length + 1}`;
     const request: OpenedSignInRequest = {
@@ -71,8 +82,23 @@ const fakeServer = JiveServerImpl.mockLayer({
     return SignInClaim.Approved({ session: { sessionToken, expiresAt: Date.now() + 12 * 3_600_000 } });
   },
   *accountOf(session: Session) {
+    if (!server.reachable) return yield* new JiveServerUnreachable({ call: "accounts:me", url: "https://api.jive.example", transportFailure: "TransportError" });
     const live = server.issuedTokens.includes(session.sessionToken) || server.honoured.has(session.sessionToken);
     return live ? e.Option.some({ username: "tester", sessionExpiresAt: server.sessionEndsAt }) : e.Option.none();
+  },
+  *ensureSigningPasskey() {
+    return { credentialId: bytesToBase64Url(CREDENTIAL_ID), publicKeySpki: signingSpki };
+  },
+  *signWithSigningPasskey(input: { readonly challenge: Uint8Array }) {
+    const key = signingKey;
+    if (key === undefined) return yield* new JiveServerRefused({ call: "signingPasskey:sign", reason: "the test key was not generated" });
+    const challenge = Uint8Array.from(input.challenge);
+    server.signed.push(challenge);
+    const signature = yield* e.Effect.tryPromise({
+      try: () => crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, challenge),
+      catch: () => new JiveServerRefused({ call: "signingPasskey:sign", reason: "the test key could not sign" }),
+    });
+    return new Uint8Array(signature);
   },
 });
 
@@ -166,6 +192,10 @@ let stopDaemon: () => Promise<void>;
 let host: NativeHost;
 
 beforeAll(async () => {
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  signingKey = pair.privateKey;
+  verifyingKey = pair.publicKey;
+  signingSpki = bytesToBase64(new Uint8Array(await crypto.subtle.exportKey("spki", pair.publicKey)));
   mkdirSync(path.dirname(manifestDir), { recursive: true });
   stopDaemon = await startDaemon();
   host = startNativeHost();
@@ -185,7 +215,7 @@ describe("registration with Chrome", () => {
   });
 
   test("keeps the socket owner-only", () => {
-    expect(statSync(paths.extensionDaemonSocket).mode & 0o777).toBe(0o600);
+    expect(statSync(paths.daemonSocket).mode & 0o777).toBe(0o600);
   });
 });
 
@@ -254,8 +284,27 @@ describe("signing in", () => {
   test("a session `jive login` stored is the one the extension sees, past its saved end, with the end the server gives", async () => {
     server.honoured.add("jive_session_from_jive_login");
     writeFileSync(paths.sessionFile, `${JSON.stringify({ sessionToken: "jive_session_from_jive_login", expiresAt: Date.now() - 1000 })}\n`, { mode: 0o600 });
-    expect(await host.request({ _tag: "GetSession" })).toEqual({ _tag: "SignedIn", expiresAt: new Date(server.sessionEndsAt).toISOString() });
-    expect(JSON.parse(readFileSync(paths.sessionFile, "utf8")).expiresAt).toBe(server.sessionEndsAt);
+    expect(await host.request({ _tag: "GetSession" })).toEqual({
+      _tag: "SignedIn", username: "tester", expiresAt: new Date(server.sessionEndsAt).toISOString(), confirmedByServer: true,
+    });
+    expect(JSON.parse(readFileSync(paths.sessionFile, "utf8"))).toMatchObject({ expiresAt: server.sessionEndsAt, username: "tester" });
+  });
+
+  test("with the server unreachable, the stored session is signed in but unconfirmed, with the saved username and the server's address", async () => {
+    const stored = JSON.parse(readFileSync(paths.sessionFile, "utf8"));
+    server.reachable = false;
+    try {
+      expect(await host.request({ _tag: "GetSession" })).toEqual({
+        _tag: "SignedIn",
+        username: "tester",
+        expiresAt: new Date(stored.expiresAt).toISOString(),
+        confirmedByServer: false,
+        unreachableServerUrl: "https://api.jive.example",
+      });
+      expect(JSON.parse(readFileSync(paths.sessionFile, "utf8"))).toEqual(stored);
+    } finally {
+      server.reachable = true;
+    }
   });
 });
 
@@ -265,7 +314,7 @@ describe("the npm credential", () => {
   });
 
   test("is posted with this machine's session, and nothing about it comes back", async () => {
-    const credential = { npmUser: "chaine.dance", token: "npm_test-token", totpSecret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ" };
+    const credential = { npmUser: "chaine.dance", token: "npm_test-token" };
     expect(await host.request({ _tag: "PostNpmCredential", credential })).toEqual({ _tag: "Posted" });
     expect(server.posted.at(-1)).toEqual({ sessionToken: storedSessionToken(), credential });
   });
@@ -282,6 +331,137 @@ describe("the npm credential", () => {
   });
 });
 
+describe("the signing passkey", () => {
+  const challenge = Uint8Array.from([9, 8, 7, 6]);
+  const rpId = "www.npmjs.com";
+  const origin = "https://www.npmjs.com";
+
+  const remember = () => {
+    server.honoured.add("jive_session_passkey");
+    writeFileSync(paths.sessionFile, `${JSON.stringify({ sessionToken: "jive_session_passkey", expiresAt: Date.now() + 3_600_000 })}\n`, { mode: 0o600 });
+  };
+
+  test("refuses when no repository was prepared, and the reason does not contain the challenge", async () => {
+    remember();
+    const response = await host.request({
+      _tag: "AnswerSecurityKey",
+      kind: "get",
+      challenge: bytesToBase64Url(challenge),
+      rpId,
+      origin,
+      crossOrigin: false,
+    });
+    expect(response._tag).toBe("SecurityKeyRefused");
+    expect(response.reason).toBe("this machine has not been told which repository's signing passkey answers npm");
+    expect(String(response.reason).includes(bytesToBase64Url(challenge))).toBe(false);
+    expect(server.signed).toEqual([]);
+  });
+
+  test("refuses when this machine is signed out", async () => {
+    writeFileSync(paths.sessionFile, `${JSON.stringify({ sessionToken: "jive_session_passkey_dead", expiresAt: Date.now() + 3_600_000 })}\n`, { mode: 0o600 });
+    expect(await host.request({ _tag: "PrepareSigningPasskey", repositoryOwner: "jive-sh", repositoryName: "example" })).toEqual({ _tag: "SigningPasskeyPrepared" });
+    const response = await host.request({
+      _tag: "AnswerSecurityKey",
+      kind: "get",
+      challenge: bytesToBase64Url(challenge),
+      rpId,
+      origin,
+      crossOrigin: false,
+    });
+    expect(response).toEqual({ _tag: "SecurityKeyRefused", reason: "this machine is not signed in to Jive" });
+  });
+
+  test("a get is signed over authenticatorData concatenated with sha256(clientDataJSON)", async () => {
+    remember();
+    expect(await host.request({ _tag: "PrepareSigningPasskey", repositoryOwner: "jive-sh", repositoryName: "example" })).toEqual({ _tag: "SigningPasskeyPrepared" });
+    const response = await host.request({
+      _tag: "AnswerSecurityKey",
+      kind: "get",
+      challenge: bytesToBase64Url(challenge),
+      rpId,
+      origin,
+      crossOrigin: false,
+    });
+    const spki = readBase64(signingSpki);
+    if (spki._tag !== "Read") throw new Error("the test key is not base64");
+    const built = buildCeremony({ kind: "get", challenge, rpId, origin, crossOrigin: false, credentialId: CREDENTIAL_ID, publicKeySpki: spki.bytes });
+    expect(built._tag).toBe("Built");
+    if (built._tag !== "Built") return;
+    expect(server.signed.at(-1)).toEqual(built.ceremony.signedBytes);
+    expect(response._tag).toBe("SecurityKeyAnswer");
+    expect(response.attestationObject).toBeUndefined();
+    const signature = readBase64(response.signature);
+    const key = verifyingKey;
+    expect(signature._tag).toBe("Read");
+    if (signature._tag !== "Read" || key === undefined) return;
+    expect(readBase64(response.authenticatorData)).toEqual({ _tag: "Read", bytes: built.ceremony.authenticatorData });
+    expect(await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, signature.bytes, built.ceremony.signedBytes)).toBe(true);
+  });
+
+  test("a create answer's attestation wraps that authenticator data and the signature verifies", async () => {
+    const response = await host.request({
+      _tag: "AnswerSecurityKey",
+      kind: "create",
+      challenge: bytesToBase64Url(challenge),
+      rpId,
+      origin,
+      crossOrigin: false,
+    });
+    const spki = readBase64(signingSpki);
+    expect(spki._tag).toBe("Read");
+    if (spki._tag !== "Read") return;
+    const built = buildCeremony({ kind: "create", challenge, rpId, origin, crossOrigin: false, credentialId: CREDENTIAL_ID, publicKeySpki: spki.bytes });
+    expect(built._tag).toBe("Built");
+    if (built._tag !== "Built" || built.ceremony._tag !== "create") return;
+    expect(server.signed.at(-1)).toEqual(built.ceremony.signedBytes);
+    const attestation = readBase64(response.attestationObject);
+    expect(attestation).toEqual({ _tag: "Read", bytes: built.ceremony.attestationObject });
+    const signature = readBase64(response.signature);
+    const key = verifyingKey;
+    if (signature._tag !== "Read" || key === undefined) throw new Error("missing signature");
+    expect(await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, signature.bytes, built.ceremony.signedBytes)).toBe(true);
+  });
+
+  test("a new daemon answers with the repository the last prepare stored", async () => {
+    remember();
+    const prepare = await e.Effect.runPromise(e.pipe(
+      e.Effect.gen(function* () {
+        const daemon = yield* modules.extensionDaemon;
+        return yield* daemon.answerLine(JSON.stringify({
+          protocolVersion: PROTOCOL_VERSION,
+          requestId: "prepare-stored",
+          request: { _tag: "PrepareSigningPasskey", repositoryOwner: "jive-sh", repositoryName: "stored-example" },
+        }));
+      }),
+      e.Effect.provide(daemonLayer(recordingPoster)),
+    ));
+    expect(prepare.response).toEqual({ _tag: "SigningPasskeyPrepared" });
+    expect(JSON.parse(readFileSync(paths.signingPasskeyRepositoryFile, "utf8"))).toEqual({
+      repositoryOwner: "jive-sh",
+      repositoryName: "stored-example",
+    });
+    const answer = await e.Effect.runPromise(e.pipe(
+      e.Effect.gen(function* () {
+        const daemon = yield* modules.extensionDaemon;
+        return yield* daemon.answerLine(JSON.stringify({
+          protocolVersion: PROTOCOL_VERSION,
+          requestId: "answer-stored",
+          request: {
+            _tag: "AnswerSecurityKey",
+            kind: "get",
+            challenge: bytesToBase64Url(challenge),
+            rpId,
+            origin,
+            crossOrigin: false,
+          },
+        }));
+      }),
+      e.Effect.provide(daemonLayer(recordingPoster)),
+    ));
+    expect(answer.response._tag).toBe("SecurityKeyAnswer");
+  });
+});
+
 describe("refusals", () => {
   test("a request of another protocol version is refused with which side to upgrade", async () => {
     expect(await host.request({ _tag: "GetSession" }, 2)).toMatchObject({ _tag: "Failed", message: expect.stringContaining("upgrade jive") });
@@ -291,22 +471,43 @@ describe("refusals", () => {
     expect(await host.request({ _tag: "SignOut" })).toEqual({ _tag: "SignedOut" });
     expect(existsSync(paths.sessionFile)).toBe(false);
     expect(await host.request({ _tag: "GetNpmConnectionReadiness" })).toMatchObject({ _tag: "NotReady" });
-    expect(await host.request({ _tag: "PostNpmCredential", credential: { npmUser: "u", token: "t", totpSecret: "A" } }))
+    expect(await host.request({ _tag: "PostNpmCredential", credential: { npmUser: "u", token: "t" } }))
       .toMatchObject({ _tag: "Refused" });
   });
 
   test("a second daemon stands down while the pidfile names a live one, and leaves its socket", { timeout: 30_000 }, async () => {
     // This test process stands in for the live daemon the pidfile names.
-    writeFileSync(paths.extensionDaemonPidFile, String(process.pid));
-    const second = Bun.spawn(["bun", path.join(import.meta.dir, "..", "..", "daemons", "jive-extension-daemon.ts")], {
+    writeFileSync(paths.daemonPidFile, String(process.pid));
+    const second = Bun.spawn(["bun", path.join(import.meta.dir, "..", "..", "daemons", "jive-daemon.ts")], {
       env: { ...process.env, HOME: scratch },
       stdout: "pipe",
       stderr: "pipe",
     });
     expect(await second.exited).toBe(0);
     expect(await new Response(second.stderr).text()).toContain("standing down");
-    expect(existsSync(paths.extensionDaemonSocket)).toBe(true);
-    rmSync(paths.extensionDaemonPidFile);
+    expect(existsSync(paths.daemonSocket)).toBe(true);
+    rmSync(paths.daemonPidFile);
+  });
+
+  test("one process serves the agent socket and the extension socket", async () => {
+    const home = realpathSync(mkdtempSync(path.join(tmpdir(), "jxd-")));
+    const child = Bun.spawn(["bun", path.join(import.meta.dir, "..", "..", "daemons", "jive-daemon.ts")], {
+      env: { ...process.env, HOME: home },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const childPaths = jiveHomePaths(home);
+    try {
+      await waitFor({
+        probe: async () => existsSync(childPaths.agentSocket) && existsSync(childPaths.daemonSocket) ? true : undefined,
+        what: "jive-daemon to serve both sockets",
+      });
+      expect(existsSync(childPaths.daemonPidFile)).toBe(true);
+    } finally {
+      child.kill();
+      await child.exited;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("the native host tells the extension when the daemon is not running", { timeout: 30_000 }, async () => {
@@ -316,6 +517,6 @@ describe("refusals", () => {
     const orphan = startNativeHost();
     host = orphan;
     expect(await orphan.exited).toBe(0);
-    expect(orphan.unsolicited).toEqual([{ _tag: "DaemonUnreachable", message: "jive-extension-daemon is not running" }]);
+    expect(orphan.unsolicited).toEqual([{ _tag: "DaemonUnreachable", message: "jive-daemon is not running" }]);
   });
 });

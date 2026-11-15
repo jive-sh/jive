@@ -1,10 +1,13 @@
 import * as e from "effect";
 
 /**
- * The protocol between the Jive browser extension and `jive-extension-daemon`. The extension is the only client: it
- * reaches the daemon through Chrome native messaging, and the native host (`jive-native-host`) relays each message to
- * the daemon's local socket unchanged. Both sides import this module, so a message one side sends is exactly what the
- * other decodes. It imports nothing but `effect`, so the extension can import it from jive's source.
+ * The protocol of `jive-daemon`'s API socket (`~/.jive/jive-daemon.sock`). The Jive browser extension is the client
+ * for the session and for posting an npm credential: it reaches the daemon through Chrome native messaging, and the
+ * native host (`jive-native-host`) relays each message to the daemon's socket unchanged. A program that opens npm's
+ * security-key page sends `PrepareSigningPasskey` on that socket directly, not through the native host, because the
+ * page does not name a repository. `jive-ssh`, `jive-ssh-sign` and `jive whoami` send `GetSession` directly too
+ * (`./client`). Both sides import this module, so a message one side sends is exactly what the other decodes. It
+ * imports nothing but `effect`, so the extension can import it from jive's source.
  *
  * Every request carries `protocolVersion`. A daemon refuses another version with a message saying which side to
  * upgrade; there is no compatibility layer.
@@ -27,13 +30,14 @@ export const EXTENSION_PUBLIC_KEY =
 export const NpmCredential = e.Schema.Struct({
   npmUser: e.Schema.NonEmptyString,
   token: e.Schema.NonEmptyString,
-  /** The authenticator app's shared secret, uppercase base32 without padding. */
-  totpSecret: e.Schema.NonEmptyString,
 });
 export type NpmCredential = typeof NpmCredential.Type;
 
 export const DaemonRequest = e.Schema.Union([
-  /** Whether this machine is signed in to Jive, or waiting for a sign-in. Never returns the token. */
+  /**
+   * Whether this machine is signed in to Jive and as whom, checked with the server, or waiting for a sign-in. Never
+   * returns the token.
+   */
   e.Schema.TaggedStruct("GetSession", {}),
   /**
    * Starts signing this machine in: the daemon opens a sign-in request and answers with the jive.sh page to open,
@@ -47,6 +51,26 @@ export const DaemonRequest = e.Schema.Union([
   e.Schema.TaggedStruct("GetNpmConnectionReadiness", {}),
   /** Posts the credential to Jive with this machine's session. The daemon keeps no copy. */
   e.Schema.TaggedStruct("PostNpmCredential", { credential: NpmCredential }),
+  /**
+   * Which repository's signing passkey answers the next security-key prompt. The npm page does not name a Jive
+   * organization, and a person's session must not sign an arbitrary organization's key, so the program that knows
+   * the repository sends this before the page asks.
+   */
+  e.Schema.TaggedStruct("PrepareSigningPasskey", {
+    repositoryOwner: e.Schema.NonEmptyString,
+    repositoryName: e.Schema.NonEmptyString,
+  }),
+  /**
+   * Asks the daemon to answer one WebAuthn create or get. `challenge`, `rpId` and `origin` are the page's own
+   * options. `challenge` is base64url. Nothing here logs it.
+   */
+  e.Schema.TaggedStruct("AnswerSecurityKey", {
+    kind: e.Schema.Literals(["create", "get"]),
+    challenge: e.Schema.NonEmptyString,
+    rpId: e.Schema.NonEmptyString,
+    origin: e.Schema.NonEmptyString,
+    crossOrigin: e.Schema.Boolean,
+  }),
 ]);
 export type DaemonRequest = typeof DaemonRequest.Type;
 
@@ -61,8 +85,18 @@ export const SessionStatus = e.Schema.Union([
   e.Schema.TaggedStruct("SignedOut", {}),
   /** Waiting for the person to sign in on `loginUrl` before `expiresAt` (ISO-8601). */
   e.Schema.TaggedStruct("SigningIn", { loginUrl: e.Schema.String, expiresAt: e.Schema.String }),
-  /** `expiresAt` (ISO-8601) is when Jive ends this machine's session unless it is used before then. */
-  e.Schema.TaggedStruct("SignedIn", { expiresAt: e.Schema.String }),
+  /**
+   * Signed in as `username`; `expiresAt` (ISO-8601) is when Jive ends this machine's session unless it is used before
+   * then. `confirmedByServer` is false when the server at `unreachableServerUrl` could not be reached: `username` and
+   * `expiresAt` are then the ones saved when it last confirmed the session, and `username` is absent for a session
+   * file saved before jive kept usernames. `unreachableServerUrl` is present exactly when `confirmedByServer` is false.
+   */
+  e.Schema.TaggedStruct("SignedIn", {
+    username: e.Schema.optionalKey(e.Schema.NonEmptyString),
+    expiresAt: e.Schema.String,
+    confirmedByServer: e.Schema.Boolean,
+    unreachableServerUrl: e.Schema.optionalKey(e.Schema.String),
+  }),
 ]);
 export type SessionStatus = typeof SessionStatus.Type;
 
@@ -86,6 +120,19 @@ export const DaemonResponse = e.Schema.Union([
   ...PostOutcome.members,
   /** The request could not be handled: malformed, another protocol version, or a failure inside the daemon. */
   e.Schema.TaggedStruct("Failed", { message: e.Schema.String }),
+  e.Schema.TaggedStruct("SigningPasskeyPrepared", {}),
+  /**
+   * The assembled WebAuthn fields. Every byte string is standard base64. `attestationObject` is present for
+   * `create` and omitted for `get`. `signature` is the raw ECDSA `r‖s` the server returned.
+   */
+  e.Schema.TaggedStruct("SecurityKeyAnswer", {
+    credentialId: e.Schema.NonEmptyString,
+    clientDataJSON: e.Schema.NonEmptyString,
+    authenticatorData: e.Schema.NonEmptyString,
+    signature: e.Schema.NonEmptyString,
+    attestationObject: e.Schema.optionalKey(e.Schema.NonEmptyString),
+  }),
+  e.Schema.TaggedStruct("SecurityKeyRefused", { reason: e.Schema.String }),
 ]);
 export type DaemonResponse = typeof DaemonResponse.Type;
 
@@ -94,6 +141,10 @@ export const ResponseEnvelope = e.Schema.Struct({
   response: DaemonResponse,
 });
 export type ResponseEnvelope = typeof ResponseEnvelope.Type;
+
+/** One request, as the daemon's socket reads it: one JSON object, no trailing newline. */
+export const encodeRequestLine = (envelope: RequestEnvelope): string =>
+  e.Schema.encodeSync(e.Schema.fromJsonString(RequestEnvelope))(envelope);
 
 /** Sent by the native host, in place of any response, when it cannot reach the daemon; the host then exits. */
 export const DaemonUnreachable = e.Schema.TaggedStruct("DaemonUnreachable", { message: e.Schema.String });

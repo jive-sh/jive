@@ -90,7 +90,7 @@ listed.
 | 3 | Where in the pipeline the call happens | **Decided:** in `deploy`, an idempotent call right before every npm publish | §5 |
 | 4 | Which token claims authorize provisioning | **Direction set:** use the token's environment; branch protection set up when a code repository is provisioned. To iterate | §6 |
 | 5 | How a repository is registered | **Decided:** through a GitHub connector, whose connection may be an employee's login. GitHub App versus login open | §7 |
-| 6 | How npm's second factor is answered | **Decided:** Jive holds the npm account's authenticator-app (TOTP) secret, sealed with `CONNECTION_KEY`; the connector computes the code. Whether npm allows an authenticator app beside a security key is an open risk | §8 |
+| 6 | How npm's second factor is answered | **Decided:** the organization's signing passkey. Its private key stays in the accountKeys component; `signingPasskey.sign` returns raw ECDSA r‖s and does not build the WebAuthn assertion. No request sends `npm-otp`. The 2026-10-26 authenticator-app decision is superseded | §8 |
 | 7 | Concurrency and retries | **Built as the coordinating thread decided:** a per-package claim row taken in a mutation before the action calls npm; no workflow component | §9 |
 | 8 | The 2-day trusted-publisher expiry | **Decided:** registered in the deploy, re-set up next time. Build item: replace an expired publisher | §10 |
 | 9 | Bootstrapping `@jive-sh/server`'s own deploy | **Decided:** a Convex deploy key to bootstrap; long term a Convex connection like any other | §11 |
@@ -294,11 +294,11 @@ questions it must answer for each:
 
 ## 8. How npm's second factor is answered, and how it is protected
 
-**Decided (Alex, 2026-10-26, replacing the security-key decision below):** "for blocker 1, option a, we'll hold the
-totp secret in jive". Option a was the held authenticator-app (TOTP) secret, against approval in the person's
-Chrome through an extension, or a person approving each package.
+**Decided (later instruction, replacing the 2026-10-26 authenticator-app decision below):** the second factor is the organization's signing passkey. The private key is sealed in the accountKeys component, the same place an SSH signing key lives. `signingPasskey.sign` returns the raw ECDSA signature over the bytes it is given and does not interpret them. The caller builds the WebAuthn authenticator data and client data and passes their concatenation. The npm connector does not take a one-time password and does not send `npm-otp`. When a guarded write returns npm's security-key page, the extension answers that page's own `navigator.credentials.create` or `get`, and one daemon asks the server to sign.
 
-So:
+**Superseded (Alex, 2026-10-26):** "for blocker 1, option a, we'll hold the totp secret in jive". Option a was the held authenticator-app (TOTP) secret. That path is not built. The notes under it stay as the record of what it would have stored.
+
+So, under that superseded decision:
 
 - Connecting an npm account stores its token and the shared secret of its authenticator app (RFC 6238, base32 as
   npm's two-factor setup shows it) in `@jive-sh/server`, in the `connections` table. Both are sealed together at
@@ -333,10 +333,8 @@ in a browser outside Convex; the TOTP decision needs no browser.
 
 What to prove, in order:
 
-1. **The connection, by hand:** Alex adds an authenticator app to the npm account, and its secret and a token are
-   stored with `bun run connect-npm` in `@jive-sh/server`, which prompts for both without echoing them (§12). This settles the open risk above.
-2. The connector's `createPlaceholder` and `registerTrustedPublisher`, called live, are refused with EOTP and pass
-   with the computed code. Tested so far only against a fake registry.
+1. **The connection:** the organization's signing passkey is added on the npm account, from npm's website. `passkeyRegistered` is a local flag, not proof the account holds the credential. This checkout has not opened that page.
+2. A guarded registry write returns npm's security-key page, and the extension answers it through the daemon. Tested so far only against a fake registry and local ceremony tests, not a live npm write.
 3. How long the account's token lasts, and how the server renews it.
 4. The staged route: `npm stage publish` of the placeholder creating the package, then promotion with the second
    factor, since the direct route may close in January 2027 (§1).

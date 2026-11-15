@@ -22,5 +22,5 @@ export const runExtensionDaemon = (input: {
     yield* e.Effect.log(registered.length === 0
       ? `No Chrome or Chromium found in ${input.manifestDirs.join(", ") || "(no directories for this OS)"}; the Jive extension can't reach this daemon`
       : `Native host registered for the Jive extension in ${registered.join(", ")}`);
-    yield* serveExtensionDaemon(input.paths.extensionDaemonSocket);
+    yield* serveExtensionDaemon(input.paths.daemonSocket);
   });

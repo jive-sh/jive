@@ -11,7 +11,12 @@ import { AccountKeyImpl } from "@/modules/account-key/impl";
 import { JiveServerImpl } from "@/modules/jive-server/impl";
 import type { Session } from "@/modules/jive-server/interface";
 import { ModulesLayer } from "@/modules/runtime";
+import { ExtensionDaemonImpl } from "@/modules/extension-daemon/impl";
+import { serveExtensionDaemon } from "@/modules/extension-daemon/socket-server";
+import { ExtensionSignInImpl } from "@/modules/extension-sign-in/impl";
+import { NpmCredentialPosterNotDecidedImpl } from "@/modules/npm-credential-poster/not-decided";
 import { SessionImpl } from "@/modules/session/impl";
+import { SignedInAccount } from "@/modules/session/interface";
 import { SigningAgentImpl } from "@/modules/signing-agent/impl";
 import { sshString } from "@/modules/signing-agent/protocol";
 import { serveSigningAgent } from "@/modules/signing-agent/socket-server";
@@ -20,7 +25,7 @@ import { jive } from "@/program";
 /**
  * The cutover from ozy to jive, on a scratch copy of a workspace shaped like Alex's: a root repository whose submodule
  * has a submodule of its own, every .gitmodules naming `git@github.com:` URLs, the nested one not checked out yet.
- * `jive init` runs as the CLI does. Then a commit in the nested submodule is signed through the real `jive-ssh-keygen`
+ * `jive init` runs as the CLI does. Then a commit in the nested submodule is signed through the real `jive-ssh-sign`
  * entrypoint and the signing agent, `ssh-keygen -Y verify` accepts it, and it is pushed over SSH, through the agent,
  * to an sshd on this machine that accepts only the account key.
  *
@@ -80,8 +85,11 @@ const fakeServer = JiveServerImpl.mockLayer({
     return new Uint8Array([...sshString(encoder.encode("ssh-ed25519")), ...sshString(sign(null, data, privateKey))]);
   },
 });
+const session = { sessionToken: "jive_session", expiresAt: Date.now() + 3_600_000 };
 const signedIn = SessionImpl.mockLayer({
-  *ensureSignedIn() { return { sessionToken: "jive_session", expiresAt: Date.now() + 3_600_000 }; },
+  *current() { return e.Option.some(session); },
+  *ensureSignedIn() { return session; },
+  *whoIsSignedIn() { return SignedInAccount.Confirmed({ username: "tester", session }); },
 });
 
 const accountKey = { publicKey: publicKeyLine, publicKeyFile: paths.accountPublicKeyFile };
@@ -102,12 +110,13 @@ beforeAll(async () => {
   mkdirSync(path.dirname(paths.accountPublicKeyFile), { recursive: true });
   writeFileSync(paths.accountPublicKeyFile, `${publicKeyLine}\n`);
 
-  // jive's installed jive-ssh-keygen, run from source with the scratch home.
+  // jive's installed jive-ssh and jive-ssh-sign, run from source with the scratch home.
   mkdirSync(installedBin);
-  const keygen = path.join(installedBin, "jive-ssh-keygen");
-  const entrypoint = path.join(import.meta.dir, "entrypoints", "jive-ssh-keygen.ts");
-  writeFileSync(keygen, `#!/bin/sh\nexec env HOME=${JSON.stringify(home)} ${JSON.stringify(process.execPath)} ${JSON.stringify(entrypoint)} "$@"\n`);
-  chmodSync(keygen, 0o755);
+  for (const command of ["jive-ssh", "jive-ssh-sign"]) {
+    const entrypoint = path.join(import.meta.dir, "entrypoints", `${command}.ts`);
+    writeFileSync(path.join(installedBin, command), `#!/bin/sh\nexec env HOME=${JSON.stringify(home)} ${JSON.stringify(process.execPath)} ${JSON.stringify(entrypoint)} "$@"\n`);
+    chmodSync(path.join(installedBin, command), 0o755);
+  }
 
   // An sshd on this machine serving the bare repositories, accepting only the account key.
   mkdirSync(sshdDir);
@@ -165,16 +174,24 @@ beforeAll(async () => {
   // A repository cloned into the workspace and never added as a submodule, as @jive-sh/server is in Alex's checkout.
   sh(["git", ...viaFiles, "clone", "-q", "git@github.com:acme/loose.git", path.join(checkout, "packages", "loose")], scratch);
 
-  const agentLayer = e.pipe(
+  // jive-daemon's two sockets: the agent, and the API socket jive-ssh and jive-ssh-sign ask who is signed in.
+  const daemonLayer = e.pipe(
     SigningAgentImpl.Layer,
+    e.Layer.provideMerge(ExtensionDaemonImpl.Layer),
     e.Layer.provideMerge(AccountKeyImpl.Layer),
+    e.Layer.provideMerge(NpmCredentialPosterNotDecidedImpl.Layer),
+    e.Layer.provideMerge(ExtensionSignInImpl.Layer),
     e.Layer.provideMerge(signedIn),
     e.Layer.provideMerge(fakeServer),
     e.Layer.provideMerge(scratchHost),
     e.Layer.provideMerge(BunServices.layer),
   );
   const scope = await e.Effect.runPromise(e.Scope.make());
-  await e.Effect.runPromise(e.pipe(serveSigningAgent(paths.agentSocket), e.Scope.provide(scope), e.Effect.provide(agentLayer)));
+  await e.Effect.runPromise(e.pipe(
+    e.Effect.all([serveSigningAgent(paths.agentSocket), serveExtensionDaemon(paths.daemonSocket)]),
+    e.Scope.provide(scope),
+    e.Effect.provide(daemonLayer),
+  ));
   closeAgent = () => e.Effect.runPromise(e.Scope.close(scope, e.Exit.void));
 });
 
@@ -215,10 +232,11 @@ test("jive init moves every .gitmodules to https, checks out the nested submodul
 
   for (const repository of [checkout, widget(), gadget(), path.join(checkout, "packages", "loose")]) {
     expect(gitConfigIn(repository, "gpg.format")).toBe("ssh");
-    expect(gitConfigIn(repository, "gpg.ssh.program")).toBe(path.join(installedBin, "jive-ssh-keygen"));
+    expect(gitConfigIn(repository, "gpg.ssh.program")).toBe(path.join(installedBin, "jive-ssh-sign"));
     expect(gitConfigIn(repository, "user.signingKey")).toBe(paths.accountPublicKeyFile);
     expect(gitConfigIn(repository, "commit.gpgSign")).toBe("true");
-    expect(gitConfigIn(repository, "core.sshCommand")).toContain(`IdentityAgent=${JSON.stringify(paths.agentSocket)}`);
+    expect(gitConfigIn(repository, "core.sshCommand")).toBe(path.join(installedBin, "jive-ssh"));
+    expect(gitConfigIn(repository, "ssh.variant")).toBe("ssh");
     expect(gitConfigIn(repository, "url.git@github.com:.insteadOf")).toBe("https://github.com/");
     expect(Bun.spawnSync(["git", "config", "--local", "--get", "remote.origin.pushurl"], { cwd: repository, env: process.env }).exitCode).toBe(1);
   }
@@ -258,6 +276,8 @@ test("a commit in the nested submodule is signed through jive, ssh-keygen -Y ver
   expect(listed.stdout).toContain("refs/heads/main");
   const pushed = await overSsh(["push", "origin", "HEAD:refs/heads/signed"]);
   expect(pushed.stderr).not.toContain("Permission denied");
+  // git passes jive-ssh its own -o SendEnv=GIT_PROTOCOL, which draws no warning.
+  expect(listed.stderr + pushed.stderr).not.toContain("jive-ssh");
   expect(pushed.exitCode).toBe(0);
   const head = sh(["git", "rev-parse", "HEAD"], gadget());
   expect(sh(["git", "--git-dir", path.join(remotes, "acme", "gadget.git"), "rev-parse", "refs/heads/signed"], scratch)).toBe(head);
@@ -268,7 +288,7 @@ test("a commit in the nested submodule is signed through jive, ssh-keygen -Y ver
 const everyRepository = `for d in . $(git submodule foreach --quiet --recursive pwd) $(git ls-files --others --exclude-standard --directory | sed -n 's#/$##p'); do [ -e "$d/.git" ] || continue;`;
 
 test("the handed-over repository check finds every repository on jive, and the rollback puts each back on ozy", async () => {
-  const check = await run(["sh", "-c", `${everyRepository} p=$(git -C "$d" config gpg.ssh.program); s=$(git -C "$d" config core.sshCommand); u=$(git -C "$d" config url.git@github.com:.insteadOf); case "$p$s$u" in *jive-ssh-keygen*signing-agent.sock*https://github.com/*) ;; *) echo "NOT ON JIVE: $d";; esac; done; echo "repo check done"`], checkout);
+  const check = await run(["sh", "-c", `${everyRepository} p=$(git -C "$d" config gpg.ssh.program); s=$(git -C "$d" config core.sshCommand); v=$(git -C "$d" config ssh.variant); u=$(git -C "$d" config url.git@github.com:.insteadOf); case "$p,$s,$v,$u" in */jive-ssh-sign,*/jive-ssh,ssh,https://github.com/) ;; *) echo "NOT ON JIVE: $d";; esac; done; echo "repo check done"`], checkout);
   expect(check.stdout).toBe("repo check done");
   const modules = await run(["sh", "-c", `for f in .gitmodules $(git submodule foreach --quiet --recursive 'test -f .gitmodules && echo "$toplevel/$sm_path/.gitmodules"'); do grep -H "url = git@" "$f"; done; echo ".gitmodules check done"`], checkout);
   expect(modules.stdout).toBe(".gitmodules check done");
@@ -281,7 +301,7 @@ test("the handed-over repository check finds every repository on jive, and the r
     `${everyRepository}`,
     `  git -C "$d" config gpg.ssh.program ${ozyKeygen}`,
     `  git -C "$d" config user.signingkey ${ozyKey}`,
-    `  git -C "$d" config --unset core.sshCommand; git -C "$d" config --unset url.git@github.com:.insteadOf`,
+    `  git -C "$d" config --unset core.sshCommand; git -C "$d" config --unset ssh.variant; git -C "$d" config --unset url.git@github.com:.insteadOf`,
     "done",
   ].join("\n")], checkout);
   expect(rollback.stderr).toBe("");
@@ -291,6 +311,7 @@ test("the handed-over repository check finds every repository on jive, and the r
     expect(gitConfigIn(repository, "user.signingkey")).toBe(ozyKey);
     expect(gitConfigIn(repository, "remote.origin.url")).toBe(`git@github.com:acme/${name}.git`);
     expect(Bun.spawnSync(["git", "config", "--local", "--get", "core.sshCommand"], { cwd: repository, env: process.env }).exitCode).toBe(1);
+    expect(Bun.spawnSync(["git", "config", "--local", "--get", "ssh.variant"], { cwd: repository, env: process.env }).exitCode).toBe(1);
     expect(Bun.spawnSync(["git", "config", "--local", "--get", "url.git@github.com:.insteadOf"], { cwd: repository, env: process.env }).exitCode).toBe(1);
   }
   expect(readFileSync(path.join(checkout, ".gitmodules"), "utf8")).toContain("url = git@github.com:acme/widget.git");

@@ -11,6 +11,8 @@ import {
   ProvisionValue,
   PublicKeyValue,
   SignatureValue,
+  SigningPasskeySignatureValue,
+  SigningPasskeyValue,
 } from "./contract";
 
 /**
@@ -30,7 +32,19 @@ const contract: {
   readonly account: Decodes<typeof AccountValue, typeof api.accounts.me>;
   readonly publicKey: Decodes<typeof PublicKeyValue, typeof api.ssh.publicKey>;
   readonly sign: Decodes<typeof SignatureValue, typeof api.ssh.sign>;
-} = { open: true, claim: true, pipelineSignIn: true, provision: true, account: true, publicKey: true, sign: true };
+  readonly signingPasskey: Decodes<typeof SigningPasskeyValue, typeof api.signingPasskey.ensure>;
+  readonly signingPasskeySign: Decodes<typeof SigningPasskeySignatureValue, typeof api.signingPasskey.sign>;
+} = {
+  open: true,
+  claim: true,
+  pipelineSignIn: true,
+  provision: true,
+  account: true,
+  publicKey: true,
+  sign: true,
+  signingPasskey: true,
+  signingPasskeySign: true,
+};
 
 const roundTrip = (value: Value) => jsonToConvex(JSON.parse(JSON.stringify(convexToJson(value))));
 

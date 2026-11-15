@@ -1,6 +1,6 @@
 import * as e from "effect";
 import * as path from "node:path";
-import { EXTENSION_DAEMON_NAME, NATIVE_HOST_COMMAND_NAME, installedCommandPath } from "@/constants";
+import { DAEMON_NAME, NATIVE_HOST_COMMAND_NAME, installedCommandPath } from "@/constants";
 import type { JiveHomePaths } from "@/jive-home";
 import { EXTENSION_PUBLIC_KEY, NATIVE_HOST_NAME } from "../protocol";
 import { extensionIdOf } from "./extension-id";
@@ -27,12 +27,12 @@ export function defaultNativeMessagingDirs(input: { readonly homeDirectory: stri
 /**
  * The executable Chrome should start. Installed, every jive command is the same multi-call binary under its command's
  * name (jive-abstract-library's build), so the native host is `jive-native-host` beside the running daemon. Run from
- * source (`bun src/daemons/jive-extension-daemon.ts`), there is no such binary, so the daemon writes a launcher that
+ * source (`bun src/daemons/jive-daemon.ts`), there is no such binary, so the daemon writes a launcher that
  * runs the native host's source with the same bun.
  */
 function nativeHostExecutable(paths: JiveHomePaths): e.Effect.Effect<string, string, e.FileSystem.FileSystem> {
   return e.Effect.gen(function* () {
-    if (path.basename(process.execPath).startsWith(EXTENSION_DAEMON_NAME)) {
+    if (path.basename(process.execPath).startsWith(DAEMON_NAME)) {
       return installedCommandPath(process.execPath, NATIVE_HOST_COMMAND_NAME);
     }
     const fs = yield* e.FileSystem.FileSystem;
@@ -58,7 +58,7 @@ export function registerNativeHost(input: {
     const executable = yield* nativeHostExecutable(input.paths);
     const manifest = JSON.stringify({
       name: NATIVE_HOST_NAME,
-      description: "jive-extension-daemon's relay for the Jive browser extension",
+      description: "jive-daemon's relay for the Jive browser extension",
       path: executable,
       type: "stdio",
       allowed_origins: [`chrome-extension://${extensionIdOf(EXTENSION_PUBLIC_KEY)}/`],

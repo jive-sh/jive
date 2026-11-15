@@ -37,3 +37,9 @@ export const ProvisionValue = e.Schema.Union([
 export const AccountValue = e.Schema.NullOr(e.Schema.Struct({ username: e.Schema.String, sessionExpiresAt: e.Schema.Number }));
 export const PublicKeyValue = e.Schema.Struct({ publicKey: e.Schema.NonEmptyString });
 export const SignatureValue = e.Schema.Struct({ signature: e.Schema.instanceOf(ArrayBuffer) });
+export const SigningPasskeyValue = e.Schema.Struct({
+  credentialId: e.Schema.NonEmptyString,
+  publicKeySpki: e.Schema.NonEmptyString,
+});
+/** `signingPasskey:sign` returns standard base64, not bytes. The SSH signature above is the one that arrives as bytes. */
+export const SigningPasskeySignatureValue = e.Schema.Struct({ signature: e.Schema.NonEmptyString });
