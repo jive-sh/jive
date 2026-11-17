@@ -41,9 +41,10 @@ jobs:
       || github.event_name == 'workflow_dispatch'
       || (github.event_name == 'push' && fromJSON(needs.context.outputs.package-config).cicd.deploy.branches[github.ref_name] != null)
     runs-on: ${{ fromJSON(needs.context.outputs.package-config).cicd.runsOn }}
+    # Base64, decoded by the read-deploy-plan job: see the Encode Outputs step.
     outputs:
-      environments: ${{ steps.sequence-deploys.outputs.environments }}
-      will-deploy: ${{ steps.sequence-deploys.outputs['will-deploy'] }}
+      environments-base64: ${{ steps.encode-outputs.outputs.environments }}
+      will-deploy-base64: ${{ steps.encode-outputs.outputs['will-deploy'] }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v7
@@ -77,14 +78,47 @@ jobs:
         with:
           will-deploy: ${{ steps.sequence-deploys.outputs['will-deploy'] }}
           pipeline-context: ${{ needs.context.outputs.pipeline-context }}
+      # GitHub masks a multi-line secret line by line, so SECRETS (a caller's secrets as pretty-printed JSON) makes its
+      # lone "{" and "}" lines masks in this job, and the runner drops every job output containing either: "Skip output
+      # 'environments' since it may contain secret" (https://github.com/open-empires/decomp-project-image/actions/runs/44003290745),
+      # after which no deploy job starts. Base64 has neither character. Expressions can't decode base64, so the
+      # read-deploy-plan job, which reads no secrets and so has no masks, decodes these for the deploy job.
+      - name: Encode Outputs
+        id: encode-outputs
+        shell: bash
+        env:
+          ENVIRONMENTS: ${{ steps.sequence-deploys.outputs.environments }}
+          WILL_DEPLOY: ${{ steps.sequence-deploys.outputs['will-deploy'] }}
+        run: |
+          echo "environments=$(printf '%s' "$ENVIRONMENTS" | base64 -w0)" >> "$GITHUB_OUTPUT"
+          echo "will-deploy=$(printf '%s' "$WILL_DEPLOY" | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+  read-deploy-plan:
+    name: Read Deploy Plan
+    needs: build
+    # Fixed runner: this only decodes two strings.
+    runs-on: ubuntu-latest
+    outputs:
+      environments: ${{ steps.decode-outputs.outputs.environments }}
+      will-deploy: ${{ steps.decode-outputs.outputs['will-deploy'] }}
+    steps:
+      - name: Decode Outputs
+        id: decode-outputs
+        shell: bash
+        env:
+          ENVIRONMENTS: ${{ needs.build.outputs.environments-base64 }}
+          WILL_DEPLOY: ${{ needs.build.outputs.will-deploy-base64 }}
+        run: |
+          echo "environments=$(printf '%s' "$ENVIRONMENTS" | base64 -d)" >> "$GITHUB_OUTPUT"
+          echo "will-deploy=$(printf '%s' "$WILL_DEPLOY" | base64 -d)" >> "$GITHUB_OUTPUT"
 
   # Long-term TODOS:
   # 1. Branch allow list should probably be auto-set in GHA based on the package config
   # 2. There should be an ability to set approval steps before a deployment
   deploy:
     name: ${{ fromJSON(needs.context.outputs.package-config).cicd.deploy.verb }} ${{ matrix.environment.name }}
-    needs: [context, build]
-    if: ${{ needs.build.outputs['will-deploy'] == 'true' }}
+    needs: [context, build, read-deploy-plan]
+    if: ${{ needs.read-deploy-plan.outputs['will-deploy'] == 'true' }}
     runs-on: ${{ fromJSON(needs.context.outputs.package-config).cicd.runsOn }}
     environment:
       name: ${{ matrix.environment.name }}
@@ -99,7 +133,7 @@ jobs:
       # capped by runner availability and the plan's concurrent-job limit.
       max-parallel: ${{ fromJSON(needs.context.outputs.package-config).cicd.deploy.sequentially && 1 || 256 }}
       matrix:
-        environment: ${{ fromJSON(needs.build.outputs.environments) }}
+        environment: ${{ fromJSON(needs.read-deploy-plan.outputs.environments) }}
     steps:
       # TODO: In the future, use Jive-controlled runner with persistent state per workflow
       #       such that there is no need to upload or download artifacts.
