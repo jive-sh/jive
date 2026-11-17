@@ -26,6 +26,8 @@ const bunHome = path.join(scratch, "bun-home");
 const home = path.join(scratch, "home");
 const originalDirectory = process.cwd();
 const originalEnv = { ...process.env };
+/** The workspace root's package.json, which marks it the workspace. */
+const rootManifest = `${JSON.stringify({ private: true, jive: { root: true } })}\n`;
 
 function sh(command: ReadonlyArray<string>, cwd: string): string {
   // Bun.spawnSync without env passes the environment the test started with, not the scratch git config.
@@ -68,7 +70,8 @@ beforeAll(() => {
   sh(["git", "commit", "-qm", "widget"], widgetSource);
   sh(["git", "clone", "-q", "--bare", widgetSource, path.join(remotes, "acme", "widget.git")], scratch);
 
-  mkdirSync(path.join(workspace, ".jive"), { recursive: true });
+  mkdirSync(workspace);
+  writeFileSync(path.join(workspace, "package.json"), rootManifest);
   writeFileSync(path.join(workspace, "README.md"), "workspace\n");
   sh(["git", "init", "-q"], workspace);
   sh(["git", "add", "."], workspace);
@@ -132,7 +135,7 @@ async function runJive(args: ReadonlyArray<string>): Promise<Outcome> {
 const provisioned: Array<{ kind: string; instance: unknown }> = [];
 
 const errorOf = (exit: e.Exit.Exit<void, unknown>) => e.Option.getOrUndefined(e.Exit.findErrorOption(exit));
-const widget = () => path.join(workspace, "@acme", "widget");
+const widget = () => path.join(workspace, "packages", "@acme", "widget");
 const gitConfigIn = (directory: string, key: string) => sh(["git", "config", "--local", "--get", key], directory);
 
 describe("jive in a workspace", () => {
@@ -185,17 +188,17 @@ describe("jive in a workspace", () => {
     expect((await runJive(["unload", "acme", "widget"])).exit).toEqual(e.Exit.void);
     expect(existsSync(widget())).toBe(false);
     expect(readFileSync(path.join(workspace, ".gitmodules"), "utf8")).not.toContain("acme/widget");
-    expect(existsSync(path.join(workspace, ".git", "modules", "@acme", "widget"))).toBe(false);
+    expect(existsSync(path.join(workspace, ".git", "modules", "packages", "@acme", "widget"))).toBe(false);
   });
 
   test("provision sends the kind and the instance --instance gives, or the one package.json declares", async () => {
     provisioned.length = 0;
     expect((await runJive(["provision", "connector-package-registry", "@acme/widget", "--instance", '{"packageName":"@acme/widget"}'])).exit).toEqual(e.Exit.void);
-    writeFileSync(path.join(workspace, "package.json"), JSON.stringify({ jive: { resources: { "connector-package-registry": { "@acme/gadget": { packageName: "@acme/gadget" } } } } }));
+    writeFileSync(path.join(workspace, "package.json"), JSON.stringify({ jive: { root: true, resources: { "connector-package-registry": { "@acme/gadget": { packageName: "@acme/gadget" } } } } }));
     expect((await runJive(["provision", "connector-package-registry", "@acme/gadget"])).exit).toEqual(e.Exit.void);
     const undeclared = await runJive(["provision", "connector-package-registry", "@acme/missing"]);
     expect(errorOf(undeclared.exit)).toBeInstanceOf(BadArgumentError);
-    rmSync(path.join(workspace, "package.json"));
+    writeFileSync(path.join(workspace, "package.json"), rootManifest);
     expect(provisioned).toEqual([
       { kind: "connector-package-registry", instance: { packageName: "@acme/widget" } },
       { kind: "connector-package-registry", instance: { packageName: "@acme/gadget" } },
@@ -207,9 +210,168 @@ describe("jive in a workspace", () => {
     try {
       const error = errorOf((await runJive(["unload", "acme", "widget"])).exit);
       expect(error).toBeInstanceOf(BadPreconditionsError);
-      expect(error instanceof BadPreconditionsError && error.cause).toBe(`${scratch} is not within a jive workspace.`);
+      expect(error instanceof BadPreconditionsError && error.cause).toBe(`${scratch} is not within a jive workspace: no package.json from here up says "jive": { "root": true }.`);
     } finally {
       process.chdir(workspace);
     }
   });
+});
+
+/**
+ * `jive load` in monorepos shaped like the two it serves: open-empires (its submodules at `packages/<repo>`, whose
+ * package names are scoped) and chaine (at `packages/<package name>`, scoped and not). Each monorepo is a fresh git
+ * repository whose submodules come from the local bare repos, as `git submodule add` records them. The ones testing
+ * placement, staging and adoption also hold an empty `.jive` directory, the mark jive 0.8.0 looked for, so on 0.8.0
+ * each of them fails on the defect it tests rather than on finding the root.
+ */
+describe("jive load in a monorepo", () => {
+  /** A repo on "GitHub" (a local bare repo) whose package.json names `packageName`. */
+  function publish({ repo, packageName }: { readonly repo: string; readonly packageName: string }) {
+    const source = path.join(scratch, "sources", repo);
+    mkdirSync(source, { recursive: true });
+    writeFileSync(path.join(source, "package.json"), JSON.stringify({ name: packageName, version: "0.0.0" }));
+    sh(["git", "init", "-q"], source);
+    sh(["git", "add", "."], source);
+    sh(["git", "commit", "-qm", repo], source);
+    sh(["git", "clone", "-q", "--bare", source, path.join(remotes, "acme", `${repo}.git`)], scratch);
+  }
+
+  /** A monorepo with the given submodules committed, and the root mark or the 0.8.0 `.jive` directory. */
+  function monorepo({ name, mark, submodules }: {
+    readonly name: string;
+    readonly mark: "package.json" | ".jive" | "none";
+    readonly submodules: ReadonlyArray<{ readonly repo: string; readonly path: string }>;
+  }): string {
+    const root = path.join(scratch, "monorepos", name);
+    mkdirSync(root, { recursive: true });
+    writeFileSync(path.join(root, "README.md"), `${name}\n`);
+    if (mark === "package.json") writeFileSync(path.join(root, "package.json"), rootManifest);
+    if (mark === ".jive") mkdirSync(path.join(root, ".jive"));
+    sh(["git", "init", "-q"], root);
+    for (const submodule of submodules) sh(["git", "submodule", "add", "-q", `https://github.com/acme/${submodule.repo}`, submodule.path], root);
+    sh(["git", "add", "."], root);
+    sh(["git", "commit", "-qm", name], root);
+    return root;
+  }
+
+  async function runJiveIn(directory: string, args: ReadonlyArray<string>): Promise<Outcome> {
+    process.chdir(directory);
+    try {
+      return await runJive(args);
+    } finally {
+      process.chdir(workspace);
+    }
+  }
+
+  const loaded = async (root: string, repo: string) => {
+    const { exit } = await runJiveIn(root, ["load", "acme", repo]);
+    if (e.Exit.isFailure(exit)) throw new Error(`jive load acme ${repo} failed: ${JSON.stringify(e.Cause.squash(exit.cause))}`);
+  };
+
+  beforeAll(() => {
+    publish({ repo: "aoe2-in-browser", packageName: "@acme/aoe2-in-browser" });
+    publish({ repo: "open-empires-web", packageName: "@acme/open-empires-web" });
+    publish({ repo: "decomp-project-image", packageName: "decomp-project-image" });
+    publish({ repo: "jive", packageName: "@jive-sh/jive" });
+    publish({ repo: "jive-abstract-library", packageName: "jive-abstract-library" });
+    // A repo whose package name is not its repo name: its place follows the package name.
+    publish({ repo: "server-repo", packageName: "@jive-sh/server" });
+  });
+
+  test("after jive init marks a plain monorepo's root package.json, jive load works in it", async () => {
+    const root = monorepo({ name: "plain", mark: "none", submodules: [] });
+    expect((await runJiveIn(root, ["init"])).exit).toEqual(e.Exit.void);
+    expect(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))).toEqual({ jive: { root: true } });
+    await loaded(root, "decomp-project-image");
+    expect(JSON.parse(readFileSync(path.join(root, "packages", "decomp-project-image", "package.json"), "utf8")).name).toBe("decomp-project-image");
+  }, 30_000);
+
+  test("init keeps every other field of an existing root package.json, and its indentation", async () => {
+    const root = monorepo({ name: "with-manifest", mark: "none", submodules: [] });
+    writeFileSync(path.join(root, "package.json"), `{\n    "name": "monorepo",\n    "jive": { "other": 1 }\n}\n`);
+    expect((await runJiveIn(root, ["init"])).exit).toEqual(e.Exit.void);
+    expect(readFileSync(path.join(root, "package.json"), "utf8"))
+      .toBe(`{\n    "name": "monorepo",\n    "jive": {\n        "other": 1,\n        "root": true\n    }\n}\n`);
+  }, 30_000);
+
+  test("in a monorepo shaped like open-empires, load puts the repo at packages/<package name>", async () => {
+    const root = monorepo({ name: "open-empires", mark: ".jive", submodules: [
+      { repo: "aoe2-in-browser", path: "packages/aoe2-in-browser" },
+      { repo: "open-empires-web", path: "packages/open-empires-web" },
+    ] });
+    writeFileSync(path.join(root, "package.json"), rootManifest);
+    await loaded(root, "decomp-project-image");
+    expect(existsSync(path.join(root, "packages", "decomp-project-image", "package.json"))).toBe(true);
+    expect(sh(["git", "config", "-f", ".gitmodules", "submodule.packages/decomp-project-image.url"], root)).toBe("https://github.com/acme/decomp-project-image");
+    expect(sh(["git", "ls-files", "--stage", "--", "packages/decomp-project-image"], root)).toStartWith("160000 ");
+    expect(gitConfigIn(path.join(root, "packages", "decomp-project-image"), "gpg.format")).toBe("ssh");
+    expect(gitConfigIn(path.join(root, "packages", "decomp-project-image"), "core.sshCommand")).toEndWith("/jive-ssh");
+  }, 30_000);
+
+  test("in a monorepo shaped like chaine, load puts a scoped package at packages/@scope/name, by its package name", async () => {
+    const root = monorepo({ name: "chaine", mark: ".jive", submodules: [
+      { repo: "jive", path: "packages/@jive-sh/jive" },
+      { repo: "jive-abstract-library", path: "packages/jive-abstract-library" },
+    ] });
+    writeFileSync(path.join(root, "package.json"), rootManifest);
+    await loaded(root, "server-repo");
+    expect(JSON.parse(readFileSync(path.join(root, "packages", "@jive-sh", "server", "package.json"), "utf8")).name).toBe("@jive-sh/server");
+    expect(sh(["git", "config", "-f", ".gitmodules", "submodule.packages/@jive-sh/server.url"], root)).toBe("https://github.com/acme/server-repo");
+    // The clone that told jive the package name is gone from the git directory.
+    expect(existsSync(path.join(root, ".git", "jive-load"))).toBe(false);
+    // Running it again changes nothing and says it is loaded.
+    await loaded(root, "server-repo");
+    expect(sh(["git", "config", "-f", ".gitmodules", "--get-all", "submodule.packages/@jive-sh/server.path"], root)).toBe("packages/@jive-sh/server");
+  }, 30_000);
+
+  test("load stages only its own .gitmodules entry and gitlink, leaving others' uncommitted .gitmodules edits unstaged", async () => {
+    const root = monorepo({ name: "busy", mark: ".jive", submodules: [{ repo: "aoe2-in-browser", path: "packages/aoe2-in-browser" }] });
+    writeFileSync(path.join(root, "package.json"), rootManifest);
+    sh(["git", "add", "package.json"], root);
+    sh(["git", "commit", "-qm", "mark"], root);
+    // Another agent's edit, not staged: a URL rewritten in the working tree's .gitmodules.
+    sh(["git", "config", "-f", ".gitmodules", "submodule.packages/aoe2-in-browser.url", "https://github.com/acme/edited-by-someone-else"], root);
+    await loaded(root, "decomp-project-image");
+
+    // The other agent's edit is still only in the working tree.
+    expect(sh(["git", "show", ":.gitmodules"], root)).not.toContain("edited-by-someone-else");
+    expect(sh(["git", "diff", "--", ".gitmodules"], root)).toContain("+\turl = https://github.com/acme/edited-by-someone-else");
+    // The index gained exactly the new entry and its gitlink.
+    expect(sh(["git", "diff", "--cached", "--name-only"], root).split("\n")).toEqual([".gitmodules", "packages/decomp-project-image"]);
+    expect(sh(["git", "diff", "--cached", "--", ".gitmodules"], root).split("\n").filter(line => /^[+-][^+-]/.test(line))).toEqual([
+      `+[submodule "packages/decomp-project-image"]`,
+      "+\tpath = packages/decomp-project-image",
+      "+\turl = https://github.com/acme/decomp-project-image",
+    ]);
+  }, 30_000);
+
+  test("load adopts a checkout already at packages/<package name>, keeping its uncommitted work", async () => {
+    const root = monorepo({ name: "adopting", mark: ".jive", submodules: [{ repo: "aoe2-in-browser", path: "packages/aoe2-in-browser" }] });
+    writeFileSync(path.join(root, "package.json"), rootManifest);
+    const checkout = path.join(root, "packages", "decomp-project-image");
+    sh(["git", "clone", "-q", "https://github.com/acme/decomp-project-image", checkout], root);
+    // Its remote as `gh repo clone` leaves it, over SSH; jive recognises the repo either way.
+    sh(["git", "remote", "set-url", "origin", "git@github.com:acme/decomp-project-image"], checkout);
+    writeFileSync(path.join(checkout, "package.json"), JSON.stringify({ name: "decomp-project-image", version: "0.0.1" }));
+    writeFileSync(path.join(checkout, "work-in-progress.txt"), "not committed\n");
+    const head = sh(["git", "rev-parse", "HEAD"], checkout);
+
+    await loaded(root, "decomp-project-image");
+
+    expect(readFileSync(path.join(checkout, "work-in-progress.txt"), "utf8")).toBe("not committed\n");
+    expect(JSON.parse(readFileSync(path.join(checkout, "package.json"), "utf8")).version).toBe("0.0.1");
+    expect(sh(["git", "ls-files", "--stage", "--", "packages/decomp-project-image"], root)).toStartWith(`160000 ${head} `);
+    // Its git directory moved under the monorepo's, as for every submodule `git submodule add` clones.
+    expect(readFileSync(path.join(checkout, ".git"), "utf8").trim()).toBe("gitdir: ../../.git/modules/packages/decomp-project-image");
+    expect(sh(["git", "remote", "get-url", "origin"], checkout)).toBe("git@github.com:acme/decomp-project-image");
+    expect(gitConfigIn(checkout, "commit.gpgSign")).toBe("true");
+  }, 30_000);
+
+  test("load refuses a checkout of the repo that isn't at packages/<package name>, naming where it belongs", async () => {
+    const root = monorepo({ name: "misplaced", mark: "package.json", submodules: [] });
+    sh(["git", "clone", "-q", "https://github.com/acme/server-repo", path.join(root, "packages", "server")], root);
+    const error = errorOf((await runJiveIn(root, ["load", "acme", "server-repo"])).exit);
+    expect(error instanceof BadPreconditionsError && error.cause)
+      .toBe("acme/server-repo is at packages/server, but jive keeps the package @jive-sh/server at packages/@jive-sh/server");
+  }, 30_000);
 });

@@ -226,9 +226,10 @@ test("jive init moves every .gitmodules to https, checks out the nested submodul
   expect(readFileSync(path.join(widget(), ".gitmodules"), "utf8")).toContain("url = https://github.com/acme/gadget\n");
   expect(readFileSync(path.join(checkout, ".gitmodules"), "utf8") + readFileSync(path.join(widget(), ".gitmodules"), "utf8")).not.toContain("git@");
   expect(readFileSync(path.join(gadget(), "gadget.txt"), "utf8")).toBe("gadget\n");
-  // Nothing beyond the aligned config: no workspace directory, .gitignore as committed.
+  // Nothing beyond the aligned config and the root's mark: no workspace directory, .gitignore as committed.
   expect(readFileSync(path.join(checkout, ".gitignore"), "utf8")).toBe("node_modules\n");
   expect(existsSync(path.join(checkout, ".jive"))).toBe(false);
+  expect(JSON.parse(readFileSync(path.join(checkout, "package.json"), "utf8")).jive).toEqual({ root: true });
 
   for (const repository of [checkout, widget(), gadget(), path.join(checkout, "packages", "loose")]) {
     expect(gitConfigIn(repository, "gpg.format")).toBe("ssh");

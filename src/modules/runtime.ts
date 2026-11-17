@@ -32,8 +32,8 @@ const serverLayer = e.pipe(
 );
 
 export const ModulesLayer = e.pipe(
-  BunImpl.Layer,
-  e.Layer.provideMerge(GitImpl.Layer),
+  GitImpl.Layer,
+  e.Layer.provideMerge(BunImpl.Layer),
   e.Layer.provideMerge(ToolStateImpl.Layer),
   e.Layer.provideMerge(ProvisioningImpl.Layer),
   e.Layer.provideMerge(DaemonClientImpl.Layer),

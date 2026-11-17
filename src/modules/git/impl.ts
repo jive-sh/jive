@@ -6,25 +6,41 @@ import { SIGNING_COMMAND_NAME, SSH_COMMAND_NAME, TOOL_NAME, installedCommandPath
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { modules } from "@/modules";
 import type { AccountKey } from "@/modules/account-key/interface";
+import { PACKAGES_DIRECTORY, isPackageName, packageRelativePath } from "@/modules/tool-state/workspace-layout";
 import { GITHUB_HTTPS, GITHUB_SSH, githubHttpsUrl, repoOfGitHubRemote } from "./github-remote";
 import { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
-import type { IGit } from "./interface";
+import { LoadOutcome, type IGit, type LoadedRepository, type LoadedSubmodule } from "./interface";
 
 /** One line of `git submodule status`: a state character (space, -, + or U), the commit, then the path. */
 const SUBMODULE_STATUS_LINE = /^([ +\-U])[0-9a-f]+ (\S+)/;
 /** One line of `git config --get-regexp` over .gitmodules' URLs: the key, then the URL. */
 const SUBMODULE_URL_LINE = /^(submodule\..+\.url) (.+)$/;
+/** One line of `git config --get-regexp` over .gitmodules' paths and URLs: the submodule's name, the field, its value. */
+const SUBMODULE_FIELD_LINE = /^submodule\.(.+)\.(path|url) (.+)$/;
 /** Submodules nest at most this deep; a loop past it means a submodule names itself. */
 const MAX_SUBMODULE_DEPTH = 16;
+/** Under the workspace's git directory: where `load` clones a repo to read its package name, before moving it in place. */
+const LOAD_STAGING_DIRECTORY = "jive-load";
+/** Under the workspace's git directory: the copy of the index's .gitmodules that `load` adds its entry to. */
+const STAGED_GITMODULES_FILE = "jive-load-gitmodules";
+const GITLINK_MODE = "160000";
 
-export class GitImpl extends implementing(modules.git).uses(modules.toolState, OSPlatform, e.FileSystem.FileSystem) implements IGit {
+/** One entry of a .gitmodules. */
+interface SubmoduleEntry {
+  readonly name: string;
+  readonly path: string;
+  readonly url: string;
+}
+
+export class GitImpl extends implementing(modules.git).uses(modules.toolState, modules.bun, OSPlatform, e.FileSystem.FileSystem) implements IGit {
   *removeSubmodule(repoId: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError> {
-    const { relativePath } = yield* this.dependencies.toolState.repoPath(repoId);
+    const { submoduleName, location: { relativePath } } = yield* this.loadedRepository(repoId);
     const workspaceRoot = yield* this.workspaceRoot();
     yield* this.git(["submodule", "deinit", "-f", relativePath], workspaceRoot);
     yield* this.git(["rm", "-f", relativePath], workspaceRoot);
+    const gitDirectory = yield* this.absoluteGitDirectory(workspaceRoot);
     yield* e.pipe(
-      this.getDependency(e.FileSystem.FileSystem).remove(path.join(workspaceRoot, ".git", "modules", relativePath), { recursive: true, force: true }),
+      this.getDependency(e.FileSystem.FileSystem).remove(path.join(gitDirectory, "modules", submoduleName), { recursive: true, force: true }),
       e.Effect.catchTag("PlatformError", ({ message }) => e.Effect.fail(BadPreconditionsError.withoutFix(
         `Failed to remove the git directory of submodule ${relativePath}`, message,
       ))),
@@ -32,55 +48,255 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, O
   }
 
   *localOrgs(): EffectGen<string[], BadPreconditionsError> {
-    const workspaceRoot = yield* this.workspaceRoot();
-    const entries = yield* this.readDirectory(workspaceRoot);
-    const orgs: string[] = [];
-    for (const entry of entries.sort()) {
-      if (entry.startsWith("@") && (yield* this.isDirectory(path.resolve(workspaceRoot, entry)))) {
-        orgs.push(entry.slice(1));
-      }
-    }
-    return orgs;
+    const repositories = yield* this.loadedRepositories();
+    return [...new Set(repositories.map(({ repo }) => repo.org))].sort();
   }
 
   *localRepos(org: string): EffectGen<RepoIdentifier[], BadArgumentError | BadPreconditionsError> {
-    const orgLocation = yield* this.dependencies.toolState.orgPath(new RepoIdentifier(org, ""));
-    if (!(yield* this.isDirectory(orgLocation.absolutePath))) {
-      return yield* new BadArgumentError({
-        argument: "org",
-        reason: `Org ${orgLocation.relativePath} does not exist in this workspace`,
+    const repos = (yield* this.loadedRepositories()).map(({ repo }) => repo).filter(repo => repo.org === org);
+    if (repos.length === 0) {
+      return yield* new BadArgumentError({ argument: "org", reason: `Org @${org} does not exist in this workspace` });
+    }
+    return repos.sort((left, right) => left.repo.localeCompare(right.repo));
+  }
+
+  *loadedRepository(repo: RepoIdentifier): EffectGen<LoadedRepository, BadArgumentError | BadPreconditionsError> {
+    const maybeLoaded = (yield* this.loadedRepositories()).find(loaded => loaded.repo.equals(repo));
+    if (maybeLoaded === undefined) {
+      return yield* new BadArgumentError({ argument: "repo", reason: `There is no repo "${repo.toString()}" in this workspace` });
+    }
+    if (!(yield* this.pathExists(path.join(maybeLoaded.location.absolutePath, ".git")))) {
+      return yield* new BadPreconditionsError({
+        cause: `${repo.toString()} is a submodule at ${maybeLoaded.location.relativePath}, but it isn't checked out`,
+        fix: `Run \`${TOOL_NAME} init\`, which checks out every submodule`,
       });
     }
-    const repos = yield* this.readDirectory(orgLocation.absolutePath);
-    return repos.sort().map(repo => new RepoIdentifier(org, repo));
+    return maybeLoaded;
   }
 
-  *submoduleExists(repoId: RepoIdentifier): EffectGen<boolean, BadArgumentError | BadPreconditionsError> {
-    const repoLocation = yield* this.dependencies.toolState.repoPath(repoId);
-    if (!(yield* this.isDirectory(repoLocation.absolutePath))) {
-      return false;
-    }
-    const submodules = yield* this.getSubmodules();
-    return submodules.some(submodule => submodule.equals(repoId));
-  }
-
-  *cloneAsSubmodule(repoId: RepoIdentifier, accountKey: AccountKey): EffectGen<void, BadArgumentError | BadPreconditionsError> {
-    const { relativePath, absolutePath } = yield* this.dependencies.toolState.repoPath(repoId);
+  *loadAsSubmodule({ repo, accountKey }: { readonly repo: RepoIdentifier; readonly accountKey: AccountKey }): EffectGen<LoadedSubmodule, BadArgumentError | BadPreconditionsError> {
     const workspaceRoot = yield* this.workspaceRoot();
-    yield* this.git([...yield* this.fetchConfig(), "submodule", "add", githubHttpsUrl(repoId), relativePath], workspaceRoot);
-    yield* this.checkOutSubmodulesOverHttps(absolutePath);
-    for (const repository of yield* this.repositoriesUnder(absolutePath)) {
+    const gitDirectory = yield* this.absoluteGitDirectory(workspaceRoot);
+    const staging = path.join(gitDirectory, LOAD_STAGING_DIRECTORY, repo.org, repo.repo);
+    const placed = yield* e.pipe(
+      e.Effect.gen(() => this.placeAsSubmodule({ repo, workspaceRoot, gitDirectory, staging })),
+      // The staging clone is gone on every path: moved into place, or removed here.
+      e.Effect.ensuring(e.pipe(
+        this.getDependency(e.FileSystem.FileSystem).remove(path.join(gitDirectory, LOAD_STAGING_DIRECTORY), { recursive: true, force: true }),
+        e.Effect.ignore,
+      )),
+    );
+    yield* this.checkOutSubmodulesOverHttps(placed.location.absolutePath);
+    for (const repository of yield* this.repositoriesUnder(placed.location.absolutePath)) {
       yield* this.configureRepository(repository, accountKey);
     }
-  }
-
-  *getSubmodules(): EffectGen<RepoIdentifier[], BadArgumentError | BadPreconditionsError> {
-    const urls = yield* this.submoduleUrls(yield* this.workspaceRoot());
-    return urls.flatMap(({ url }) => e.Option.toArray(repoOfGitHubRemote(url)));
+    return placed;
   }
 
   *repositoryRoot(directory: string): EffectGen<string, BadPreconditionsError> {
     const { stdout } = yield* this.git(["rev-parse", "--show-toplevel"], directory, "capture");
+    return stdout.trim();
+  }
+
+  *outermostRepositoryRoot(directory: string): EffectGen<string, BadPreconditionsError> {
+    let root = yield* this.repositoryRoot(directory);
+    for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
+      const { stdout } = yield* this.gitAllowingFailure(["rev-parse", "--show-superproject-working-tree"], root);
+      const superproject = stdout.trim();
+      if (superproject === "") return root;
+      root = superproject;
+    }
+    return yield* BadPreconditionsError.withoutFix(`${directory} is a submodule more than ${MAX_SUBMODULE_DEPTH} deep`);
+  }
+
+  /** The workspace's submodules whose URL names a GitHub repo, from its root .gitmodules. */
+  private *loadedRepositories(): EffectGen<ReadonlyArray<LoadedRepository>, BadPreconditionsError> {
+    const workspaceRoot = yield* this.workspaceRoot();
+    return (yield* this.submoduleEntries(workspaceRoot)).flatMap(({ name, path: relativePath, url }) => e.Option.toArray(e.Option.map(
+      repoOfGitHubRemote(url),
+      (repo): LoadedRepository => ({ repo, submoduleName: name, location: { relativePath, absolutePath: path.join(workspaceRoot, relativePath) } }),
+    )));
+  }
+
+  /**
+   * Gets the repo to `packages/<its package name>` as a submodule: already there, adopted from a checkout already in
+   * place, or cloned to `staging` first, since its package name decides where it goes.
+   */
+  private *placeAsSubmodule({ repo, workspaceRoot, gitDirectory, staging }: {
+    readonly repo: RepoIdentifier;
+    readonly workspaceRoot: string;
+    readonly gitDirectory: string;
+    readonly staging: string;
+  }): EffectGen<LoadedSubmodule, BadArgumentError | BadPreconditionsError> {
+    const location = (relativePath: string) => ({ relativePath, absolutePath: path.join(workspaceRoot, relativePath) });
+    const maybeRegistered = (yield* this.submoduleEntries(workspaceRoot)).find(entry =>
+      e.Option.match(repoOfGitHubRemote(entry.url), { onNone: () => false, onSome: (named) => named.equals(repo) }));
+    if (maybeRegistered !== undefined && (yield* this.isGitlink({ workspaceRoot, relativePath: maybeRegistered.path }))) {
+      const registered = location(maybeRegistered.path);
+      if (!(yield* this.pathExists(path.join(registered.absolutePath, ".git")))) {
+        yield* this.git([...yield* this.fetchConfig(), "submodule", "update", "--init", "--", registered.relativePath], workspaceRoot);
+      }
+      const packageName = yield* this.packageNameIn({ repo, directory: registered.absolutePath });
+      yield* this.assertInPlace({ repo, packageName, relativePath: registered.relativePath });
+      return { packageName, location: registered, outcome: LoadOutcome.AlreadyLoaded() };
+    }
+
+    const maybeCheckout = yield* this.uncommittedCheckoutOf({ repo, workspaceRoot });
+    if (e.Option.isSome(maybeCheckout)) {
+      const adopted = location(maybeCheckout.value);
+      const packageName = yield* this.packageNameIn({ repo, directory: adopted.absolutePath });
+      yield* this.assertInPlace({ repo, packageName, relativePath: adopted.relativePath });
+      yield* this.stageSubmodule({ repo, workspaceRoot, gitDirectory, relativePath: adopted.relativePath });
+      return { packageName, location: adopted, outcome: LoadOutcome.Adopted() };
+    }
+
+    const fs = this.getDependency(e.FileSystem.FileSystem);
+    const failToMove = (what: string) => ({ message }: { readonly message: string }) => BadPreconditionsError.withoutFix(what, message);
+    yield* e.pipe(fs.remove(staging, { recursive: true, force: true }), e.Effect.mapError(failToMove(`Failed to clear ${staging}`)));
+    yield* e.pipe(fs.makeDirectory(path.dirname(staging), { recursive: true }), e.Effect.mapError(failToMove(`Failed to create ${path.dirname(staging)}`)));
+    yield* this.git([...yield* this.fetchConfig(), "clone", githubHttpsUrl(repo), staging], workspaceRoot);
+    const packageName = yield* this.packageNameIn({ repo, directory: staging });
+    const cloned = location(packageRelativePath(packageName));
+    if (yield* this.pathExists(cloned.absolutePath)) {
+      const contents = yield* this.readDirectory(cloned.absolutePath);
+      if (contents.length > 0) {
+        return yield* new BadPreconditionsError({
+          cause: `${cloned.relativePath} already exists and is not a checkout of ${repo.org}/${repo.repo}`,
+          fix: `Move ${cloned.relativePath} away, then run this again`,
+        });
+      }
+      yield* e.pipe(fs.remove(cloned.absolutePath, { recursive: true }), e.Effect.mapError(failToMove(`Failed to remove the empty ${cloned.relativePath}`)));
+    }
+    yield* e.pipe(fs.makeDirectory(path.dirname(cloned.absolutePath), { recursive: true }), e.Effect.mapError(failToMove(`Failed to create ${path.dirname(cloned.relativePath)}`)));
+    yield* e.pipe(fs.rename(staging, cloned.absolutePath), e.Effect.mapError(failToMove(`Failed to move the clone of ${repo.org}/${repo.repo} to ${cloned.relativePath}`)));
+    yield* this.stageSubmodule({ repo, workspaceRoot, gitDirectory, relativePath: cloned.relativePath });
+    return { packageName, location: cloned, outcome: LoadOutcome.Cloned() };
+  }
+
+  /** The package name in `directory`'s package.json: jive loads only packages, and the name decides where one goes. */
+  private *packageNameIn({ repo, directory }: { readonly repo: RepoIdentifier; readonly directory: string }): EffectGen<string, BadPreconditionsError> {
+    const maybeName = yield* this.dependencies.bun.packageName(directory);
+    if (e.Option.isNone(maybeName) || !isPackageName(maybeName.value)) {
+      return yield* new BadPreconditionsError({
+        cause: `${repo.org}/${repo.repo} has no package.json with a valid package name, and jive keeps each repo at ${PACKAGES_DIRECTORY}/<its package name>`,
+        fix: `Give ${repo.org}/${repo.repo} a package.json naming its package, then run this again`,
+      });
+    }
+    return maybeName.value;
+  }
+
+  private *assertInPlace({ repo, packageName, relativePath }: { readonly repo: RepoIdentifier; readonly packageName: string; readonly relativePath: string }): EffectGen<void, BadPreconditionsError> {
+    const expected = packageRelativePath(packageName);
+    if (relativePath !== expected) {
+      return yield* new BadPreconditionsError({
+        cause: `${repo.org}/${repo.repo} is at ${relativePath}, but jive keeps the package ${packageName} at ${expected}`,
+        fix: `Move it with \`git mv ${relativePath} ${expected}\` (or move the checkout there), then run this again`,
+      });
+    }
+  }
+
+  /**
+   * A git checkout of `repo` at `packages/<name>` or `packages/@<scope>/<name>` that the workspace doesn't have as a
+   * submodule yet, found by its remotes' URLs.
+   */
+  private *uncommittedCheckoutOf({ repo, workspaceRoot }: { readonly repo: RepoIdentifier; readonly workspaceRoot: string }): EffectGen<e.Option.Option<string>, BadPreconditionsError> {
+    const candidates: Array<string> = [];
+    const packagesDirectory = path.join(workspaceRoot, PACKAGES_DIRECTORY);
+    if (!(yield* this.isDirectory(packagesDirectory))) return e.Option.none();
+    for (const entry of (yield* this.readDirectory(packagesDirectory)).sort()) {
+      const relativePath = path.posix.join(PACKAGES_DIRECTORY, entry);
+      if (!entry.startsWith("@")) {
+        candidates.push(relativePath);
+      } else if (yield* this.isDirectory(path.join(workspaceRoot, relativePath))) {
+        for (const scoped of (yield* this.readDirectory(path.join(workspaceRoot, relativePath))).sort()) candidates.push(path.posix.join(relativePath, scoped));
+      }
+    }
+    for (const relativePath of candidates) {
+      const directory = path.join(workspaceRoot, relativePath);
+      if (!(yield* this.pathExists(path.join(directory, ".git")))) continue;
+      if (yield* this.isGitlink({ workspaceRoot, relativePath })) continue;
+      const { stdout } = yield* this.gitAllowingFailure(["config", "--local", "--get-regexp", "^remote\\..*\\.url$"], directory);
+      const namesRepo = stdout.split("\n").some(line => e.Option.match(repoOfGitHubRemote(line.slice(line.indexOf(" ") + 1)), {
+        onNone: () => false,
+        onSome: (named) => named.equals(repo),
+      }));
+      if (namesRepo) return e.Option.some(relativePath);
+    }
+    return e.Option.none();
+  }
+
+  /**
+   * Registers the checkout at `relativePath` as a submodule, as `git submodule add` would, without staging anything
+   * else: the index's .gitmodules gets this one entry (never the working tree's other, uncommitted edits), the index
+   * gets the gitlink at the checkout's HEAD, the working tree's .gitmodules gets the entry too, the checkout's git
+   * directory moves under the workspace's `.git/modules`, and the submodule is initialised in `.git/config`.
+   */
+  private *stageSubmodule({ repo, workspaceRoot, gitDirectory, relativePath }: {
+    readonly repo: RepoIdentifier;
+    readonly workspaceRoot: string;
+    readonly gitDirectory: string;
+    readonly relativePath: string;
+  }): EffectGen<void, BadPreconditionsError> {
+    const url = githubHttpsUrl(repo);
+    const { stdout: head } = yield* e.pipe(
+      e.Effect.gen(() => this.git(["rev-parse", "--verify", "HEAD"], path.join(workspaceRoot, relativePath), "capture")),
+      e.Effect.mapError(() => new BadPreconditionsError({ cause: `${relativePath} has no commit yet`, fix: `Commit in ${relativePath}, then run this again` })),
+    );
+    const fields = { path: relativePath, url };
+    const staged = path.join(gitDirectory, STAGED_GITMODULES_FILE);
+    yield* e.pipe(
+      e.Effect.gen(() => this.stageGitmodulesEntry({ workspaceRoot, staged, relativePath, fields })),
+      e.Effect.ensuring(e.Effect.ignore(this.getDependency(e.FileSystem.FileSystem).remove(staged, { force: true }))),
+    );
+    for (const [field, value] of Object.entries(fields)) {
+      yield* this.git(["config", "-f", ".gitmodules", `submodule.${relativePath}.${field}`, value], workspaceRoot, "capture");
+    }
+    yield* this.git(["update-index", "--add", "--cacheinfo", `${GITLINK_MODE},${head.trim()},${relativePath}`], workspaceRoot, "capture");
+    yield* this.git(["submodule", "absorbgitdirs", "--", relativePath], workspaceRoot, "capture");
+    yield* this.git(["submodule", "init", "--", relativePath], workspaceRoot, "capture");
+  }
+
+  /** Stages the index's .gitmodules plus one entry, copied to `staged` to add it, so the working tree's copy stays out. */
+  private *stageGitmodulesEntry({ workspaceRoot, staged, relativePath, fields }: {
+    readonly workspaceRoot: string;
+    readonly staged: string;
+    readonly relativePath: string;
+    readonly fields: Readonly<Record<string, string>>;
+  }): EffectGen<void, BadPreconditionsError> {
+    const { stdout: indexed } = yield* this.gitAllowingFailure(["cat-file", "blob", ":.gitmodules"], workspaceRoot);
+    yield* e.pipe(
+      this.getDependency(e.FileSystem.FileSystem).writeFileString(staged, indexed),
+      e.Effect.mapError(({ message }) => BadPreconditionsError.withoutFix(`Failed to write ${staged}`, message)),
+    );
+    for (const [field, value] of Object.entries(fields)) {
+      yield* this.git(["config", "-f", staged, `submodule.${relativePath}.${field}`, value], workspaceRoot, "capture");
+    }
+    const { stdout: blob } = yield* this.git(["hash-object", "-w", staged], workspaceRoot, "capture");
+    yield* this.git(["update-index", "--add", "--cacheinfo", `100644,${blob.trim()},.gitmodules`], workspaceRoot, "capture");
+  }
+
+  private *isGitlink({ workspaceRoot, relativePath }: { readonly workspaceRoot: string; readonly relativePath: string }): EffectGen<boolean, BadPreconditionsError> {
+    const { stdout } = yield* this.git(["ls-files", "--stage", "--", relativePath], workspaceRoot, "capture");
+    return stdout.split("\n").some(line => line.startsWith(`${GITLINK_MODE} `) && line.endsWith(`\t${relativePath}`));
+  }
+
+  /** `repository`'s .gitmodules entries; none when it has no .gitmodules. */
+  private *submoduleEntries(repository: string): EffectGen<ReadonlyArray<SubmoduleEntry>, BadPreconditionsError> {
+    if (!(yield* this.pathExists(path.join(repository, ".gitmodules")))) return [];
+    const { stdout } = yield* this.gitAllowingFailure(["config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.(path|url)$"], repository);
+    const fieldsByName = new Map<string, { path?: string; url?: string }>();
+    for (const line of stdout.split("\n")) {
+      const match = SUBMODULE_FIELD_LINE.exec(line.trim());
+      if (match === null) continue;
+      const name = match[1]!;
+      fieldsByName.set(name, { ...fieldsByName.get(name), [match[2]!]: match[3]! });
+    }
+    return [...fieldsByName].flatMap(([name, fields]) =>
+      fields.path !== undefined && fields.url !== undefined ? [{ name, path: fields.path, url: fields.url }] : []);
+  }
+
+  private *absoluteGitDirectory(repository: string): EffectGen<string, BadPreconditionsError> {
+    const { stdout } = yield* this.git(["rev-parse", "--absolute-git-dir"], repository, "capture");
     return stdout.trim();
   }
 

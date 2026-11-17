@@ -2,9 +2,8 @@ import * as e from "effect";
 import * as path from "node:path";
 import { implementing, type EffectGen } from "effective-modules";
 import { OSPlatform } from "jive-abstract-library";
-import { BadArgumentError, BadPreconditionsError } from "@/errors";
+import { BadPreconditionsError } from "@/errors";
 import { modules } from "@/modules";
-import type { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
 import { LinkResult, LinkScope, type IBun, type WorkspaceLink } from "./interface";
 
 const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;
@@ -34,10 +33,14 @@ interface WorkspacePackage {
   readonly manifest: PackageManifest;
 }
 
-export class BunImpl extends implementing(modules.bun).uses(modules.toolState, OSPlatform, e.FileSystem.FileSystem) implements IBun {
-  *install(repo: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError> {
-    const { absolutePath } = yield* this.dependencies.toolState.verifyRepoIntegrity(repo);
-    yield* this.bunIn(absolutePath, repo.packageName(), ["install"]);
+export class BunImpl extends implementing(modules.bun).uses(OSPlatform, e.FileSystem.FileSystem) implements IBun {
+  *install({ directory, packageName }: { readonly directory: string; readonly packageName: string }): EffectGen<void, BadPreconditionsError> {
+    yield* this.bunIn(directory, packageName, ["install"]);
+  }
+
+  *packageName(directory: string): EffectGen<e.Option.Option<string>> {
+    const maybeManifest = yield* this.readManifest(directory);
+    return e.Option.flatMap(maybeManifest, manifest => e.Option.fromUndefinedOr(manifest.name));
   }
 
   *linkWorkspace({ repositories, scope }: { readonly repositories: ReadonlyArray<string>; readonly scope: LinkScope }): EffectGen<ReadonlyArray<WorkspaceLink>, BadPreconditionsError> {

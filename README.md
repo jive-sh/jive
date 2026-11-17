@@ -62,10 +62,10 @@ Jive began as a way to make independent repositories work like a monorepo
 ([§1](docs/jive_architecture_discussion.md#1-executive-framing)). Each package keeps its own repository, version and
 pipeline, and Jive supplies what a monorepo would:
 
-- **One checkout for local work:** `jive init` makes any repository a workspace and `jive load` adds repos to it as
-  submodules, all signing and pushing the same way, and the packages in it are linked to each other, so each one runs
-  its workspace dependencies from their checkouts while its own lockfile and CI stay as they are ([Workspace
-  links](#workspace-links)).
+- **One checkout for local work:** `jive init` makes any monorepo a workspace and `jive load` adds repos to it as
+  submodules at `packages/<package name>` ([Workspace layout](#workspace-layout)), all signing and pushing the same
+  way, and the packages in it are linked to each other, so each one runs its workspace dependencies from their
+  checkouts while its own lockfile and CI stay as they are ([Workspace links](#workspace-links)).
 - **One way to ship:** every repository runs the same reusable pipeline through its abstract.
 - **Connectors instead of shared code:** a package declares the resources it needs and the organization's connectors
   provide them, so nothing has to live in the same repository to work together. *Planned:* the code-repository
@@ -109,8 +109,8 @@ you, a scheduled task on Windows).
 | `jive login` | Opens `https://jive.sh/login?request=…`, where you sign in with your jive.sh passkey, and waits; then prints the account you signed in as, saves its handle beside the session, and fetches your account's public key (`ssh:publicKey`) into `~/.jive/ssh/account.pub`. |
 | `jive login --cicd` | In a GitHub Actions job with `id-token: write`: exchanges the job's ID token for a session of its pipeline. |
 | `jive whoami` | Prints the handle of the Jive account this machine is signed in as, as `jive-daemon` reports it. When the server can't be reached it prints the handle saved at the last check, followed by `(not confirmed: can't reach Jive's server)`. |
-| `jive init` | In the git repository you are in, rewrites every .gitmodules at every depth to `https://github.com/<owner>/<repo>`, syncs them, checks out every submodule not yet checked out (one already checked out keeps its HEAD), and configures the root, every submodule and every untracked repository inside it: `gpg.format=ssh`, `user.signingKey` (the account key's public half), `commit.gpgSign=true`, `gpg.ssh.program=jive-ssh-sign`, `core.sshCommand=jive-ssh`, `ssh.variant=ssh`, and `url."git@github.com:".insteadOf "https://github.com/"` so https URLs fetch and push over SSH. Then links the packages among those repositories with each other (see Workspace links). Nothing else, and no GitHub sign-in. Safe to run again: a submodule already checked out keeps its HEAD, and the links are made again. |
-| `jive load <org> <repo>` | Adds a GitHub repo to the workspace as a submodule by its https URL, fetches its submodules, configures it and them as `jive init` does, runs `bun install` in it, then links it with the workspace's packages: its workspace dependencies into it, and it into every workspace package that depends on it. |
+| `jive init` | Marks the workspace root: the nearest directory, from the current one upward, whose `package.json` has `"jive": { "root": true }`, or when there is none the top of the outermost git repository you are in, whose `package.json` gets that mark (created if missing; its other fields and indentation kept). Then, in that root, rewrites every .gitmodules at every depth to `https://github.com/<owner>/<repo>`, syncs them, checks out every submodule not yet checked out (one already checked out keeps its HEAD), and configures the root, every submodule and every untracked repository inside it: `gpg.format=ssh`, `user.signingKey` (the account key's public half), `commit.gpgSign=true`, `gpg.ssh.program=jive-ssh-sign`, `core.sshCommand=jive-ssh`, `ssh.variant=ssh`, and `url."git@github.com:".insteadOf "https://github.com/"` so https URLs fetch and push over SSH. Then links the packages among those repositories with each other (see Workspace links). Nothing else, and no GitHub sign-in. Safe to run again: a submodule already checked out keeps its HEAD, and the links are made again. |
+| `jive load <org> <repo>` | Adds a GitHub repo to the workspace as a submodule by its https URL at `packages/<its package.json name>` (see Workspace layout): clones it, or adopts a checkout of it already there (one whose remote names the repo), keeping its uncommitted work. Stages only its own `.gitmodules` entry and gitlink, so uncommitted edits to `.gitmodules` stay unstaged, and commits nothing. Run again on a loaded repo, it only does what follows. Fetches its submodules, configures it and them as `jive init` does, runs `bun install` in it, then links it with the workspace's packages: its workspace dependencies into it, and it into every workspace package that depends on it. |
 | `jive unload <org> <repo>` | Removes every workspace link into the repo, running `bun install` in each package that had one so it gets its registry copy back, then removes the repo. |
 | `jive on <org> <repo> -- <command…>` | Runs a command in a loaded repo's directory; its exit code is jive's. |
 | `jive provision <kind> <name>` | Makes sure a resource instance exists, e.g. `jive provision connector-package-registry @scope/name`. The instance is `./package.json`'s `jive.resources.<kind>.<name>`, or `--instance '<json>'`. Needs a pipeline session. |
@@ -130,6 +130,16 @@ Two more commands are installed beside `jive`, for git and for you:
 `jive-ssh-keygen`, the signing program jive 0.7.0 configured, is still installed but only refuses: git shows
 `jive-ssh-keygen was replaced by jive-ssh-sign in jive 0.8.0; run jive init in <repository> to update its git config`.
 A repository 0.7.0 configured keeps pushing, since its `core.sshCommand` names the same agent socket.
+
+## Workspace layout
+
+A workspace is a git monorepo whose root `package.json` has `"jive": { "root": true }`; `jive init` writes it, and
+every other command finds the root by it. Each repo `jive load` adds is a submodule at `packages/<its package.json
+name>`, the one layout tools built on jive rely on: `@jive-sh/jive` at `packages/@jive-sh/jive`,
+`jive-abstract-library` at `packages/jive-abstract-library`. There is no option to put a repo elsewhere. A repo
+without a package.json naming its package can't be loaded, and a checkout of the repo somewhere else under `packages/`
+is refused with the `git mv` that puts it in place. `jive unload` and `jive on` find a loaded repo by the GitHub URL
+in the root `.gitmodules`.
 
 ## Workspace links
 

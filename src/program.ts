@@ -5,6 +5,7 @@ import { PACKAGE_NAME, TOOL_NAME } from "@/constants";
 import { BadArgumentError, BadPreconditionsError, NotLoggedInError } from "@/errors";
 import { modules } from "@/modules";
 import { LinkResult, LinkScope, type WorkspaceLink } from "@/modules/bun/interface";
+import { LoadOutcome } from "@/modules/git/interface";
 import { accountKeyFailure } from "@/modules/account-key/interface";
 import { jiveServerFailure } from "@/modules/jive-server/interface";
 import { daemonProblem } from "@/modules/ssh-wrappers/signing-session";
@@ -30,24 +31,26 @@ const workspaceOrgChoice = (description: string, next: (org: string) => Cli.Node
 
 export const jive = Cli.make(TOOL_NAME, {
   load: Cli.choose({
-    description: "clone a GitHub repo into this workspace as a submodule, install it, and link it with the workspace's packages",
+    description: "add a GitHub repo to this workspace as a submodule at packages/<its package name>, install it, and link it with the workspace's packages",
     *choices() { return yield* (yield* modules.git).localOrgs(); },
     next: (org) => Cli.choose({
       description: "a repo of the org on GitHub",
       // Listing an org's repos needs a GitHub sign-in, which jive no longer has; the name is typed.
       *choices() { return []; },
       next: (repo) => Cli.command({
-        description: `clone ${org}/${repo} to @${org}/${repo}`,
+        description: `add ${org}/${repo} at packages/<its package name>`,
         *run() {
           const chosenRepo = new RepoIdentifier(org, repo);
-          const git = yield* modules.git;
           const bun = yield* modules.bun;
-          yield* git.cloneAsSubmodule(chosenRepo, yield* accountKey());
-          const { relativePath, absolutePath } = yield* (yield* modules.toolState).repoPath(chosenRepo);
-          yield* e.Effect.log(`Cloned ${chosenRepo.toString()} to ${relativePath}`);
-          yield* bun.install(chosenRepo);
+          const { packageName, location, outcome } = yield* (yield* modules.git).loadAsSubmodule({ repo: chosenRepo, accountKey: yield* accountKey() });
+          yield* e.Effect.log(e.pipe(outcome, LoadOutcome.$match({
+            Cloned: () => `Cloned ${org}/${repo} to ${location.relativePath} and staged it as a submodule`,
+            Adopted: () => `Added the checkout of ${org}/${repo} at ${location.relativePath} as a submodule and staged it`,
+            AlreadyLoaded: () => `${org}/${repo} is already the submodule at ${location.relativePath}`,
+          })));
+          yield* bun.install({ directory: location.absolutePath, packageName });
           const { workspaceRoot, repositories } = yield* workspaceRepositories();
-          yield* logLinks({ workspaceRoot, links: yield* bun.linkWorkspace({ repositories, scope: LinkScope.Touching({ directory: absolutePath }) }) });
+          yield* logLinks({ workspaceRoot, links: yield* bun.linkWorkspace({ repositories, scope: LinkScope.Touching({ directory: location.absolutePath }) }) });
         },
       }),
     }),
@@ -56,7 +59,7 @@ export const jive = Cli.make(TOOL_NAME, {
   unload: workspaceOrgChoice("remove a loaded repo from this workspace", loadedRepoChoice("a repo loaded in this workspace", (repo) => Cli.command({
     description: `remove ${repo.packageName()} from this workspace`,
     *run() {
-      const { absolutePath } = yield* (yield* modules.toolState).repoPath(repo);
+      const { location: { absolutePath } } = yield* (yield* modules.git).loadedRepository(repo);
       const { repositories } = yield* workspaceRepositories();
       const reinstalled = yield* (yield* modules.bun).unlinkPackage({ repositories, packageDirectory: absolutePath });
       if (reinstalled.length > 0) yield* e.Effect.log(`${repo.packageName()} unlinked from ${reinstalled.join(", ")}, which have their registry copy back`);
@@ -71,7 +74,7 @@ export const jive = Cli.make(TOOL_NAME, {
       if (command === undefined) {
         return yield* new BadArgumentError({ argument: "command", reason: `give the command to run after ${repo.org} ${repo.repo}` });
       }
-      const { absolutePath } = yield* (yield* modules.toolState).verifyRepoIntegrity(repo);
+      const { location: { absolutePath } } = yield* (yield* modules.git).loadedRepository(repo);
       yield* runInThisTerminal({ command, args: commandArgs, cwd: absolutePath });
     },
   }))),
@@ -123,10 +126,15 @@ export const jive = Cli.make(TOOL_NAME, {
   }),
 
   init: Cli.command({
-    description: "make every repository here sign with your Jive account key and fetch and push over SSH through jive's agent; .gitmodules on https, every submodule checked out, and the packages among them linked with each other",
+    description: "make this monorepo a jive workspace (its root package.json gets \"jive\": { \"root\": true }) whose every repository signs with your Jive account key and fetches and pushes over SSH through jive's agent; .gitmodules on https, every submodule checked out, and the packages among them linked with each other",
     *run() {
       const git = yield* modules.git;
-      const root = yield* git.repositoryRoot(yield* (yield* OSPlatform).getCurrentDirectory());
+      const toolState = yield* modules.toolState;
+      const maybeRoot = yield* toolState.findWorkspaceRoot();
+      const root = e.Option.isSome(maybeRoot) ? maybeRoot.value : yield* git.outermostRepositoryRoot(yield* (yield* OSPlatform).getCurrentDirectory());
+      if (yield* toolState.markWorkspaceRoot(root)) {
+        yield* e.Effect.log(`Marked ${path.join(root, "package.json")} as the workspace root with "jive": { "root": true }`);
+      }
       const key = yield* accountKey();
       const rewritten = yield* git.checkOutSubmodulesOverHttps(root);
       const repositories = yield* git.repositoriesUnder(root);

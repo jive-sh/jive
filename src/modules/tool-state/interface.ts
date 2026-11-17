@@ -1,53 +1,29 @@
 import * as e from "effect";
 import type { EffectGen } from "effective-modules";
-import { BadArgumentError, BadPreconditionsError } from "@/errors";
-import { TOOL_NAME } from "@/constants";
-import { RepoIdentifier } from "./repo-identifier";
+import type { BadPreconditionsError } from "@/errors";
 export { RepoIdentifier } from "./repo-identifier";
 
-export type RepoIntegrityCompromisedReason = e.Data.TaggedEnum<{
-  OrgMissing: {};
-  RepoMissing: {};
-  SubmoduleMisconfiguration: {};
-  NotAPackage: {};
-}>;
-export const RepoIntegrityCompromisedReason = e.Data.taggedEnum<RepoIntegrityCompromisedReason>();
-export class VerifyRepoIntegrityError extends e.Data.TaggedError("VerifyRepoIntegrityError")<{
-  reason: RepoIntegrityCompromisedReason;
-  repo: RepoIdentifier;
-}> {
-  public static toToolError({reason, repo}: VerifyRepoIntegrityError): BadArgumentError | BadPreconditionsError {
-    return e.pipe(
-      reason,
-      RepoIntegrityCompromisedReason.$match({
-        OrgMissing: () => new BadArgumentError({argument: "org", reason: `There is no org "${repo.org}" in this workspace`}),
-        RepoMissing: () => new BadArgumentError({argument: "repo", reason: `There is no repo "${repo.toString()}" in this workspace`}),
-        SubmoduleMisconfiguration: () => new BadPreconditionsError({
-          cause: `Malformed submodule configuration for repo ${repo.toString()}`,
-          fix: `Re-run \`${TOOL_NAME} load ${repo.org} ${repo.repo}\` to re-configure`
-        }),
-        NotAPackage: () => new BadPreconditionsError({
-          cause: `Missing package.json in repo ${repo.toString()}`,
-          fix: ""
-        })
-      })
-    )
-  }
-}
 export class NotInWorkspaceError extends e.Data.TaggedError("NotInWorkspaceError")<{
   path: string;
 }> {}
 
 export interface RepoLocation {
   readonly absolutePath: string;
-  /** Relative to the workspace root, which is where git commands on the workspace's submodules run. */
+  /** Relative to the workspace root, with `/` separators, as `.gitmodules` records it. */
   readonly relativePath: string;
 }
 
+/**
+ * The workspace: a monorepo whose root package.json says `"jive": { "root": true }`. Every repo jive loads into it is a
+ * submodule at `packages/<its package.json name>` (`workspace-layout.ts`).
+ */
 export interface IToolState {
+  /** The nearest directory, from the current one upward, whose package.json marks it the workspace root. */
+  findWorkspaceRoot(): EffectGen<e.Option.Option<string>>;
   assertInWorkspace(): EffectGen<{ workspaceRoot: string }, NotInWorkspaceError>;
-  /** Where a loaded repo is, failing when it is not a configured submodule with a package.json. */
-  verifyRepoIntegrity(repo: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError | BadArgumentError>;
-  orgPath(repoId: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError>;
-  repoPath(repoId: RepoIdentifier): EffectGen<RepoLocation, BadPreconditionsError>;
+  /**
+   * Adds `"jive": { "root": true }` to `directory`'s package.json, creating the file when there is none, and keeps the
+   * rest of it. Returns whether it wrote the file (false when the mark was already there).
+   */
+  markWorkspaceRoot(directory: string): EffectGen<boolean, BadPreconditionsError>;
 }

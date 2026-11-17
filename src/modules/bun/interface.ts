@@ -1,7 +1,6 @@
 import * as e from "effect";
 import type { EffectGen } from "effective-modules";
-import type { BadArgumentError, BadPreconditionsError } from "@/errors";
-import type { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
+import type { BadPreconditionsError } from "@/errors";
 
 /** Which of the workspace's links a run makes. */
 export type LinkScope = e.Data.TaggedEnum<{
@@ -42,7 +41,10 @@ export interface WorkspaceLink {
 }
 
 export interface IBun {
-  install(repo: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError>;
+  /** Runs `bun install` in the package in `directory`; `packageName` names it in what jive prints. */
+  install(input: { readonly directory: string; readonly packageName: string }): EffectGen<void, BadPreconditionsError>;
+  /** The name `directory`'s package.json gives; none when it has no package.json or it names no package. */
+  packageName(directory: string): EffectGen<e.Option.Option<string>>;
   /**
    * Links the workspace's packages to each other, the way a monorepo's workspace links its members: wherever a package
    * among `repositories` depends on another one, its `node_modules/<name>` becomes a symlink to that package's checkout

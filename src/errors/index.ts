@@ -31,8 +31,8 @@ export class BadPreconditionsError extends e.Data.TaggedError("BadPreconditionsE
   }
   public static fromNotInWorkspaceError(err: NotInWorkspaceError) {
     return new BadPreconditionsError({
-      cause: `${err.path} is not within a ${TOOL_NAME} workspace.`,
-      fix: `Run again from within ${TOOL_NAME} workspace`
+      cause: `${err.path} is not within a ${TOOL_NAME} workspace: no package.json from here up says "jive": { "root": true }.`,
+      fix: `Run \`${TOOL_NAME} init\` in the monorepo, which marks its root package.json, then run this again`
     });
   }
   public static fromNotLoggedInError(err: NotLoggedInError) {

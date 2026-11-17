@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { version } from "../package.json";
@@ -8,8 +8,10 @@ import { version } from "../package.json";
 
 const entrypoint = path.join(import.meta.dir, "entrypoints", "jive.ts");
 const workspace = realpathSync(mkdtempSync(path.join(tmpdir(), "jive-entrypoint-test-")));
-mkdirSync(path.join(workspace, ".jive"));
-mkdirSync(path.join(workspace, "@acme", "widget"), { recursive: true });
+// A workspace whose .gitmodules lists one repo, not checked out.
+writeFileSync(path.join(workspace, "package.json"), JSON.stringify({ jive: { root: true } }));
+writeFileSync(path.join(workspace, ".gitmodules"), `[submodule "packages/@acme/widget"]\n\tpath = packages/@acme/widget\n\turl = https://github.com/acme/widget\n`);
+Bun.spawnSync(["git", "init", "-q"], { cwd: workspace });
 afterAll(() => rmSync(workspace, { recursive: true, force: true }));
 
 async function jive(...args: ReadonlyArray<string>) {
@@ -52,7 +54,7 @@ test("a refused command prints its cause and fix, without a stack, and exits 1",
   expect(await jive("on", "acme", "widget", "--", "ls")).toEqual({
     exitCode: 1,
     stdout: "",
-    stderr: "ERROR: Malformed submodule configuration for repo @acme/widget\nERROR: Fix: Re-run `jive load acme widget` to re-configure\n",
+    stderr: "ERROR: @acme/widget is a submodule at packages/@acme/widget, but it isn't checked out\nERROR: Fix: Run `jive init`, which checks out every submodule\n",
   });
 });
 

@@ -1,6 +1,3 @@
-import * as e from "effect";
-import { BadArgumentError } from "@/errors";
-
 export class RepoIdentifier {
   public constructor(
     public readonly org: string,
@@ -17,28 +14,5 @@ export class RepoIdentifier {
   }
   public toString() {
     return this.packageName();
-  }
-  public static fromRelativePath(relativePath: string): e.Effect.Effect<RepoIdentifier, BadArgumentError> {
-    if (!relativePath.startsWith("@")) {
-      return e.Effect.fail(new BadArgumentError({
-        argument: "relative path",
-        reason: "repo relative path must start with @"
-      }));
-    }
-    if (relativePath.split("/").length !== 2) {
-      return e.Effect.fail(new BadArgumentError({
-        argument: "relative path",
-        reason: "repo relative path must have exactly one '/' char"
-      }));
-    }
-    const [orgName, repo] = relativePath.split("/") as [string, string];
-    if (!repo) {
-      return e.Effect.fail(new BadArgumentError({
-        argument: "relative path",
-        reason: "repo relative path cannot have empty repo directory"
-      }));
-    }
-    const org = orgName.substring(1);
-    return e.Effect.succeed(new RepoIdentifier(org, repo));
   }
 }
