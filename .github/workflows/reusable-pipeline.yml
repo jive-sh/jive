@@ -1,7 +1,15 @@
 name: Jive Reusable CI/CD Pipeline
 
 on:
-  workflow_call: {}
+  workflow_call:
+    secrets:
+      # `secrets: inherit` passes a caller's secrets only when the caller is in the same organization or enterprise as
+      # this workflow; otherwise a reusable workflow receives only the secrets it declares by name
+      # (https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows). So a caller in another
+      # organization passes all of its secrets as one, `SECRETS: ${{ toJSON(secrets) }}`, and a caller here keeps
+      # `secrets: inherit`, which leaves this empty.
+      SECRETS:
+        required: false
 
 jobs:
   context:
@@ -44,7 +52,7 @@ jobs:
       - name: Setup Secrets
         uses: jive-sh/jive/.github/actions/setup-secrets@main
         with:
-          secrets: ${{ toJSON(secrets) }}
+          secrets: ${{ secrets.SECRETS || toJSON(secrets) }}
       - name: Install Dependencies
         shell: bash
         run: bun install --frozen-lockfile
@@ -109,7 +117,7 @@ jobs:
       - name: Setup Secrets
         uses: jive-sh/jive/.github/actions/setup-secrets@main
         with:
-          secrets: ${{ toJSON(secrets) }}
+          secrets: ${{ secrets.SECRETS || toJSON(secrets) }}
       - name: Deploy
         shell: bash
         env:
