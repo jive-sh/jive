@@ -127,9 +127,8 @@ Two more commands are installed beside `jive`, for git and for you:
 | `jive-ssh <ssh arguments…>` | ssh with your Jive key and no other: runs `ssh -o IdentityAgent=~/.jive/signing-agent.sock -o IdentityFile=~/.jive/ssh/account.pub -o IdentitiesOnly=yes <ssh arguments…>`, after asking `jive-daemon` whether the key can sign (see How signing works). git runs it as `core.sshCommand`. ssh's exit code is its own; a refusal exits 255, as ssh does. |
 | `jive-ssh-sign <ssh-keygen arguments…>` | git's `gpg.ssh.program`: stock ssh-keygen with every argument unchanged and `SSH_AUTH_SOCK` set to the agent's socket, so `-Y sign -f ~/.jive/ssh/account.pub` signs with your Jive key. Before `-Y sign` it makes the same check; git's other uses (`-Y verify`, `-Y find-principals`, `-Y check-novalidate`) and anything else run as plain ssh-keygen would. ssh-keygen's exit code is its own. |
 
-`jive-ssh-keygen`, the signing program jive 0.7.0 configured, is still installed but only refuses: git shows
-`jive-ssh-keygen was replaced by jive-ssh-sign in jive 0.8.0; run jive init in <repository> to update its git config`.
-A repository 0.7.0 configured keeps pushing, since its `core.sshCommand` names the same agent socket.
+A repository jive 0.7.0 configured names `jive-ssh-keygen` as git's `gpg.ssh.program`, which 0.9.1 no longer installs, so
+its commits fail until `jive init` runs in it.
 
 ## Workspace layout
 
