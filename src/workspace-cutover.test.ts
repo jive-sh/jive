@@ -314,7 +314,10 @@ test("on a machine with no global git identity, a fresh folder goes through jive
     const bare = path.join(scratch, "without-jive");
     mkdirSync(bare);
     sh(["git", "init", "-q"], bare);
-    expect((await run(["git", "commit", "--allow-empty", "-m", "x"], bare, undefined, { GIT_AUTHOR_NAME: "", GIT_COMMITTER_NAME: "", EMAIL: "" })).stderr).toContain("Author identity unknown");
+    // git words it by platform: "Author identity unknown" on macOS, "empty ident name" on GitHub's Linux runners.
+    const withoutJive = await run(["git", "commit", "--allow-empty", "-m", "x"], bare, undefined, { GIT_AUTHOR_NAME: "", GIT_COMMITTER_NAME: "", EMAIL: "" });
+    expect(withoutJive.exitCode).not.toBe(0);
+    expect(withoutJive.stderr).toMatch(/Author identity unknown|empty ident name/);
 
     await initIn(fresh);
     expect(sh(["git", "rev-parse", "--show-toplevel"], fresh)).toBe(fresh);
@@ -322,7 +325,6 @@ test("on a machine with no global git identity, a fresh folder goes through jive
     writeFileSync(path.join(fresh, "README.md"), "fresh\n");
     sh(["git", "add", "."], fresh);
     const committed = await run(["git", "commit", "-m", "first"], fresh);
-    expect(committed.stderr).not.toContain("Author identity unknown");
     expect(committed.exitCode).toBe(0);
     expect(sh(["git", "log", "-1", "--format=%an <%ae>|%cn <%ce>"], fresh)).toBe(`${persona.name} <${persona.email}>|${persona.name} <${persona.email}>`);
     expect((await verifyHeadSignature(fresh)).stdout).toContain('Good "git" signature for tester@example.com');

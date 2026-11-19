@@ -290,7 +290,7 @@ signs with a key the test makes and can be made unreachable:
   sign-in; an unreachable server fails a sign request without asking the server a second time.
 - After `jive init`, a commit is signed through `jive-ssh-sign`, verifies, and is pushed through `jive-ssh` to the
   sshd.
-- With no global git identity, where a plain `git commit` fails with "Author identity unknown", a fresh folder goes
+- With no global git identity, where a plain `git commit` fails for want of one, a fresh folder goes
   through `jive init` (its questions answered by the test) and its first commit is made as that identity and signed.
 
 Not tested: a remote server, the `~/.ssh/config` block (it sets the same options as `jive-ssh`), and Linux.
