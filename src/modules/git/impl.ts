@@ -5,11 +5,11 @@ import { OSPlatform } from "jive-abstract-library";
 import { SIGNING_COMMAND_NAME, SSH_COMMAND_NAME, TOOL_NAME, installedCommandPath } from "@/constants";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { modules } from "@/modules";
-import type { AccountKey } from "@/modules/account-key/interface";
 import { PACKAGES_DIRECTORY, isPackageName, packageRelativePath } from "@/modules/tool-state/workspace-layout";
 import { GITHUB_HTTPS, GITHUB_SSH, githubHttpsUrl, repoOfGitHubRemote } from "./github-remote";
 import { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
-import { LoadOutcome, type IGit, type LoadedRepository, type LoadedSubmodule } from "./interface";
+import type { GitIdentity } from "./identity";
+import { LoadOutcome, type IGit, type LoadedRepository, type LoadedSubmodule, type RepositorySettings } from "./interface";
 
 /** One line of `git submodule status`: a state character (space, -, + or U), the commit, then the path. */
 const SUBMODULE_STATUS_LINE = /^([ +\-U])[0-9a-f]+ (\S+)/;
@@ -74,7 +74,7 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return maybeLoaded;
   }
 
-  *loadAsSubmodule({ repo, accountKey }: { readonly repo: RepoIdentifier; readonly accountKey: AccountKey }): EffectGen<LoadedSubmodule, BadArgumentError | BadPreconditionsError> {
+  *loadAsSubmodule({ repo, settings }: { readonly repo: RepoIdentifier; readonly settings: RepositorySettings }): EffectGen<LoadedSubmodule, BadArgumentError | BadPreconditionsError> {
     const workspaceRoot = yield* this.workspaceRoot();
     const gitDirectory = yield* this.absoluteGitDirectory(workspaceRoot);
     const staging = path.join(gitDirectory, LOAD_STAGING_DIRECTORY, repo.org, repo.repo);
@@ -88,7 +88,7 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     );
     yield* this.checkOutSubmodulesOverHttps(placed.location.absolutePath);
     for (const repository of yield* this.repositoriesUnder(placed.location.absolutePath)) {
-      yield* this.configureRepository(repository, accountKey);
+      yield* this.configureRepository({ repository, settings });
     }
     return placed;
   }
@@ -98,15 +98,29 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return stdout.trim();
   }
 
-  *outermostRepositoryRoot(directory: string): EffectGen<string, BadPreconditionsError> {
+  *outermostRepositoryRoot(directory: string): EffectGen<e.Option.Option<string>, BadPreconditionsError> {
+    // Prints "true" inside a working tree; fails outside every repository.
+    const { stdout: inside } = yield* this.gitAllowingFailure(["rev-parse", "--is-inside-work-tree"], directory);
+    if (inside.trim() !== "true") return e.Option.none();
     let root = yield* this.repositoryRoot(directory);
     for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
       const { stdout } = yield* this.gitAllowingFailure(["rev-parse", "--show-superproject-working-tree"], root);
       const superproject = stdout.trim();
-      if (superproject === "") return root;
+      if (superproject === "") return e.Option.some(root);
       root = superproject;
     }
     return yield* BadPreconditionsError.withoutFix(`${directory} is a submodule more than ${MAX_SUBMODULE_DEPTH} deep`);
+  }
+
+  *localIdentity(repository: string): EffectGen<e.Option.Option<GitIdentity>, BadPreconditionsError> {
+    // `config --get` exits 1 for an unset key, which reads as empty here.
+    const { stdout: name } = yield* this.gitAllowingFailure(["config", "--local", "--get", "user.name"], repository);
+    const { stdout: email } = yield* this.gitAllowingFailure(["config", "--local", "--get", "user.email"], repository);
+    return name.trim() !== "" && email.trim() !== "" ? e.Option.some({ name: name.trim(), email: email.trim() }) : e.Option.none();
+  }
+
+  *createRepository(directory: string): EffectGen<void, BadPreconditionsError> {
+    yield* this.git(["init", "-b", "main"], directory, "capture");
   }
 
   /** The workspace's submodules whose URL names a GitHub repo, from its root .gitmodules. */
@@ -355,8 +369,8 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return yield* BadPreconditionsError.withoutFix(`Submodules under ${root} nest more than ${MAX_SUBMODULE_DEPTH} deep`);
   }
 
-  *configureRepository(repository: string, accountKey: AccountKey): EffectGen<void, BadPreconditionsError> {
-    for (const [key, value] of Object.entries(yield* this.repositoryConfig(accountKey))) {
+  *configureRepository({ repository, settings }: { readonly repository: string; readonly settings: RepositorySettings }): EffectGen<void, BadPreconditionsError> {
+    for (const [key, value] of Object.entries(yield* this.repositoryConfig(settings))) {
       yield* this.git(["config", "--local", key, value], repository, "capture");
     }
   }
@@ -397,10 +411,14 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
    * `jive-ssh-sign`, which runs ssh-keygen through the agent, with the account key's public half as `user.signingKey`;
    * fetches and pushes go over SSH through `jive-ssh`, the https URLs being rewritten to SSH ones. Both ask
    * `jive-daemon` first, so a missing session or an unreachable server is named before ssh or ssh-keygen runs. No
-   * GitHub sign-in or token is involved.
+   * GitHub sign-in or token is involved. Commits carry the workspace's git identity, so a machine without a global one
+   * commits as the person too (Alex, 2026-11-19: "I think jive init can actually, for now, have an interactvie flow
+   * where it asks for an email and username").
    */
-  private *repositoryConfig(accountKey: AccountKey): EffectGen<Record<string, string>> {
+  private *repositoryConfig({ accountKey, gitIdentity }: RepositorySettings): EffectGen<Record<string, string>> {
     return {
+      "user.name": gitIdentity.name,
+      "user.email": gitIdentity.email,
       "gpg.format": "ssh",
       "user.signingKey": accountKey.publicKeyFile,
       "commit.gpgSign": "true",

@@ -8,6 +8,8 @@ import * as path from "node:path";
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { AccountKeyImpl } from "@/modules/account-key/impl";
 import type { AccountKey } from "@/modules/account-key/interface";
+import { TerminalPromptImpl } from "@/modules/prompt/impl";
+import { NoTerminalToAsk } from "@/modules/prompt/interface";
 import { ProvisioningImpl } from "@/modules/provisioning/impl";
 import { ModulesLayer } from "@/modules/runtime";
 import { jive } from "@/program";
@@ -74,6 +76,7 @@ beforeAll(() => {
   writeFileSync(path.join(workspace, "package.json"), rootManifest);
   writeFileSync(path.join(workspace, "README.md"), "workspace\n");
   sh(["git", "init", "-q"], workspace);
+  setWorkspaceIdentity(workspace);
   sh(["git", "add", "."], workspace);
   sh(["git", "commit", "-qm", "workspace"], workspace);
 
@@ -91,6 +94,13 @@ afterAll(() => {
   }
   rmSync(scratch, { recursive: true, force: true });
 });
+
+/** The persona every workspace these tests make commits as, unlike the global config's "Jive Test", so a copy shows. */
+const persona = { name: "Zoë Ångström", email: "zoe@example.com" };
+function setWorkspaceIdentity(root: string) {
+  sh(["git", "config", "--local", "user.name", persona.name], root);
+  sh(["git", "config", "--local", "user.email", persona.email], root);
+}
 
 const fakeAccountKey = (): AccountKey => {
   const publicKeyFile = path.join(scratch, "account.pub");
@@ -111,10 +121,14 @@ interface Outcome {
 }
 
 /** Runs jive in this process on `args`, the way the entrypoint does, with sign-in replaced by the fake user. */
-async function runJive(args: ReadonlyArray<string>): Promise<Outcome> {
+const runJive = (args: ReadonlyArray<string>): Promise<Outcome> => runJiveWithPrompt({ args, prompt: e.Layer.empty });
+
+/** `runJive`, with `prompt` answering every question jive asks in place of the terminal. */
+async function runJiveWithPrompt({ args, prompt }: { readonly args: ReadonlyArray<string>; readonly prompt: e.Layer.Layer<never> | ReturnType<typeof TerminalPromptImpl.mockLayer> }): Promise<Outcome> {
   const stdout: Array<string> = [];
   const exit = await e.Effect.runPromise(e.pipe(
     Cli.run(jive, { version: "0.0.0-test" }),
+    e.Effect.provide(prompt),
     // No test signs in to Jive: the account key is a fake, so nothing opens a sign-in page in the browser.
     e.Effect.provide(AccountKeyImpl.mockLayer({ *ensure() { return fakeAccountKey(); } })),
     e.Effect.provide(ProvisioningImpl.mockLayer({ *ensure(input: { kind: string; instance: unknown }) { provisioned.push(input); return { instanceId: "fake-instance" }; } })),
@@ -152,10 +166,13 @@ describe("jive in a workspace", () => {
     expect(gitConfigIn(widget(), "gpg.ssh.program")).toEndWith("/jive-ssh-sign");
     expect(gitConfigIn(widget(), "core.sshCommand")).toEndWith("/jive-ssh");
     expect(gitConfigIn(widget(), "ssh.variant")).toBe("ssh");
+    expect(gitConfigIn(widget(), "user.name")).toBe(persona.name);
+    expect(gitConfigIn(widget(), "user.email")).toBe(persona.email);
     // The widget's own submodule is fetched and configured too; .gitmodules records only https URLs.
     expect(readFileSync(path.join(widget(), "gadget", "gadget.txt"), "utf8")).toBe("gadget\n");
     expect(gitConfigIn(path.join(widget(), "gadget"), "gpg.ssh.program")).toEndWith("/jive-ssh-sign");
     expect(gitConfigIn(path.join(widget(), "gadget"), "core.sshCommand")).toEndWith("/jive-ssh");
+    expect(gitConfigIn(path.join(widget(), "gadget"), "user.email")).toBe(persona.email);
     expect(readFileSync(path.join(workspace, ".gitmodules"), "utf8")).not.toContain("git@");
     expect(readFileSync(path.join(widget(), "installed-here.txt"), "utf8").trim()).toBe(widget());
     // Nothing registers in bun's global folder, where a registration would shadow a global install of the same name.
@@ -236,11 +253,15 @@ describe("jive load in a monorepo", () => {
     sh(["git", "clone", "-q", "--bare", source, path.join(remotes, "acme", `${repo}.git`)], scratch);
   }
 
-  /** A monorepo with the given submodules committed, and the root mark or the 0.8.0 `.jive` directory. */
-  function monorepo({ name, mark, submodules }: {
+  /**
+   * A monorepo with the given submodules committed, the root mark or the 0.8.0 `.jive` directory, and `persona` as
+   * its root's git identity unless `identity` is "none".
+   */
+  function monorepo({ name, mark, submodules, identity = "persona" }: {
     readonly name: string;
     readonly mark: "package.json" | ".jive" | "none";
     readonly submodules: ReadonlyArray<{ readonly repo: string; readonly path: string }>;
+    readonly identity?: "persona" | "none";
   }): string {
     const root = path.join(scratch, "monorepos", name);
     mkdirSync(root, { recursive: true });
@@ -248,16 +269,17 @@ describe("jive load in a monorepo", () => {
     if (mark === "package.json") writeFileSync(path.join(root, "package.json"), rootManifest);
     if (mark === ".jive") mkdirSync(path.join(root, ".jive"));
     sh(["git", "init", "-q"], root);
+    if (identity === "persona") setWorkspaceIdentity(root);
     for (const submodule of submodules) sh(["git", "submodule", "add", "-q", `https://github.com/acme/${submodule.repo}`, submodule.path], root);
     sh(["git", "add", "."], root);
     sh(["git", "commit", "-qm", name], root);
     return root;
   }
 
-  async function runJiveIn(directory: string, args: ReadonlyArray<string>): Promise<Outcome> {
+  async function runJiveIn(directory: string, args: ReadonlyArray<string>, prompt: Parameters<typeof runJiveWithPrompt>[0]["prompt"] = e.Layer.empty): Promise<Outcome> {
     process.chdir(directory);
     try {
-      return await runJive(args);
+      return await runJiveWithPrompt({ args, prompt });
     } finally {
       process.chdir(workspace);
     }
@@ -365,6 +387,145 @@ describe("jive load in a monorepo", () => {
     expect(readFileSync(path.join(checkout, ".git"), "utf8").trim()).toBe("gitdir: ../../.git/modules/packages/decomp-project-image");
     expect(sh(["git", "remote", "get-url", "origin"], checkout)).toBe("git@github.com:acme/decomp-project-image");
     expect(gitConfigIn(checkout, "commit.gpgSign")).toBe("true");
+  }, 30_000);
+
+  /** A prompt answering the yes-or-no question with `confirm` and the name and email questions with `identity`, recording what it was asked. */
+  function answering({ confirm, identity }: { readonly confirm: boolean; readonly identity: { readonly name: string; readonly email: string } }) {
+    const asked: Array<string> = [];
+    const prompt = TerminalPromptImpl.mockLayer({
+      *confirm(question: string) { asked.push(question); return confirm; },
+      *ask(question: string) { asked.push(question); return question === "Name:" ? identity.name : identity.email; },
+    });
+    return { asked, prompt };
+  }
+  const typed = { name: "  Łukasz O'Brien-Müller ", email: " lukasz@example.com " };
+
+  test("init in a folder in no repository and no workspace makes it a repository on main, asks for its git identity, marks it the root and configures it", async () => {
+    const folder = path.join(scratch, "monorepos", "fresh");
+    mkdirSync(folder, { recursive: true });
+    const { asked, prompt } = answering({ confirm: false, identity: typed });
+    const { exit } = await runJiveIn(folder, ["init"], prompt);
+    expect(exit).toEqual(e.Exit.void);
+    expect(asked).toEqual(["Name:", "Email:"]);
+    expect(gitConfigIn(folder, "user.name")).toBe("Łukasz O'Brien-Müller");
+    expect(gitConfigIn(folder, "user.email")).toBe("lukasz@example.com");
+    expect(sh(["git", "rev-parse", "--show-toplevel"], folder)).toBe(folder);
+    expect(sh(["git", "symbolic-ref", "HEAD"], folder)).toBe("refs/heads/main");
+    expect(JSON.parse(readFileSync(path.join(folder, "package.json"), "utf8"))).toEqual({ jive: { root: true } });
+    expect(gitConfigIn(folder, "gpg.format")).toBe("ssh");
+    expect(gitConfigIn(folder, "core.sshCommand")).toEndWith("/jive-ssh");
+  }, 30_000);
+
+  test("init in a repository that is no workspace yet marks that repository's root, making no new repository", async () => {
+    const root = monorepo({ name: "existing-repository", mark: "none", submodules: [] });
+    const below = path.join(root, "docs");
+    mkdirSync(below);
+    expect((await runJiveIn(below, ["init"])).exit).toEqual(e.Exit.void);
+    expect(existsSync(path.join(below, ".git"))).toBe(false);
+    expect(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))).toEqual({ jive: { root: true } });
+    expect(gitConfigIn(root, "gpg.format")).toBe("ssh");
+  }, 30_000);
+
+  /** A workspace, and a folder inside it that is no repository, as a person's new project folder would be. */
+  function folderInsideWorkspace(name: string) {
+    const root = monorepo({ name, mark: "package.json", submodules: [] });
+    const folder = path.join(root, "new-project");
+    mkdirSync(folder);
+    return { root, folder };
+  }
+
+  /** Nothing init writes is in `root` or `folder`: no repository made, no root marked, no config set. */
+  function expectUnchanged({ root, folder }: { readonly root: string; readonly folder: string }) {
+    expect(existsSync(path.join(folder, ".git"))).toBe(false);
+    expect(existsSync(path.join(folder, "package.json"))).toBe(false);
+    expect(Bun.spawnSync(["git", "config", "--local", "--get", "gpg.format"], { cwd: root, env: process.env }).exitCode).toBe(1);
+  }
+
+  test("init inside a workspace asks, and on yes configures that workspace without a new repository", async () => {
+    const { root, folder } = folderInsideWorkspace("asked-yes");
+    const asked: Array<string> = [];
+    const { exit } = await runJiveIn(folder, ["init"], TerminalPromptImpl.mockLayer({ *confirm(question: string) { asked.push(question); return true; } }));
+    expect(exit).toEqual(e.Exit.void);
+    expect(asked).toEqual(["Are you sure you want to continue?"]);
+    expect(existsSync(path.join(folder, ".git"))).toBe(false);
+    expect(gitConfigIn(root, "gpg.format")).toBe("ssh");
+    expect(gitConfigIn(root, "core.sshCommand")).toEndWith("/jive-ssh");
+  }, 30_000);
+
+  test("init inside a workspace, answered no, changes nothing", async () => {
+    const workspaceAndFolder = folderInsideWorkspace("asked-no");
+    const { exit } = await runJiveIn(workspaceAndFolder.folder, ["init"], TerminalPromptImpl.mockLayer({ *confirm() { return false; } }));
+    expect(exit).toEqual(e.Exit.void);
+    expectUnchanged(workspaceAndFolder);
+  }, 30_000);
+
+  test("init inside a workspace with no terminal to ask fails, naming the workspace, and changes nothing", async () => {
+    const workspaceAndFolder = folderInsideWorkspace("no-terminal");
+    const { exit } = await runJiveIn(workspaceAndFolder.folder, ["init"], TerminalPromptImpl.mockLayer({ *confirm() { return yield* new NoTerminalToAsk(); } }));
+    expect(errorOf(exit)).toEqual(new BadPreconditionsError({
+      cause: `Not configuring ${workspaceAndFolder.root}: there is no terminal to ask whether to`,
+      fix: `Run \`jive init\` in ${workspaceAndFolder.root}`,
+    }));
+    expectUnchanged(workspaceAndFolder);
+  }, 30_000);
+
+  test("init at the workspace's root asks nothing", async () => {
+    const { root } = folderInsideWorkspace("at-root");
+    const asked: Array<string> = [];
+    expect((await runJiveIn(root, ["init"], TerminalPromptImpl.mockLayer({ *confirm(question: string) { asked.push(question); return false; } }))).exit).toEqual(e.Exit.void);
+    expect(asked).toEqual([]);
+    expect(gitConfigIn(root, "gpg.format")).toBe("ssh");
+  }, 30_000);
+
+  test("init in a repository with no git identity asks for one and writes it into the root and every submodule", async () => {
+    const root = monorepo({ name: "no-identity", mark: "none", submodules: [{ repo: "aoe2-in-browser", path: "packages/aoe2-in-browser" }], identity: "none" });
+    const { asked, prompt } = answering({ confirm: false, identity: typed });
+    expect((await runJiveIn(root, ["init"], prompt)).exit).toEqual(e.Exit.void);
+    expect(asked).toEqual(["Name:", "Email:"]);
+    for (const repository of [root, path.join(root, "packages", "aoe2-in-browser")]) {
+      expect(gitConfigIn(repository, "user.name")).toBe("Łukasz O'Brien-Müller");
+      expect(gitConfigIn(repository, "user.email")).toBe("lukasz@example.com");
+      expect(gitConfigIn(repository, "gpg.format")).toBe("ssh");
+    }
+  }, 30_000);
+
+  test("init with the root's git identity already set uses it without asking", async () => {
+    const root = monorepo({ name: "has-identity", mark: "none", submodules: [{ repo: "aoe2-in-browser", path: "packages/aoe2-in-browser" }] });
+    const { asked, prompt } = answering({ confirm: false, identity: typed });
+    expect((await runJiveIn(root, ["init"], prompt)).exit).toEqual(e.Exit.void);
+    expect(asked).toEqual([]);
+    expect(gitConfigIn(path.join(root, "packages", "aoe2-in-browser"), "user.name")).toBe(persona.name);
+    expect(gitConfigIn(root, "user.email")).toBe(persona.email);
+  }, 30_000);
+
+  test("init with no git identity and no terminal to ask fails before changing anything, saying to run jive init in a terminal", async () => {
+    const root = monorepo({ name: "no-identity-no-terminal", mark: "none", submodules: [], identity: "none" });
+    const prompt = TerminalPromptImpl.mockLayer({ *ask() { return yield* new NoTerminalToAsk(); } });
+    const { exit } = await runJiveIn(root, ["init"], prompt);
+    expect(errorOf(exit)).toEqual(new BadPreconditionsError({
+      cause: `${root} has no git identity: its own git config sets no user.name and user.email, and there is no terminal to ask for one`,
+      fix: `Run \`jive init\` in ${root} in a terminal: it asks for the name and email this workspace's commits carry`,
+    }));
+    expect(existsSync(path.join(root, "package.json"))).toBe(false);
+    expect(Bun.spawnSync(["git", "config", "--local", "--get", "gpg.format"], { cwd: root, env: process.env }).exitCode).toBe(1);
+  }, 30_000);
+
+  test("init refuses a name or email git couldn't put in a commit, changing nothing", async () => {
+    const root = monorepo({ name: "bad-identity", mark: "none", submodules: [], identity: "none" });
+    const { prompt } = answering({ confirm: false, identity: { name: "Zoë", email: "not an email" } });
+    const { exit } = await runJiveIn(root, ["init"], prompt);
+    expect(errorOf(exit)).toEqual(new BadArgumentError({ argument: "git identity", reason: "a git email has an @ and holds no spaces, <, > or line break" }));
+    expect(Bun.spawnSync(["git", "config", "--local", "--get", "user.name"], { cwd: root, env: process.env }).exitCode).toBe(1);
+  }, 30_000);
+
+  test("load refuses in a workspace whose root has no git identity, saying to run jive init", async () => {
+    const root = monorepo({ name: "load-no-identity", mark: "package.json", submodules: [], identity: "none" });
+    const { exit } = await runJiveIn(root, ["load", "acme", "decomp-project-image"]);
+    expect(errorOf(exit)).toEqual(new BadPreconditionsError({
+      cause: `${root} has no git identity: its own git config sets no user.name and user.email`,
+      fix: `Run \`jive init\` in ${root} in a terminal: it asks for the name and email this workspace's commits carry`,
+    }));
+    expect(existsSync(path.join(root, "packages", "decomp-project-image"))).toBe(false);
   }, 30_000);
 
   test("load refuses a checkout of the repo that isn't at packages/<package name>, naming where it belongs", async () => {

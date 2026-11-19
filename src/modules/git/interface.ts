@@ -4,6 +4,7 @@ import type { BadArgumentError, BadPreconditionsError } from "@/errors";
 import type { AccountKey } from "@/modules/account-key/interface";
 import type { RepoLocation } from "@/modules/tool-state/interface";
 import type { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
+import type { GitIdentity } from "./identity";
 
 /** A GitHub repo the workspace's root `.gitmodules` lists. */
 export interface LoadedRepository {
@@ -24,6 +25,12 @@ export type LoadOutcome = e.Data.TaggedEnum<{
 }>;
 export const LoadOutcome = e.Data.taggedEnum<LoadOutcome>();
 
+/** What `configureRepository` sets a repository up with: the account's signing key and the workspace's git identity. */
+export interface RepositorySettings {
+  readonly accountKey: AccountKey;
+  readonly gitIdentity: GitIdentity;
+}
+
 export interface LoadedSubmodule {
   readonly packageName: string;
   readonly location: RepoLocation;
@@ -42,12 +49,19 @@ export interface IGit {
    * else in the index changes, so uncommitted edits to `.gitmodules` stay unstaged. Then fetches its submodules and
    * configures it and them (`configureRepository`). Running it again on a loaded repo only fetches and configures.
    */
-  loadAsSubmodule(input: { readonly repo: RepoIdentifier; readonly accountKey: AccountKey }): EffectGen<LoadedSubmodule, BadArgumentError | BadPreconditionsError>;
+  loadAsSubmodule(input: { readonly repo: RepoIdentifier; readonly settings: RepositorySettings }): EffectGen<LoadedSubmodule, BadArgumentError | BadPreconditionsError>;
   removeSubmodule(repo: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError>;
   /** The top of the git repository `directory` is in. */
   repositoryRoot(directory: string): EffectGen<string, BadPreconditionsError>;
-  /** The top of the outermost git repository holding `directory`: its repository, or the superproject it is a submodule of, at any depth. */
-  outermostRepositoryRoot(directory: string): EffectGen<string, BadPreconditionsError>;
+  /**
+   * The top of the outermost git repository holding `directory`: its repository, or the superproject it is a submodule
+   * of, at any depth; none when `directory` is in no git repository.
+   */
+  outermostRepositoryRoot(directory: string): EffectGen<e.Option.Option<string>, BadPreconditionsError>;
+  /** The name and email `repository`'s own git config sets (`git config --local`); none unless it sets both. */
+  localIdentity(repository: string): EffectGen<e.Option.Option<GitIdentity>, BadPreconditionsError>;
+  /** Makes `directory` a new git repository whose first branch is `main` (`git init -b main`). */
+  createRepository(directory: string): EffectGen<void, BadPreconditionsError>;
   /** `root`, every submodule checked out under it, and every repository inside it that git doesn't track, at any depth. */
   repositoriesUnder(root: string): EffectGen<ReadonlyArray<string>, BadPreconditionsError>;
   /**
@@ -57,8 +71,8 @@ export interface IGit {
    */
   checkOutSubmodulesOverHttps(root: string): EffectGen<number, BadPreconditionsError>;
   /**
-   * Sets exactly what jive needs in `repository`: commits signed with the account key through `jive-ssh-sign`, and
-   * GitHub's https URLs fetched and pushed over SSH through `jive-ssh`.
+   * Sets exactly what jive needs in `repository`: commits made as the workspace's git identity and signed with the
+   * account key through `jive-ssh-sign`, and GitHub's https URLs fetched and pushed over SSH through `jive-ssh`.
    */
-  configureRepository(repository: string, accountKey: AccountKey): EffectGen<void, BadPreconditionsError>;
+  configureRepository(input: { readonly repository: string; readonly settings: RepositorySettings }): EffectGen<void, BadPreconditionsError>;
 }

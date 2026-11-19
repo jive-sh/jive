@@ -10,6 +10,7 @@ import { GitImpl } from "./git/impl";
 import { JiveServerImpl } from "./jive-server/impl";
 import { NpmCredentialPosterNotDecidedImpl } from "./npm-credential-poster/not-decided";
 import { GitHubActionsIdentityImpl } from "./pipeline-identity/impl";
+import { TerminalPromptImpl } from "./prompt/impl";
 import { ProvisioningImpl } from "./provisioning/impl";
 import { SessionImpl } from "./session/impl";
 import { ExtensionSignInPromptImpl, TerminalSignInPromptImpl } from "./session/sign-in-prompt";
@@ -36,6 +37,7 @@ export const ModulesLayer = e.pipe(
   e.Layer.provideMerge(BunImpl.Layer),
   e.Layer.provideMerge(ToolStateImpl.Layer),
   e.Layer.provideMerge(ProvisioningImpl.Layer),
+  e.Layer.provideMerge(TerminalPromptImpl.Layer),
   e.Layer.provideMerge(DaemonClientImpl.Layer),
   e.Layer.provideMerge(AccountKeyImpl.Layer),
   e.Layer.provideMerge(SessionImpl.Layer),

@@ -9,6 +9,7 @@ import type { IGit } from "./git/interface";
 import type { IJiveServer } from "./jive-server/interface";
 import type { INpmCredentialPoster } from "./npm-credential-poster/interface";
 import type { IPipelineIdentity } from "./pipeline-identity/interface";
+import type { IPrompt } from "./prompt/interface";
 import type { IProvisioning } from "./provisioning/interface";
 import type { ISession, ISignInPrompt } from "./session/interface";
 import type { ISigningAgent } from "./signing-agent/interface";
@@ -25,6 +26,7 @@ export enum Module {
   jiveServer = "jiveServer",
   npmCredentialPoster = "npmCredentialPoster",
   pipelineIdentity = "pipelineIdentity",
+  prompt = "prompt",
   provisioning = "provisioning",
   session = "session",
   signInPrompt = "signInPrompt",
@@ -43,6 +45,7 @@ export const modules = interfaces<Module, {
   [Module.jiveServer]: IJiveServer;
   [Module.npmCredentialPoster]: INpmCredentialPoster;
   [Module.pipelineIdentity]: IPipelineIdentity;
+  [Module.prompt]: IPrompt;
   [Module.provisioning]: IProvisioning;
   [Module.session]: ISession;
   [Module.signInPrompt]: ISignInPrompt;

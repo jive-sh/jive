@@ -15,6 +15,7 @@ import { ExtensionDaemonImpl } from "@/modules/extension-daemon/impl";
 import { serveExtensionDaemon } from "@/modules/extension-daemon/socket-server";
 import { ExtensionSignInImpl } from "@/modules/extension-sign-in/impl";
 import { NpmCredentialPosterNotDecidedImpl } from "@/modules/npm-credential-poster/not-decided";
+import { TerminalPromptImpl } from "@/modules/prompt/impl";
 import { SessionImpl } from "@/modules/session/impl";
 import { SignedInAccount } from "@/modules/session/interface";
 import { SigningAgentImpl } from "@/modules/signing-agent/impl";
@@ -93,6 +94,42 @@ const signedIn = SessionImpl.mockLayer({
 });
 
 const accountKey = { publicKey: publicKeyLine, publicKeyFile: paths.accountPublicKeyFile };
+/** What the person types when `jive init` asks for the workspace's git identity. */
+const persona = { name: "Alex Leung", email: "alex@example.com" };
+const answeringPersona = TerminalPromptImpl.mockLayer({ *ask(question: string) { return question === "Name:" ? persona.name : persona.email; } });
+
+/** `jive init` in this process in `directory`, as the CLI runs it, its questions answered as `persona`. */
+async function initIn(directory: string) {
+  process.chdir(directory);
+  const exit = await e.Effect.runPromise(e.pipe(
+    Cli.run(jive, { version: "0.0.0-test" }),
+    e.Effect.provide(answeringPersona),
+    e.Effect.provide(AccountKeyImpl.mockLayer({ *ensure() { return accountKey; } })),
+    e.Effect.provide(ModulesLayer),
+    e.Effect.provide(scratchHost),
+    e.Effect.provide(e.Stdio.layerTest({ args: e.Effect.succeed(["init"]) })),
+    e.Effect.provide(BunServices.layer),
+    e.Effect.exit,
+  ));
+  if (e.Exit.isFailure(exit)) throw new Error(`jive init failed: ${JSON.stringify(e.Cause.squash(exit.cause))}`);
+}
+
+/** The signature on HEAD in `repository`, checked by `ssh-keygen -Y verify` against the account key. */
+async function verifyHeadSignature(repository: string) {
+  const allowedSigners = path.join(scratch, "allowed_signers");
+  writeFileSync(allowedSigners, `tester@example.com ${publicKeyLine}\n`);
+  const commit = sh(["git", "cat-file", "commit", "HEAD"], repository);
+  const signature = commit.slice(commit.indexOf("-----BEGIN SSH SIGNATURE-----"), commit.indexOf("-----END SSH SIGNATURE-----") + "-----END SSH SIGNATURE-----".length)
+    .split("\n").map((line) => line.replace(/^ /, "")).join("\n");
+  const signatureFile = path.join(scratch, "commit.sig");
+  writeFileSync(signatureFile, `${signature}\n`);
+  const payload = commit.replace(/^gpgsig [\s\S]*?-----END SSH SIGNATURE-----\n/m, "");
+  return await run(
+    ["ssh-keygen", "-Y", "verify", "-f", allowedSigners, "-I", "tester@example.com", "-n", "git", "-s", signatureFile],
+    repository,
+    `${payload}\n`,
+  );
+}
 /** The git config the SSH runs use: the acme repos through the sshd, taking precedence over jive's own rewrite. */
 let sshGitConfig = "";
 
@@ -210,17 +247,7 @@ const widget = () => path.join(checkout, "packages", "@acme", "widget");
 const gadget = () => path.join(widget(), "gadget");
 
 test("jive init moves every .gitmodules to https, checks out the nested submodule, and points every repository at jive, untracked ones included", async () => {
-  process.chdir(checkout);
-  const exit = await e.Effect.runPromise(e.pipe(
-    Cli.run(jive, { version: "0.0.0-test" }),
-    e.Effect.provide(AccountKeyImpl.mockLayer({ *ensure() { return accountKey; } })),
-    e.Effect.provide(ModulesLayer),
-    e.Effect.provide(scratchHost),
-    e.Effect.provide(e.Stdio.layerTest({ args: e.Effect.succeed(["init"]) })),
-    e.Effect.provide(BunServices.layer),
-    e.Effect.exit,
-  ));
-  if (e.Exit.isFailure(exit)) throw new Error(`jive init failed: ${JSON.stringify(e.Cause.squash(exit.cause))}`);
+  await initIn(checkout);
 
   expect(readFileSync(path.join(checkout, ".gitmodules"), "utf8")).toContain("url = https://github.com/acme/widget\n");
   expect(readFileSync(path.join(widget(), ".gitmodules"), "utf8")).toContain("url = https://github.com/acme/gadget\n");
@@ -232,6 +259,8 @@ test("jive init moves every .gitmodules to https, checks out the nested submodul
   expect(JSON.parse(readFileSync(path.join(checkout, "package.json"), "utf8")).jive).toEqual({ root: true });
 
   for (const repository of [checkout, widget(), gadget(), path.join(checkout, "packages", "loose")]) {
+    expect(gitConfigIn(repository, "user.name")).toBe(persona.name);
+    expect(gitConfigIn(repository, "user.email")).toBe(persona.email);
     expect(gitConfigIn(repository, "gpg.format")).toBe("ssh");
     expect(gitConfigIn(repository, "gpg.ssh.program")).toBe(path.join(installedBin, "jive-ssh-sign"));
     expect(gitConfigIn(repository, "user.signingKey")).toBe(paths.accountPublicKeyFile);
@@ -252,21 +281,9 @@ test("a commit in the nested submodule is signed through jive, ssh-keygen -Y ver
   const committed = await run(["git", "commit", "-m", "signed by jive"], gadget());
   expect(committed.stderr).not.toContain("error");
   expect(committed.exitCode).toBe(0);
-
-  const allowedSigners = path.join(scratch, "allowed_signers");
-  writeFileSync(allowedSigners, `tester@example.com ${publicKeyLine}\n`);
-  const commit = sh(["git", "cat-file", "commit", "HEAD"], gadget());
-  const signature = commit.slice(commit.indexOf("-----BEGIN SSH SIGNATURE-----"), commit.indexOf("-----END SSH SIGNATURE-----") + "-----END SSH SIGNATURE-----".length)
-    .split("\n").map((line) => line.replace(/^ /, "")).join("\n");
-  const signatureFile = path.join(scratch, "commit.sig");
-  writeFileSync(signatureFile, `${signature}\n`);
-  const payload = commit.replace(/^gpgsig [\s\S]*?-----END SSH SIGNATURE-----\n/m, "");
-  const verified = await run(
-    ["ssh-keygen", "-Y", "verify", "-f", allowedSigners, "-I", "tester@example.com", "-n", "git", "-s", signatureFile],
-    gadget(),
-    `${payload}\n`,
-  );
-  expect(verified.stdout).toContain('Good "git" signature for tester@example.com');
+  // The global config's "Seed" identity is overridden by the workspace's.
+  expect(sh(["git", "log", "-1", "--format=%an <%ae>|%cn <%ce>"], gadget())).toBe(`${persona.name} <${persona.email}>|${persona.name} <${persona.email}>`);
+  expect((await verifyHeadSignature(gadget())).stdout).toContain('Good "git" signature for tester@example.com');
 
   // Over SSH to the sshd, through the agent: the sshd's host key is new to this machine, so it is accepted, keeping the
   // command jive configured.
@@ -283,6 +300,35 @@ test("a commit in the nested submodule is signed through jive, ssh-keygen -Y ver
   const head = sh(["git", "rev-parse", "HEAD"], gadget());
   expect(sh(["git", "--git-dir", path.join(remotes, "acme", "gadget.git"), "rev-parse", "refs/heads/signed"], scratch)).toBe(head);
   expect(readFileSync(path.join(sshdDir, "sshd.log"), "utf8")).toContain("Accepted publickey");
+}, 60_000);
+
+test("on a machine with no global git identity, a fresh folder goes through jive init, and git commit succeeds as the identity init asked for, signed", async () => {
+  const fresh = path.join(scratch, "fresh-workspace");
+  mkdirSync(fresh);
+  const noIdentity = path.join(scratch, "gitconfig-without-identity");
+  writeFileSync(noIdentity, "[init]\n\tdefaultBranch = main\n");
+  const globalConfig = process.env["GIT_CONFIG_GLOBAL"];
+  process.env["GIT_CONFIG_GLOBAL"] = noIdentity;
+  try {
+    // Proof first that git has no identity here: a commit without jive fails as it did on Alex's laptop.
+    const bare = path.join(scratch, "without-jive");
+    mkdirSync(bare);
+    sh(["git", "init", "-q"], bare);
+    expect((await run(["git", "commit", "--allow-empty", "-m", "x"], bare, undefined, { GIT_AUTHOR_NAME: "", GIT_COMMITTER_NAME: "", EMAIL: "" })).stderr).toContain("Author identity unknown");
+
+    await initIn(fresh);
+    expect(sh(["git", "rev-parse", "--show-toplevel"], fresh)).toBe(fresh);
+    expect(sh(["git", "symbolic-ref", "HEAD"], fresh)).toBe("refs/heads/main");
+    writeFileSync(path.join(fresh, "README.md"), "fresh\n");
+    sh(["git", "add", "."], fresh);
+    const committed = await run(["git", "commit", "-m", "first"], fresh);
+    expect(committed.stderr).not.toContain("Author identity unknown");
+    expect(committed.exitCode).toBe(0);
+    expect(sh(["git", "log", "-1", "--format=%an <%ae>|%cn <%ce>"], fresh)).toBe(`${persona.name} <${persona.email}>|${persona.name} <${persona.email}>`);
+    expect((await verifyHeadSignature(fresh)).stdout).toContain('Good "git" signature for tester@example.com');
+  } finally {
+    process.env["GIT_CONFIG_GLOBAL"] = globalConfig;
+  }
 }, 60_000);
 
 /** The repository check and the rollback handed over in docs/ozy-cli-migration.md, step 4 and step 5, as written there. */
