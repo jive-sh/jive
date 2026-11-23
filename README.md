@@ -114,7 +114,7 @@ you, a scheduled task on Windows).
 | `jive unload <org> <repo>` | Removes every workspace link into the repo, running `bun install` in each package that had one so it gets its registry copy back, then removes the repo. |
 | `jive on <org> <repo> -- <command…>` | Runs a command in a loaded repo's directory; its exit code is jive's. |
 | `jive provision <kind> <name>` | Makes sure a resource instance exists, e.g. `jive provision connector-package-registry @scope/name`. The instance is `./package.json`'s `jive.resources.<kind>.<name>`, or `--instance '<json>'`. Needs a pipeline session. |
-| `jive daemons` | Lists every Jive daemon registered on this machine, with its state, executable and log. |
+| `jive daemons` | Lists every Jive daemon registered on this machine, with its state, executable and log. First it repairs any broken registration record: one whose package is gone is deleted, and one whose package still has its install.cjs is rewritten by running it, which restarts that package's daemons. |
 | `jive upgrade` | Upgrades jive with the package manager that installed it. |
 
 `--help`, `--version` and Tab completion (`jive --setup-completion`) work as for every command built with

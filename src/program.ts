@@ -1,6 +1,6 @@
 import * as e from "effect";
 import * as path from "node:path";
-import { Cli, OSPlatform, daemonStatuses, upgrade } from "jive-abstract-library";
+import { Cli, OSPlatform, daemonStatuses, repairDaemonRecords, upgrade } from "jive-abstract-library";
 import { PACKAGE_NAME, TOOL_NAME } from "@/constants";
 import { BadArgumentError, BadPreconditionsError, NotLoggedInError } from "@/errors";
 import { modules } from "@/modules";
@@ -190,8 +190,9 @@ export const jive = Cli.make(TOOL_NAME, {
   }),
 
   daemons: Cli.command({
-    description: "list every Jive daemon registered on this machine, with where its executable lives",
+    description: "list every Jive daemon registered on this machine, with where its executable lives, after repairing any broken registration record",
     *run() {
+      yield* repairDaemonRecords;
       const statuses = yield* daemonStatuses;
       if (statuses.length === 0) {
         yield* e.Effect.log("No Jive daemons are registered.");
