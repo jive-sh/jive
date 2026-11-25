@@ -6,7 +6,7 @@ import { jiveHomePaths } from "@/jive-home";
 
 /**
  * Upgrading a machine that runs jive 0.7.0, whose `jive-signing-agent` and `jive-extension-daemon` are registered and
- * running, to this version: the built installer (`dist/base/install.cjs`, from `bun run jive:cicd:build`) runs in a
+ * running, to this version: the built installer (`dist/base/postinstall.cjs`, from `bun run jive:cicd:build`) runs in a
  * scratch install of this package with HOME in the scratch directory. It must remove both old registrations, stopping
  * their daemons, and register `jive-daemon`, which must then serve both sockets rather than stand down.
  *
@@ -16,7 +16,7 @@ import { jiveHomePaths } from "@/jive-home";
  * exit after SIGTERM and write the pidfiles 0.7.0's did. Nothing reaches the real launchd, systemd or ~/.jive.
  */
 
-const installer = path.join(import.meta.dir, "..", "dist", "base", "install.cjs");
+const installer = path.join(import.meta.dir, "..", "dist", "base", "postinstall.cjs");
 const built = existsSync(installer);
 if (!built && process.env["CI"] !== undefined) throw new Error(`${installer} is missing: CI runs the build before this test`);
 
@@ -96,7 +96,7 @@ async function waitFor(input: { readonly probe: () => boolean; readonly what: st
 test.skipIf(!built)("installing over 0.7.0 stops and unregisters jive-signing-agent and jive-extension-daemon, and jive-daemon starts and serves both sockets", async () => {
   // This package installed where 0.7.0 was: the built installer, and the platform package the build installed.
   mkdirSync(path.join(packageDir, "bin"), { recursive: true });
-  copyFileSync(installer, path.join(packageDir, "install.cjs"));
+  copyFileSync(installer, path.join(packageDir, "postinstall.cjs"));
   copyFileSync(path.join(path.dirname(installer), "package.json"), path.join(packageDir, "package.json"));
   copyFileSync(path.join(path.dirname(installer), "bin", "package.json"), path.join(packageDir, "bin", "package.json"));
   const builtPackages = path.join(import.meta.dir, "..", "node_modules", "@jive-sh");
@@ -124,7 +124,7 @@ test.skipIf(!built)("installing over 0.7.0 stops and unregisters jive-signing-ag
   };
   // The installer skips registering in CI, as a build agent's install should; this test is the person's machine.
   delete environment["CI"];
-  const install = Bun.spawn([process.execPath, path.join(packageDir, "install.cjs")], { cwd: packageDir, env: environment, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const install = Bun.spawn([process.execPath, path.join(packageDir, "postinstall.cjs")], { cwd: packageDir, env: environment, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const [installOutput, installErrors, installExit] = await Promise.all([new Response(install.stdout).text(), new Response(install.stderr).text(), install.exited]);
   expect({ installExit, installErrors }).toEqual({ installExit: 0, installErrors: expect.not.stringContaining("failed") });
   expect(installOutput).toContain(`Removing daemon ${signingAgent.label}`);
