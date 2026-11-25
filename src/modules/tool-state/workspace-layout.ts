@@ -14,3 +14,10 @@ export const isPackageName = (name: string): boolean => PACKAGE_NAME.test(name);
 
 /** Where the package `packageName` sits, relative to the workspace root, with `/` separators. */
 export const packageRelativePath = (packageName: string): string => path.posix.join(PACKAGES_DIRECTORY, packageName);
+
+/**
+ * Whether a package's build in `dist/base` is of its checkout's version: jive-abstract-library stamps a local build
+ * `<version>-local`, and a build CI installed keeps the version as it is.
+ */
+export const isBuildOfCheckout = ({ builtVersion, checkoutVersion }: { readonly builtVersion: string; readonly checkoutVersion: string }): boolean =>
+  builtVersion === checkoutVersion || builtVersion === `${checkoutVersion}-local`;

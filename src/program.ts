@@ -1,9 +1,12 @@
 import * as e from "effect";
 import * as path from "node:path";
 import { Cli, OSPlatform, daemonStatuses, repairDaemonRecords, upgrade } from "jive-abstract-library";
+import { renderTemplate, templateInputNames } from "jive-abstract-abstraction";
 import { PACKAGE_NAME, TOOL_NAME } from "@/constants";
 import { BadArgumentError, BadPreconditionsError, NotLoggedInError } from "@/errors";
 import { modules } from "@/modules";
+import { AbstractSource } from "@/modules/abstracts/interface";
+import { abstractNameForKind, newPackageName, parseCreateArguments, pinAbstractDependency } from "@/modules/abstracts/new-package";
 import { LinkResult, LinkScope, type WorkspaceLink } from "@/modules/bun/interface";
 import { parseGitIdentity } from "@/modules/git/identity";
 import { LoadOutcome } from "@/modules/git/interface";
@@ -11,6 +14,7 @@ import { accountKeyFailure } from "@/modules/account-key/interface";
 import { jiveServerFailure } from "@/modules/jive-server/interface";
 import { daemonProblem } from "@/modules/ssh-wrappers/signing-session";
 import { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
+import { packageRelativePath } from "@/modules/tool-state/workspace-layout";
 
 /** Tab after an org lists the repos already loaded under it in this workspace. */
 const loadedRepoChoice = (description: string, next: (repo: RepoIdentifier) => Cli.Node) => (org: string) =>
@@ -56,6 +60,56 @@ export const jive = Cli.make(TOOL_NAME, {
         },
       }),
     }),
+  }),
+
+  create: Cli.passThroughCommand({
+    description: "make a new package at packages/<its package name> from the template of the abstract a kind names: `create library` uses jive-abstract-library's, `create agentic workflow` jive-abstract-agentic-workflow's; give each input the template asks for as --<input> <value>, or answer when asked",
+    *run({ args }) {
+      const { kindWords, flags } = yield* fromResult(parseCreateArguments(args), "arguments");
+      const abstractName = yield* fromResult(abstractNameForKind(kindWords), "kind");
+      const { workspaceRoot } = yield* e.pipe(
+        e.Effect.gen(function* () { return yield* (yield* modules.toolState).assertInWorkspace(); }),
+        e.Effect.mapError(BadPreconditionsError.fromNotInWorkspaceError),
+      );
+      const abstract = yield* e.pipe(
+        e.Effect.gen(function* () { return yield* (yield* modules.abstracts).get({ name: abstractName, workspaceRoot }); }),
+        e.Effect.mapError(({ reason }) => new BadPreconditionsError({ cause: `Cannot create a package from ${abstractName}: ${reason}`, fix: "" })),
+      );
+      const inputNames = templateInputNames(abstract.replacements);
+      yield* e.Effect.log(`Creating from ${abstract.name} ${abstract.version}, ${e.pipe(abstract.source, AbstractSource.$match({
+        Workspace: ({ directory }) => `the workspace's build at ${path.relative(workspaceRoot, directory)}`,
+        Registry: ({ tarballUrl }) => `downloaded from ${tarballUrl}`,
+      }))}; its template asks for ${inputNames.join(", ")}`);
+
+      const unknownFlags = Object.keys(flags).filter((name) => !inputNames.includes(name));
+      if (unknownFlags.length > 0) {
+        return yield* new BadArgumentError({ argument: unknownFlags.map((name) => `--${name}`).join(", "), reason: `${abstract.name}'s template asks for ${inputNames.map((name) => `--${name}`).join(", ")}` });
+      }
+      const inputs: Record<string, string> = {};
+      for (const inputName of inputNames) {
+        inputs[inputName] = Object.hasOwn(flags, inputName) ? flags[inputName]! : yield* askFor(inputName);
+      }
+
+      const rendered = yield* e.pipe(
+        renderTemplate({ files: abstract.templateFiles, inputs }),
+        e.Effect.mapError((reason) => BadPreconditionsError.withoutFix(`Cannot render ${abstract.name}'s template`, reason)),
+      );
+      const files = pinAbstractDependency({ files: rendered, abstractName: abstract.name, version: abstract.version });
+      const packageName = yield* fromResult(newPackageName(files), "inputs");
+      const relativeDestination = packageRelativePath(packageName);
+      const destination = path.join(workspaceRoot, relativeDestination);
+      const fs = yield* e.FileSystem.FileSystem;
+      const fsFailure = ({ message }: { readonly message: string }) => BadPreconditionsError.withoutFix(`Cannot write ${relativeDestination}`, message);
+      if (yield* e.pipe(fs.exists(destination), e.Effect.mapError(fsFailure))) {
+        return yield* new BadPreconditionsError({ cause: `${relativeDestination} already exists`, fix: `Remove it, or create the package under another name` });
+      }
+      for (const file of files) {
+        const target = path.join(destination, ...file.path.split("/"));
+        yield* e.pipe(fs.makeDirectory(path.dirname(target), { recursive: true }), e.Effect.mapError(fsFailure));
+        yield* e.pipe(fs.writeFileString(target, file.contents), e.Effect.mapError(fsFailure));
+      }
+      yield* e.Effect.log(`Created ${packageName} at ${relativeDestination} (${files.length} files). It is not a repository yet: create its GitHub repo, then \`${TOOL_NAME} load <org> <repo>\` adds it to this workspace`);
+    },
   }),
 
   unload: workspaceOrgChoice("remove a loaded repo from this workspace", loadedRepoChoice("a repo loaded in this workspace", (repo) => Cli.command({
@@ -248,6 +302,16 @@ const declaredInstance = (kind: string, name: string): e.Effect.Effect<unknown, 
 /** A step's result, its failure being the person's argument `argument` that it names. */
 const fromResult = <A>(result: e.Result.Result<A, string>, argument: string): e.Effect.Effect<A, BadArgumentError> =>
   e.Result.isSuccess(result) ? e.Effect.succeed(result.success) : e.Effect.fail(new BadArgumentError({ argument, reason: result.failure }));
+
+/** Asks on the terminal for an input the person did not give as a flag. */
+const askFor = (inputName: string): e.Effect.Effect<string, BadArgumentError | BadPreconditionsError, e.Terminal.Terminal> =>
+  e.Effect.gen(function* () {
+    const terminal = yield* e.Terminal.Terminal;
+    yield* e.pipe(terminal.display(`${inputName}: `), e.Effect.mapError(({ message }) => BadPreconditionsError.withoutFix("Cannot write to the terminal", message)));
+    const answer = (yield* e.pipe(terminal.readLine, e.Effect.mapError(() => new BadArgumentError({ argument: `--${inputName}`, reason: "not given, and the terminal gave no answer" })))).trim();
+    if (answer === "") return yield* new BadArgumentError({ argument: `--${inputName}`, reason: "is empty" });
+    return answer;
+  });
 
 /** A workspace root whose own git config sets no `user.name` and `user.email`: `jive init` in a terminal asks for them. */
 const noWorkspaceGitIdentity = ({ root, reason }: { readonly root: string; readonly reason: string }) => new BadPreconditionsError({

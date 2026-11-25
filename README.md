@@ -43,11 +43,18 @@ such workflows, the agents they call, and the connectors they act through
 Everything in Jive is an npm package, and **every kind of package is itself a package**: an *abstract*,
 `jive-abstract-<kind>`, implements the six CI/CD hooks for that kind, owns its manifest schema, and scaffolds new
 packages of the kind. Extending one gives a package a working pipeline with no CI configuration of its own. Kinds
-built today: `jive-abstract-library` (npm libraries and CLIs, this one included), `jive-abstract-backend-convex`,
-`jive-abstract-app-expo`, `jive-abstract-docker-image`, `jive-abstract-backend-spacetimedb`, and
-`jive-abstract-abstraction`, which creates new abstracts. Anyone can publish an abstract, so the set of kinds grows
-like a marketplace. *Planned:* `jive create <kind>` finds every `jive-abstract-*` package and offers them as a menu
-(`jive create agentic workflow` resolves `jive-abstract-agentic-workflow`).
+published on npm: `jive-abstract-abstraction` (the abstract every abstract extends), `jive-abstract-library` (npm
+libraries and CLIs, this one included), `jive-abstract-backend-convex`, `jive-abstract-app-expo`,
+`jive-abstract-app-github-pages`, and the resource kinds below. Anyone can publish an abstract, so the set of kinds
+grows like a marketplace. `jive-abstract-docker-image` and `jive-abstract-backend-spacetimedb` are not built yet.
+
+`jive create <kind words…>` makes a new package of a kind from its abstract's template: `jive create library`
+resolves `jive-abstract-library`, and `jive create agentic workflow` would resolve `jive-abstract-agentic-workflow`.
+Each abstract keeps a real, working sample package of its kind at `src/template/`, and its build, which comes from
+`jive-abstract-abstraction`, turns that sample into the `.ejs` template it publishes, replacing the literals its
+`jive.abstract.replacements` names with the inputs `jive create` asks for. Today only `jive-abstract-library` and
+`jive-abstract-abstraction` have templates. *Planned:* `jive create` lists every `jive-abstract-*` package as a
+menu, with Tab completion.
 
 **Resources** are the same idea for what packages use. A resource kind is an abstract defining a contract
 (`jive-abstract-resource-connector-package-registry`), and an implementation is a package on one system
@@ -111,6 +118,7 @@ you, a scheduled task on Windows).
 | `jive whoami` | Prints the handle of the Jive account this machine is signed in as, as `jive-daemon` reports it. When the server can't be reached it prints the handle saved at the last check, followed by `(not confirmed: can't reach Jive's server)`. |
 | `jive init` | Marks the workspace root: the nearest directory, from the current one upward, whose `package.json` has `"jive": { "root": true }`; when there is none, the top of the outermost git repository you are in, or, in a folder in no repository, that folder, which it makes a new repository on branch `main` (`git init -b main`). The root's `package.json` gets the mark (created if missing; its other fields and indentation kept). Run below an existing workspace root, it warns that it configures that workspace and asks "Are you sure you want to continue? [y/N]": yes goes on, no (the default) exits changing nothing, and with no terminal to ask it exits 1 changing nothing. It takes the workspace's git identity from the root's own git config (`user.name`, `user.email`), saying which it used; when the root has none it asks for a name and an email in the terminal, and with no terminal it exits 1 changing nothing, saying to run it in one (see Git identity). Then, in that root, rewrites every .gitmodules at every depth to `https://github.com/<owner>/<repo>`, syncs them, checks out every submodule not yet checked out (one already checked out keeps its HEAD), and configures the root, every submodule and every untracked repository inside it: `user.name` and `user.email` (the workspace's git identity), `gpg.format=ssh`, `user.signingKey` (the account key's public half), `commit.gpgSign=true`, `gpg.ssh.program=jive-ssh-sign`, `core.sshCommand=jive-ssh`, `ssh.variant=ssh`, and `url."git@github.com:".insteadOf "https://github.com/"` so https URLs fetch and push over SSH. Then links the packages among those repositories with each other (see Workspace links). Nothing else, and no GitHub sign-in. Safe to run again: a submodule already checked out keeps its HEAD, and the links are made again. |
 | `jive load <org> <repo>` | Adds a GitHub repo to the workspace as a submodule by its https URL at `packages/<its package.json name>` (see Workspace layout): clones it, or adopts a checkout of it already there (one whose remote names the repo), keeping its uncommitted work. Stages only its own `.gitmodules` entry and gitlink, so uncommitted edits to `.gitmodules` stay unstaged, and commits nothing. Run again on a loaded repo, it only does what follows. Fetches its submodules, configures it and them as `jive init` does (the root's git identity included; a root with none is refused with `jive init` as the fix), runs `bun install` in it, then links it with the workspace's packages: its workspace dependencies into it, and it into every workspace package that depends on it. |
+| `jive create <kind words…> [--<input> <value>…]` | Makes a new package at `packages/<its package name>` from the template of `jive-abstract-<kind words joined by hyphens>`: the workspace's build of it when the workspace has one at `packages/<that name>/dist/base`, otherwise its latest version on npm, as the first log line says. Asks for each input the template names (`jive.abstract.replacements` in the abstract's published package.json), or takes it as `--<input> <value>` or `--<input>=<value>`; a flag the template doesn't name is refused. The new package's dependency on the abstract is pinned to the version it was made from, and it refuses to write over a directory already there. It writes files only: making the package's GitHub repo and running `jive load` on it come after. |
 | `jive unload <org> <repo>` | Removes every workspace link into the repo, running `bun install` in each package that had one so it gets its registry copy back, then removes the repo. |
 | `jive on <org> <repo> -- <command…>` | Runs a command in a loaded repo's directory; its exit code is jive's. |
 | `jive provision <kind> <name>` | Makes sure a resource instance exists, e.g. `jive provision connector-package-registry @scope/name`. The instance is `./package.json`'s `jive.resources.<kind>.<name>`, or `--instance '<json>'`. Needs a pipeline session. |
@@ -182,7 +190,10 @@ Left jive-abstract-library into @jive-sh/jive: jive-abstract-library's build is 
 - **A `bun install` or `bun add` in a dependent puts the registry copies back.** Run `jive init` again afterwards.
 - **Shared peers.** A linked package resolves its own imports from its checkout, so a peer it shares with the
   dependent (`effect`) is a second copy there. TypeScript needs `"preserveSymlinks": true` in the dependent's
-  tsconfig to type-check against one copy, as jive's has; at run time Bun has no such option, so two copies load.
+  tsconfig to type-check against one copy, as jive's has. At run time Bun loads both copies unless it runs with
+  `NODE_PRESERVE_SYMLINKS=1` (or `bun --preserve-symlinks`), and values of one copy can fail in the other: a schema
+  from a linked `jive-abstract-abstraction` build decoded with jive's own `effect` rejects a valid manifest. Run jive's
+  tests and source as `NODE_PRESERVE_SYMLINKS=1 bun test src` while such a package is linked.
 
 Why not bun's own mechanisms: a root `workspaces` list links a member only when its version satisfies the dependent's
 range (a pin of `0.3.6` against a checkout at `0.3.7` installs the registry copy), and a `bun install` run inside a

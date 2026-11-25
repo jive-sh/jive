@@ -13,6 +13,7 @@
       },
       "devDependencies": {
         "@types/bun": "^1.3.14",
+        "jive-abstract-abstraction": "0.1.0",
         "jive-abstract-library": "0.14.5",
         "typescript": "^5.9.3",
       },
@@ -79,6 +80,8 @@
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 
+    "@types/ejs": ["@types/ejs@3.1.5", "", {}, "sha512-nv+GSx77ZtXiJzwKdsASqi+YQ5Z7vwHsTP0JY2SiQgjGckkBRKZnk8nIM+7oUZ1VCtuTz0+By4qVR7fqzp/Dfg=="],
+
     "@types/node": ["@types/node@20.19.40", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-xxx6M2IpSTnnKcR0cMvIiohkiCx20/oRPtWGbenFygKCGl3zqUzdNjQ/1V4solq1LU+dgv0nQzeGOuqkqZGg0Q=="],
 
     "@types/ws": ["@types/ws@8.18.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w=="],
@@ -91,7 +94,21 @@
 
     "effective-modules": ["effective-modules@0.3.6", "", { "peerDependencies": { "effect": "^4.0.0" } }, "sha512-s9wccm4UiKkr65qmGr3V5bXp/wgHW9OK21k72SnJNHq0PB1Ra+pCkmMt3EZ3QhsziQ2yNP7s5ypoRFe2xQ/hDA=="],
 
+    "ejs": ["ejs@7.0.2", "", { "bin": { "ejs": "bin/cli.js" } }, "sha512-LcDSEP6Oclb9sTiSyG0MpG0RuKvLDRxCOOt+2sIk+kdk1rMkFU8SRnT0qaNt5zvU0LOV1YXXOvIoZL/sKwabvw=="],
+
     "esbuild": ["esbuild@0.27.0", "", { "optionalDependencies": { "@esbuild/aix-ppc64": "0.27.0", "@esbuild/android-arm": "0.27.0", "@esbuild/android-arm64": "0.27.0", "@esbuild/android-x64": "0.27.0", "@esbuild/darwin-arm64": "0.27.0", "@esbuild/darwin-x64": "0.27.0", "@esbuild/freebsd-arm64": "0.27.0", "@esbuild/freebsd-x64": "0.27.0", "@esbuild/linux-arm": "0.27.0", "@esbuild/linux-arm64": "0.27.0", "@esbuild/linux-ia32": "0.27.0", "@esbuild/linux-loong64": "0.27.0", "@esbuild/linux-mips64el": "0.27.0", "@esbuild/linux-ppc64": "0.27.0", "@esbuild/linux-riscv64": "0.27.0", "@esbuild/linux-s390x": "0.27.0", "@esbuild/linux-x64": "0.27.0", "@esbuild/netbsd-arm64": "0.27.0", "@esbuild/netbsd-x64": "0.27.0", "@esbuild/openbsd-arm64": "0.27.0", "@esbuild/openbsd-x64": "0.27.0", "@esbuild/openharmony-arm64": "0.27.0", "@esbuild/sunos-x64": "0.27.0", "@esbuild/win32-arm64": "0.27.0", "@esbuild/win32-ia32": "0.27.0", "@esbuild/win32-x64": "0.27.0" }, "bin": { "esbuild": "bin/esbuild" } }, "sha512-jd0f4NHbD6cALCyGElNpGAOtWxSq46l9X/sWB0Nzd5er4Kz2YTm+Vl0qKFT9KUJvD8+fiO8AvoHhFvEatfVixA=="],
+
+    "jive-abstract-abstraction": ["jive-abstract-abstraction@0.1.0", "", { "dependencies": { "@effect/platform-bun": "^4.1.4", "@types/ejs": "^3.1.5", "ejs": "^7.0.2", "jive-abstract-library": "0.14.5" }, "optionalDependencies": { "jive-abstract-abstraction-darwin-arm64": "npm:jive-abstract-abstraction@0.1.0-latest-darwin-arm64", "jive-abstract-abstraction-darwin-x64": "npm:jive-abstract-abstraction@0.1.0-latest-darwin-x64", "jive-abstract-abstraction-linux-arm64": "npm:jive-abstract-abstraction@0.1.0-latest-linux-arm64", "jive-abstract-abstraction-linux-x64": "npm:jive-abstract-abstraction@0.1.0-latest-linux-x64", "jive-abstract-abstraction-windows-x64": "npm:jive-abstract-abstraction@0.1.0-latest-windows-x64" }, "peerDependencies": { "effect": "^4.0.0", "typescript": "^5.9.3" }, "hasInstallScript": true, "bin": { "jive-abstraction": "bin/jive-abstraction" } }, "sha512-z130FcRbsmv+fPlsibF3onCU7ZdHuGxB9Gp4IzC/zlbuRcadNMfCVNOl6ipOD3m/8PrVDsZGvDlzqu+parQL7Q=="],
+
+    "jive-abstract-abstraction-darwin-arm64": ["jive-abstract-abstraction@0.1.0-latest-darwin-arm64", "", { "os": "darwin", "cpu": "arm64" }, "sha512-e6CRR4pkGC07ua7ww5OYHL2ZmBTC4c1z85mLtbZBzeY8agUbLcLGGxfjUNwmtUdEJs9bB/ratJWSRPE8U/Djkg=="],
+
+    "jive-abstract-abstraction-darwin-x64": ["jive-abstract-abstraction@0.1.0-latest-darwin-x64", "", { "os": "darwin", "cpu": "x64" }, "sha512-fms3bSmjoQxTCkeS79pz1TjT2qYxDvmDVYr/2HYdKEPSwkIszPCKgdwmdnJaIPiJgQ7CUKQAOih2+uGApYRyQQ=="],
+
+    "jive-abstract-abstraction-linux-arm64": ["jive-abstract-abstraction@0.1.0-latest-linux-arm64", "", { "os": "linux", "cpu": "arm64" }, "sha512-Z8FORZlfmPYvj5XkibocD+sdFUG6z50s4ggD0Fmh7ni14/luXVOjNc6/RjWIREk33dDEptXIDt5/ShOaI6FQ5A=="],
+
+    "jive-abstract-abstraction-linux-x64": ["jive-abstract-abstraction@0.1.0-latest-linux-x64", "", { "os": "linux", "cpu": "x64" }, "sha512-va7/xjnEVVFM4n5Z7ZkAaFvNNFoRtAlTPwgp8YCQrWjwuqkj79jcDpPVir8XMwwjVCQfC1p9FXLD9WWkdBnRzw=="],
+
+    "jive-abstract-abstraction-windows-x64": ["jive-abstract-abstraction@0.1.0-latest-windows-x64", "", { "os": "win32", "cpu": "x64" }, "sha512-jniAUjhUAYIADud5SHMLBsfLN90nztUMQf0LY1JPK8psl/DI/8Hx5jddUbihovjQP1whGsJgDxeSOGGo5+EZjQ=="],
 
     "jive-abstract-library": ["jive-abstract-library@0.14.5", "", { "dependencies": { "@effect/platform-bun": "^4.0.0", "effective-modules": "0.3.1-effect4", "jsonc-parser": "^3.3.1" }, "optionalDependencies": { "jive-abstract-library-darwin-arm64": "npm:jive-abstract-library@0.14.5-latest-darwin-arm64", "jive-abstract-library-darwin-x64": "npm:jive-abstract-library@0.14.5-latest-darwin-x64", "jive-abstract-library-linux-arm64": "npm:jive-abstract-library@0.14.5-latest-linux-arm64", "jive-abstract-library-linux-x64": "npm:jive-abstract-library@0.14.5-latest-linux-x64", "jive-abstract-library-windows-x64": "npm:jive-abstract-library@0.14.5-latest-windows-x64" }, "peerDependencies": { "effect": "^4.0.0", "typescript": "^5.9.3" }, "hasInstallScript": true, "bin": { "jive-library": "bin/jive-library" } }, "sha512-GK4DoIOA6R/eNpQYzLsv9aSMXPyHUtjoX55Annvb6SYz/lyNrQQJtecu3fwXg28OyDK+7YN1sdmid0jn//ENow=="],
 
@@ -117,6 +134,12 @@
 
     "@effect/platform-node-shared/ws": ["ws@8.22.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg=="],
 
+    "jive-abstract-abstraction/@effect/platform-bun": ["@effect/platform-bun@4.1.5", "", { "dependencies": { "@effect/platform-node-shared": "4.1.5" }, "peerDependencies": { "effect": "^4.1.5" } }, "sha512-VzUugWhIKQSWp/xtFrYIrCISDcUXWrCFfxSkqg8ul0DZgo23WRqfz+38Y3mJ2NenUv5kUj14FnjLohm2t8ZGCw=="],
+
     "jive-abstract-library/effective-modules": ["effective-modules@0.3.1-effect4", "", { "peerDependencies": { "effect": "^4.0.0-beta.64" } }, "sha512-YL0BenACL9ySmvnSw+uhJlsL0SycEU+LxBsDAcJ3F1IeZ1uJjXTDjhS0KlZhzGyCwJ/wqigUqNdF5EksTclAdg=="],
+
+    "jive-abstract-abstraction/@effect/platform-bun/@effect/platform-node-shared": ["@effect/platform-node-shared@4.1.5", "", { "dependencies": { "@types/ws": "^8.18.2", "ws": "^8.23.0" }, "peerDependencies": { "effect": "^4.1.5" } }, "sha512-JzlrYe4uKaBFTWihBRXo2pDjkUVB39kQpKdGfXdbp7Co5sKT8hbcjOmdB5pg/WOYESdGTddd3fxD4lwlZELbZQ=="],
+
+    "jive-abstract-abstraction/@effect/platform-bun/@effect/platform-node-shared/ws": ["ws@8.23.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-wCkmX8QMOrKjgO8HW2WyDbTSGeqkocxgDzS9iR79rEAexty6/2qzilx3Ag8Tqf9ykop3irLKle0MtVn5qjVnoQ=="],
   }
 }

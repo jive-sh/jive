@@ -4,6 +4,7 @@ import { implementing, type EffectGen } from "effective-modules";
 import { OSPlatform } from "jive-abstract-library";
 import { BadPreconditionsError } from "@/errors";
 import { modules } from "@/modules";
+import { isBuildOfCheckout } from "@/modules/tool-state/workspace-layout";
 import { LinkResult, LinkScope, type IBun, type WorkspaceLink } from "./interface";
 
 const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;
@@ -122,7 +123,7 @@ export class BunImpl extends implementing(modules.bun).uses(OSPlatform, e.FileSy
     const maybeBuilt = yield* this.readManifest(build);
     if (e.Option.isNone(maybeBuilt) || maybeBuilt.value.name !== dependency.name) return LinkResult.NotBuilt();
     const builtVersion = maybeBuilt.value.version ?? "";
-    if (builtVersion !== dependency.version && builtVersion !== `${dependency.version}-local`) {
+    if (!isBuildOfCheckout({ builtVersion, checkoutVersion: dependency.version })) {
       return LinkResult.StaleBuild({ builtVersion });
     }
     return LinkResult.Linked({ target: build });

@@ -1,4 +1,5 @@
 import { interfaces } from "effective-modules";
+import type { IAbstracts } from "./abstracts/interface";
 import type { IAccountKey } from "./account-key/interface";
 import type { IBrowser } from "./browser/interface";
 import type { IBun } from "./bun/interface";
@@ -16,6 +17,7 @@ import type { ISigningAgent } from "./signing-agent/interface";
 import type { IToolState } from "./tool-state/interface";
 
 export enum Module {
+  abstracts = "abstracts",
   accountKey = "accountKey",
   browser = "browser",
   bun = "bun",
@@ -35,6 +37,7 @@ export enum Module {
 }
 
 export const modules = interfaces<Module, {
+  [Module.abstracts]: IAbstracts;
   [Module.accountKey]: IAccountKey;
   [Module.browser]: IBrowser;
   [Module.bun]: IBun;

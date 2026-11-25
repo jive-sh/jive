@@ -1,5 +1,6 @@
 import * as e from "effect";
 import { FetchHttpClient } from "effect/http";
+import { AbstractsImpl } from "./abstracts/impl";
 import { AccountKeyImpl } from "./account-key/impl";
 import { BrowserImpl } from "./browser/impl";
 import { BunImpl } from "./bun/impl";
@@ -33,7 +34,8 @@ const serverLayer = e.pipe(
 );
 
 export const ModulesLayer = e.pipe(
-  GitImpl.Layer,
+  AbstractsImpl.Layer,
+  e.Layer.provideMerge(GitImpl.Layer),
   e.Layer.provideMerge(BunImpl.Layer),
   e.Layer.provideMerge(ToolStateImpl.Layer),
   e.Layer.provideMerge(ProvisioningImpl.Layer),
