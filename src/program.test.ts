@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { BadArgumentError, BadPreconditionsError, UsageError } from "@/errors";
 import { AccountKeyImpl } from "@/modules/account-key/impl";
 import type { AccountKey } from "@/modules/account-key/interface";
-import { formatShellCommand } from "@/modules/command-echo/shell-command";
+import { formatShellCommand, shellQuote } from "@/modules/command-echo/shell-command";
 import { GitHubImpl } from "@/modules/github/impl";
 import { GitHubUnanswered } from "@/modules/github/interface";
 import { TerminalPromptImpl } from "@/modules/prompt/impl";
@@ -191,7 +191,7 @@ describe("jive in a workspace", () => {
     expect(gitConfigIn(widget(), "commit.gpgSign")).toBe("true");
     expect(gitConfigIn(widget(), "user.signingKey")).toBe(path.join(scratch, "account.pub"));
     expect(gitConfigIn(widget(), "gpg.ssh.program")).toEndWith("/jive-ssh-sign");
-    expect(gitConfigIn(widget(), "core.sshCommand")).toEndWith("/jive-ssh");
+    expect(gitConfigIn(widget(), "core.sshCommand")).toBe(shellQuote(path.join(path.dirname(process.execPath), "jive-ssh")));
     expect(gitConfigIn(widget(), "ssh.variant")).toBe("ssh");
     expect(gitConfigIn(widget(), "user.name")).toBe(persona.name);
     expect(gitConfigIn(widget(), "user.email")).toBe(persona.email);

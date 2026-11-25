@@ -23,6 +23,7 @@ const cloneText = [
 
 test.each([
   { name: "a command with -c options, one line each, the subcommand last", command: clone, text: cloneText },
+  { name: "a path with @, which a shell passes as it is, bare", command: { program: "git", optionLines: [["-c", "core.sshCommand=/Users/alex/.bun/install/global/node_modules/@jive-sh/jive/bin/jive-ssh"]], arguments: ["fetch"] }, text: "git \\\n  -c core.sshCommand=/Users/alex/.bun/install/global/node_modules/@jive-sh/jive/bin/jive-ssh \\\n  fetch" },
   { name: "a command with no options, on one line", command: { program: "git", optionLines: [], arguments: ["submodule", "deinit", "-f", "packages/@acme/widget"] }, text: "git submodule deinit -f packages/@acme/widget" },
   {
     name: "words a shell would split or expand, single-quoted",

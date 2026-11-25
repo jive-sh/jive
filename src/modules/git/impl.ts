@@ -6,6 +6,7 @@ import { SIGNING_COMMAND_NAME, SSH_COMMAND_NAME, TOOL_NAME, installedCommandPath
 import { BadArgumentError, BadPreconditionsError } from "@/errors";
 import { modules } from "@/modules";
 import { PACKAGES_DIRECTORY, isPackageName, packageRelativePath } from "@/modules/tool-state/workspace-layout";
+import { shellQuote } from "@/modules/command-echo/shell-command";
 import { GITHUB_HTTPS, GITHUB_SSH, githubHttpsUrl, repoOfGitHubRemote } from "./github-remote";
 import { RepoIdentifier } from "@/modules/tool-state/repo-identifier";
 import type { GitIdentity } from "./identity";
@@ -429,14 +430,14 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
   }
 
   /**
-   * git runs `core.sshCommand` through a shell, so the path is quoted when it holds anything else than a path's plain
-   * characters. `ssh.variant=ssh` tells git it is OpenSSH, so git passes `-o SendEnv=GIT_PROTOCOL` and keeps protocol
+   * git runs `core.sshCommand` through a shell, so the path is quoted as a shell needs it (`shellQuote`, the rule the
+   * command echo uses too): a path like `/opt/bun-global/node_modules/@jive-sh/jive/bin/jive-ssh` stays bare. `ssh.variant=ssh` tells git it is OpenSSH, so git passes `-o SendEnv=GIT_PROTOCOL` and keeps protocol
    * v2; `simple` would drop git to protocol v0, and the default makes git guess from the command's name.
    */
   private *sshConfig(): EffectGen<Record<string, string>> {
     const command = yield* this.installedCommand(SSH_COMMAND_NAME);
     return {
-      "core.sshCommand": /^[\w./+-]+$/.test(command) ? command : `'${command.replaceAll("'", `'\\''`)}'`,
+      "core.sshCommand": shellQuote(command),
       "ssh.variant": "ssh",
     };
   }
