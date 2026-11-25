@@ -63,11 +63,16 @@ export interface IGit {
   /** `root`, every submodule checked out under it, and every repository inside it that git doesn't track, at any depth. */
   repositoriesUnder(root: string): EffectGen<ReadonlyArray<string>, BadPreconditionsError>;
   /**
-   * Checks out every submodule under `root` not yet checked out, at any depth, fetching over SSH through `jive-ssh`
-   * whatever URL its .gitmodules names; no .gitmodules is written. A submodule already checked out keeps its HEAD and
-   * working tree. Returns how many it checked out.
+   * Rewrites every GitHub URL in the .gitmodules `repository` has to `https://github.com/<owner>/<repo>`, in the
+   * working tree only; a repository with no .gitmodules gets none. Returns how many URLs it rewrote.
    */
-  checkOutSubmodules(root: string): EffectGen<number, BadPreconditionsError>;
+  useHttpsSubmoduleUrls(repository: string): EffectGen<number, BadPreconditionsError>;
+  /**
+   * Does `useHttpsSubmoduleUrls` in `root` and every repository under it, syncs the URLs into git config, and checks out
+   * every submodule not yet checked out, at any depth, fetching over SSH through `jive-ssh`. A submodule already checked
+   * out keeps its HEAD and working tree. Returns how many URLs it rewrote and how many submodules it checked out.
+   */
+  checkOutSubmodulesOverHttps(root: string): EffectGen<{ readonly rewritten: number; readonly checkedOut: number }, BadPreconditionsError>;
   /**
    * Sets exactly what jive needs in `repository`: commits made as the workspace's git identity and signed with the
    * account key through `jive-ssh-sign`, and GitHub's https URLs fetched and pushed over SSH through `jive-ssh`.

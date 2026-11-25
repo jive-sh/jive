@@ -61,15 +61,19 @@ export const jive = Cli.make(TOOL_NAME, {
         // The identity and the sign-in come before anything is written, so either failing leaves the workspace as it was.
         const gitIdentity = yield* workspaceGitIdentity();
         yield* accountKey();
-        const { packageName, location, outcome } = yield* (yield* modules.git).loadAsSubmodule(chosenRepo);
+        const git = yield* modules.git;
+        const { packageName, location, outcome } = yield* git.loadAsSubmodule(chosenRepo);
         yield* e.Effect.log(e.pipe(outcome, LoadOutcome.$match({
           Cloned: () => `Cloned ${org}/${repo} and staged it as a submodule`,
           Adopted: () => `Added the checkout of ${org}/${repo} already there as a submodule and staged it`,
           AlreadyLoaded: () => `${org}/${repo} is already the submodule there`,
         })));
+        const { workspaceRoot, repositories } = yield* workspaceRepositories();
+        // The workspace's .gitmodules, which the new entry joined: its other GitHub URLs move to https too, unstaged.
+        const rewritten = yield* git.useHttpsSubmoduleUrls(workspaceRoot);
+        if (rewritten > 0) yield* e.Effect.log(`Moved ${rewritten} other submodule URL${rewritten === 1 ? "" : "s"} in ${path.join(workspaceRoot, ".gitmodules")} to https`);
         const bun = yield* modules.bun;
         yield* bun.install({ directory: location.absolutePath, packageName });
-        const { workspaceRoot, repositories } = yield* workspaceRepositories();
         yield* logLinks({ workspaceRoot, links: yield* bun.linkWorkspace({ repositories, scope: LinkScope.Touching({ directory: location.absolutePath }) }) });
         yield* initialize({ directory: location.absolutePath, maybeGitIdentity: e.Option.some(gitIdentity) });
       },
@@ -196,7 +200,7 @@ export const jive = Cli.make(TOOL_NAME, {
   }),
 
   init: Cli.command({
-    description: "set up the git repository you are in, the nearest one from here up, as a jive workspace, changing none of its files: every submodule checked out, and it, every submodule and every repository inside it that git doesn't track commit as the workspace's git identity (the root's user.name and user.email, asked for the first time), sign with your Jive account key and fetch and push over SSH through jive's agent; the packages among them are linked with each other. A folder in no repository becomes a new one, on main",
+    description: "set up the git repository you are in, the nearest one from here up, as a jive workspace, changing none of its files but .gitmodules: every .gitmodules already there moved to https, every submodule checked out, and it, every submodule and every repository inside it that git doesn't track commit as the workspace's git identity (the root's user.name and user.email, asked for the first time), sign with your Jive account key and fetch and push over SSH through jive's agent; the packages among them are linked with each other. A folder in no repository becomes a new one, on main",
     *run() {
       yield* initialize({ directory: yield* (yield* OSPlatform).getCurrentDirectory(), maybeGitIdentity: e.Option.none() });
     },
@@ -338,8 +342,9 @@ function workspaceGitIdentityOrAsk(root: string) {
 /**
  * `jive init` in `directory`: sets up the nearest git repository from there up, or makes `directory` a new one on
  * main when it is in none. The identity is `maybeGitIdentity` when `jive load` passes the workspace's, or else the
- * root's own, asked for when it has none. It writes git config and checks out submodules, and never a file the
- * repository tracks.
+ * root's own, asked for when it has none. It writes git config and checks out submodules; the only files it changes
+ * are the .gitmodules already there, whose GitHub URLs it moves to https (Alex, 2026-11-25: "init only if .gitmodules
+ * already exists").
  */
 function initialize({ directory, maybeGitIdentity }: { readonly directory: string; readonly maybeGitIdentity: e.Option.Option<GitIdentity> }) {
   return e.Effect.gen(function* () {
@@ -354,12 +359,12 @@ function initialize({ directory, maybeGitIdentity }: { readonly directory: strin
       yield* e.Effect.log(`Made ${directory} a git repository on branch main`);
     }
     yield* e.Effect.log(`Setting up the workspace at ${root}`);
-    const checkedOut = yield* git.checkOutSubmodules(root);
+    const { rewritten, checkedOut } = yield* git.checkOutSubmodulesOverHttps(root);
     const repositories = yield* git.repositoriesUnder(root);
     for (const repository of repositories) {
       yield* git.configureRepository({ repository, settings: { accountKey: key, gitIdentity } });
     }
-    yield* e.Effect.log(`${checkedOut} submodule${checkedOut === 1 ? "" : "s"} checked out; ${repositories.length} repositor${repositories.length === 1 ? "y commits" : "ies commit"} as ${gitIdentity.name} <${gitIdentity.email}>, sign${repositories.length === 1 ? "s" : ""} with your Jive account key and fetch and push over SSH through jive's agent`);
+    yield* e.Effect.log(`${rewritten} submodule URL${rewritten === 1 ? "" : "s"} moved to https; ${checkedOut} submodule${checkedOut === 1 ? "" : "s"} checked out; ${repositories.length} repositor${repositories.length === 1 ? "y commits" : "ies commit"} as ${gitIdentity.name} <${gitIdentity.email}>, sign${repositories.length === 1 ? "s" : ""} with your Jive account key and fetch and push over SSH through jive's agent`);
     yield* logLinks({ workspaceRoot: root, links: yield* (yield* modules.bun).linkWorkspace({ repositories, scope: LinkScope.Workspace() }) });
   });
 }

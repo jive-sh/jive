@@ -401,7 +401,7 @@ describe("jive in the nearest git repository", () => {
     expect(status(clone)).toBe("");
   }, 30_000);
 
-  test("init in an existing repository with no package.json changes none of its files, and sets the git config it sets", async () => {
+  test("init in an existing repository with no package.json moves its .gitmodules to https, changes no other file, and sets the git config it sets", async () => {
     // A submodule .gitmodules names over SSH, as a repository cloned with `gh` has it: init fetches it as it is.
     const root = monorepo({ name: "untouched", submodules: [] });
     sh(["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", "git@github.com:acme/aoe2-in-browser", "packages/aoe2-in-browser"], root);
@@ -410,12 +410,16 @@ describe("jive in the nearest git repository", () => {
     const gitmodules = readFileSync(path.join(root, ".gitmodules"), "utf8");
     const { asked, prompt } = prompting({ terminal: false });
 
+    expect(gitmodules).toContain("url = git@github.com:acme/aoe2-in-browser\n");
     const { logs } = succeeded(await runJiveIn(root, ["init"], prompt));
     expect(asked).toEqual([]);
     expect(logs).toContain(`Setting up the workspace at ${root}`);
-    expect(status(root)).toBe("");
+    expect(logs).toContain(`1 submodule URL moved to https; 1 submodule checked out; 2 repositories commit as ${persona.name} <${persona.email}>, sign with your Jive account key and fetch and push over SSH through jive's agent`);
+    // .gitmodules is the one file that changes, in the working tree only: its URL now https.
+    expect(status(root)).toBe("M .gitmodules");
+    expect(readFileSync(path.join(root, ".gitmodules"), "utf8")).toBe(gitmodules.replace("git@github.com:acme/aoe2-in-browser", "https://github.com/acme/aoe2-in-browser"));
+    expect(sh(["git", "show", ":.gitmodules"], root)).toBe(gitmodules.trim());
     expect(existsSync(path.join(root, "package.json"))).toBe(false);
-    expect(readFileSync(path.join(root, ".gitmodules"), "utf8")).toBe(gitmodules);
     expect(readFileSync(path.join(root, "packages", "aoe2-in-browser", "package.json"), "utf8")).toContain("@acme/aoe2-in-browser");
     for (const repository of [root, path.join(root, "packages", "aoe2-in-browser")]) {
       expect(gitConfigIn(repository, "user.name")).toBe(persona.name);
@@ -428,6 +432,40 @@ describe("jive in the nearest git repository", () => {
       expect(gitConfigIn(repository, "ssh.variant")).toBe("ssh");
       expect(gitConfigIn(repository, "url.git@github.com:.insteadOf")).toBe("https://github.com/");
     }
+  }, 30_000);
+
+  test("init in a repository with no .gitmodules makes none, changing no file", async () => {
+    const root = monorepo({ name: "no-gitmodules", submodules: [] });
+    const { logs } = succeeded(await runJiveIn(root, ["init"]));
+    expect(logs).toContain(`0 submodule URLs moved to https; 0 submodules checked out; 1 repository commits as ${persona.name} <${persona.email}>, signs with your Jive account key and fetch and push over SSH through jive's agent`);
+    expect(existsSync(path.join(root, ".gitmodules"))).toBe(false);
+    expect(status(root)).toBe("");
+  }, 30_000);
+
+  test("load moves the workspace's other .gitmodules URLs and the loaded repo's own to https, staging neither", async () => {
+    // A repo on "GitHub" whose own .gitmodules names its submodule over SSH.
+    const source = path.join(scratch, "sources", "ssh-submodules");
+    mkdirSync(source, { recursive: true });
+    writeFileSync(path.join(source, "package.json"), JSON.stringify({ name: "@acme/ssh-submodules", version: "0.0.0" }));
+    sh(["git", "init", "-q"], source);
+    sh(["git", "submodule", "add", "-q", "git@github.com:acme/aoe2-in-browser", "vendor/aoe2"], source);
+    sh(["git", "add", "."], source);
+    sh(["git", "commit", "-qm", "ssh-submodules"], source);
+    sh(["git", "clone", "-q", "--bare", source, path.join(remotes, "acme", "ssh-submodules.git")], scratch);
+
+    const root = monorepo({ name: "load-to-https", submodules: [{ url: "git@github.com:acme/open-empires-web", path: "packages/open-empires-web" }] });
+    const { logs } = await loaded(root, "ssh-submodules");
+    expect(logs).toContain(`Moved 1 other submodule URL in ${root}/.gitmodules to https`);
+    const workingTree = readFileSync(path.join(root, ".gitmodules"), "utf8");
+    expect(workingTree).toContain("url = https://github.com/acme/open-empires-web\n");
+    expect(workingTree).not.toContain("git@");
+    // The index has the old URL as committed, plus only the new entry.
+    expect(sh(["git", "show", ":.gitmodules"], root)).toContain("url = git@github.com:acme/open-empires-web");
+    expect(sh(["git", "diff", "--cached", "--name-only"], root).split("\n")).toEqual([".gitmodules", "packages/@acme/ssh-submodules"]);
+    // jive init, run in the loaded repo, moved its own .gitmodules to https and checked out its submodule.
+    const loadedRepo = path.join(root, "packages", "@acme", "ssh-submodules");
+    expect(readFileSync(path.join(loadedRepo, ".gitmodules"), "utf8")).toContain("url = https://github.com/acme/aoe2-in-browser\n");
+    expect(readFileSync(path.join(loadedRepo, "vendor", "aoe2", "package.json"), "utf8")).toContain("@acme/aoe2-in-browser");
   }, 30_000);
 
   test("init below a repository's root, or inside one of its submodules, sets up that nearest repository and asks nothing, with or without a terminal", async () => {

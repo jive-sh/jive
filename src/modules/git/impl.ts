@@ -15,6 +15,8 @@ import { LoadOutcome, type IGit, type LoadedRepository, type LoadedSubmodule, ty
 const SUBMODULE_STATUS_LINE = /^([ +\-U])[0-9a-f]+ (\S+)/;
 /** One line of `git config --get-regexp` over .gitmodules' paths and URLs: the submodule's name, the field, its value. */
 const SUBMODULE_FIELD_LINE = /^submodule\.(.+)\.(path|url) (.+)$/;
+/** One line of `git config --get-regexp` over .gitmodules' URLs: the key, then the URL. */
+const SUBMODULE_URL_LINE = /^(submodule\..+\.url) (.+)$/;
 /** Submodules nest at most this deep; a loop past it means a submodule names itself. */
 const MAX_SUBMODULE_DEPTH = 16;
 /** Under the workspace's git directory: where `load` clones a repo to read its package name, before moving it in place. */
@@ -319,6 +321,29 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return repositories;
   }
 
+  *useHttpsSubmoduleUrls(repository: string): EffectGen<number, BadPreconditionsError> {
+    let changed = 0;
+    for (const { key, url } of yield* this.submoduleUrls(repository)) {
+      const maybeRepo = repoOfGitHubRemote(url);
+      if (e.Option.isNone(maybeRepo)) continue;
+      const https = githubHttpsUrl(maybeRepo.value);
+      if (url === https) continue;
+      yield* this.git(["config", "-f", ".gitmodules", key, https], repository, "capture");
+      changed += 1;
+    }
+    return changed;
+  }
+
+  /** `repository`'s .gitmodules URLs with their config keys; none when it has no .gitmodules, which is never created. */
+  private *submoduleUrls(repository: string): EffectGen<ReadonlyArray<{ readonly key: string; readonly url: string }>, BadPreconditionsError> {
+    if (!(yield* this.pathExists(path.join(repository, ".gitmodules")))) return [];
+    const { stdout } = yield* this.gitAllowingFailure(["config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.url$"], repository);
+    return stdout.split("\n").flatMap((line) => {
+      const match = SUBMODULE_URL_LINE.exec(line.trim());
+      return match === null ? [] : [{ key: match[1]!, url: match[2]! }];
+    });
+  }
+
   /** Returns how many submodules it checked out. */
   private *fetchSubmodules(root: string): EffectGen<number, BadPreconditionsError> {
     const fetchConfig = yield* this.fetchConfig();
@@ -349,18 +374,25 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
   }
 
   /**
-   * Each pass checks out the submodules of every repository the previous one revealed (a repository git doesn't track
-   * can hold submodules of its own), until a pass checks out none.
+   * Each pass moves every .gitmodules the previous one revealed to https and checks out the submodules it names (a
+   * repository git doesn't track can hold submodules of its own), until a pass does neither.
    */
-  *checkOutSubmodules(root: string): EffectGen<number, BadPreconditionsError> {
+  *checkOutSubmodulesOverHttps(root: string): EffectGen<{ readonly rewritten: number; readonly checkedOut: number }, BadPreconditionsError> {
+    let rewritten = 0;
     let checkedOut = 0;
     for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
+      const repositories = yield* this.repositoriesUnder(root);
+      let rewrittenThisPass = 0;
+      for (const repository of repositories) {
+        rewrittenThisPass += yield* this.useHttpsSubmoduleUrls(repository);
+      }
       let checkedOutThisPass = 0;
-      for (const repository of yield* this.repositoriesUnder(root)) {
+      for (const repository of repositories) {
         checkedOutThisPass += yield* this.fetchSubmodules(repository);
       }
-      if (checkedOutThisPass === 0) return checkedOut;
+      rewritten += rewrittenThisPass;
       checkedOut += checkedOutThisPass;
+      if (rewrittenThisPass === 0 && checkedOutThisPass === 0) return { rewritten, checkedOut };
     }
     return yield* BadPreconditionsError.withoutFix(`Submodules under ${root} nest more than ${MAX_SUBMODULE_DEPTH} deep`);
   }

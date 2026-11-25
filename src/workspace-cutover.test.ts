@@ -26,12 +26,12 @@ import { jive } from "@/program";
 /**
  * The cutover from ozy to jive, on a scratch copy of a workspace shaped like Alex's: a root repository whose submodule
  * has a submodule of its own, every .gitmodules naming `git@github.com:` URLs, the nested one not checked out yet.
- * `jive init` runs as the CLI does, leaving every .gitmodules as committed. Then a commit in the nested submodule is signed through the real `jive-ssh-sign`
+ * `jive init` runs as the CLI does. Then a commit in the nested submodule is signed through the real `jive-ssh-sign`
  * entrypoint and the signing agent, `ssh-keygen -Y verify` accepts it, and it is pushed over SSH, through the agent,
  * to an sshd on this machine that accepts only the account key.
  *
- * Nothing reaches GitHub or Jive: https://github.com/ and git@github.com: resolve to local bare repositories while
- * init fetches, and to the local sshd serving them for the SSH runs, and the Jive server is a fake that signs with a key made here. HOME, the agent's socket and
+ * Nothing reaches GitHub or Jive: https://github.com/ resolves to local bare repositories, git@github.com: to the
+ * local sshd serving them, and the Jive server is a fake that signs with a key made here. HOME, the agent's socket and
  * jive's installed commands all live in the scratch directory.
  */
 
@@ -173,10 +173,10 @@ beforeAll(async () => {
   // Each prefix is longer than jive's own https://github.com/ rewrite, so git takes it in this test.
   const common = [`[protocol "file"]`, "\tallow = always", "[init]", "\tdefaultBranch = main", "[user]", "\tname = Seed", "\temail = seed@example.com"];
   sshGitConfig = path.join(scratch, "gitconfig-ssh");
-  writeFileSync(sshGitConfig, [`[url "ssh://${user}@127.0.0.1:${port}${remotes}/acme/"]`, "\tinsteadOf = https://github.com/acme/", "\tinsteadOf = git@github.com:acme/", ...common].join("\n"));
+  writeFileSync(sshGitConfig, [`[url "ssh://${user}@127.0.0.1:${port}${remotes}/acme/"]`, "\tinsteadOf = https://github.com/acme/", ...common].join("\n"));
   const gitConfig = path.join(scratch, "gitconfig");
   writeFileSync(gitConfig, [
-    `[url "file://${remotes}/acme/"]`, "\tinsteadOf = https://github.com/acme/", "\tinsteadOf = git@github.com:acme/",
+    `[url "file://${remotes}/acme/"]`, "\tinsteadOf = https://github.com/acme/",
     `[protocol "file"]`, "\tallow = always",
     "[init]", "\tdefaultBranch = main",
     "[user]", "\tname = Seed", "\temail = seed@example.com",
@@ -246,19 +246,18 @@ afterAll(async () => {
 const widget = () => path.join(checkout, "packages", "@acme", "widget");
 const gadget = () => path.join(widget(), "gadget");
 
-test("jive init checks out the nested submodule over its git@ URL and points every repository at jive, untracked ones included, changing no file", async () => {
-  const status = (repository: string) => sh(["git", "status", "--porcelain", "--ignore-submodules=none"], repository);
-  // The untracked clone at packages/loose is there before init, as in Alex's checkout.
-  const before = { root: status(checkout), widget: status(widget()) };
+test("jive init moves every .gitmodules to https, checks out the nested submodule, and points every repository at jive, untracked ones included", async () => {
   await initIn(checkout);
 
-  // Every .gitmodules keeps the git@github.com: URLs it was committed with, and no file appears or changes.
-  expect(readFileSync(path.join(checkout, ".gitmodules"), "utf8")).toContain("url = git@github.com:acme/widget.git\n");
-  expect(readFileSync(path.join(widget(), ".gitmodules"), "utf8")).toContain("url = git@github.com:acme/gadget.git\n");
+  expect(readFileSync(path.join(checkout, ".gitmodules"), "utf8")).toContain("url = https://github.com/acme/widget\n");
+  expect(readFileSync(path.join(widget(), ".gitmodules"), "utf8")).toContain("url = https://github.com/acme/gadget\n");
+  expect(readFileSync(path.join(checkout, ".gitmodules"), "utf8") + readFileSync(path.join(widget(), ".gitmodules"), "utf8")).not.toContain("git@");
   expect(readFileSync(path.join(gadget(), "gadget.txt"), "utf8")).toBe("gadget\n");
-  expect({ root: status(checkout), widget: status(widget()) }).toEqual(before);
+  // Nothing beyond the aligned config and the .gitmodules URLs: no workspace directory or marker, .gitignore as committed.
+  expect(readFileSync(path.join(checkout, ".gitignore"), "utf8")).toBe("node_modules\n");
   expect(existsSync(path.join(checkout, ".jive"))).toBe(false);
   expect(existsSync(path.join(checkout, "package.json"))).toBe(false);
+  expect(sh(["git", "status", "--porcelain"], checkout).split("\n")).toEqual(["M .gitmodules", " M packages/@acme/widget", "?? packages/loose/"]);
 
   for (const repository of [checkout, widget(), gadget(), path.join(checkout, "packages", "loose")]) {
     expect(gitConfigIn(repository, "user.name")).toBe(persona.name);
@@ -272,8 +271,8 @@ test("jive init checks out the nested submodule over its git@ URL and points eve
     expect(gitConfigIn(repository, "url.git@github.com:.insteadOf")).toBe("https://github.com/");
     expect(Bun.spawnSync(["git", "config", "--local", "--get", "remote.origin.pushurl"], { cwd: repository, env: process.env }).exitCode).toBe(1);
   }
-  // With only the repository's own config, an https URL resolves to GitHub over SSH.
-  const resolved = Bun.spawnSync(["git", "ls-remote", "--get-url", "https://github.com/acme/gadget"], { cwd: gadget(), env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  // With only the repository's own config, the https URL resolves to GitHub over SSH.
+  const resolved = Bun.spawnSync(["git", "ls-remote", "--get-url", "origin"], { cwd: gadget(), env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
   expect(resolved.stdout.toString().trim()).toBe("git@github.com:acme/gadget");
 }, 60_000);
 
@@ -341,6 +340,8 @@ const everyRepository = `for d in . $(git submodule foreach --quiet --recursive 
 test("the handed-over repository check finds every repository on jive, and the rollback puts each back on ozy", async () => {
   const check = await run(["sh", "-c", `${everyRepository} p=$(git -C "$d" config gpg.ssh.program); s=$(git -C "$d" config core.sshCommand); v=$(git -C "$d" config ssh.variant); u=$(git -C "$d" config url.git@github.com:.insteadOf); case "$p,$s,$v,$u" in */jive-ssh-sign,*/jive-ssh,ssh,https://github.com/) ;; *) echo "NOT ON JIVE: $d";; esac; done; echo "repo check done"`], checkout);
   expect(check.stdout).toBe("repo check done");
+  const modules = await run(["sh", "-c", `for f in .gitmodules $(git submodule foreach --quiet --recursive 'test -f .gitmodules && echo "$toplevel/$sm_path/.gitmodules"'); do grep -H "url = git@" "$f"; done; echo ".gitmodules check done"`], checkout);
+  expect(modules.stdout).toBe(".gitmodules check done");
 
   const ozyKeygen = path.join(scratch, "ozy-ssh-keygen");
   const ozyKey = path.join(scratch, "ozy-key.pub");
