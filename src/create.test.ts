@@ -13,7 +13,8 @@ const scratch = path.join(import.meta.dir, "..", "node_modules", ".cache", "crea
 mkdirSync(scratch, { recursive: true });
 const workspace = mkdtempSync(path.join(scratch, "workspace-"));
 afterAll(() => rmSync(workspace, { recursive: true, force: true }));
-writeFileSync(path.join(workspace, "package.json"), JSON.stringify({ jive: { root: true } }));
+// A git repository of its own, so the workspace is this folder and never the checkout it sits in.
+Bun.spawnSync(["git", "init", "-q"], { cwd: workspace });
 
 const replacements = { "example-widget": "packageName", Widgets: "title" };
 const sample = [

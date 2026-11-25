@@ -1,6 +1,5 @@
 import * as e from "effect";
 import type { EffectGen } from "effective-modules";
-import type { BadPreconditionsError } from "@/errors";
 export { RepoIdentifier } from "./repo-identifier";
 
 export class NotInWorkspaceError extends e.Data.TaggedError("NotInWorkspaceError")<{
@@ -14,16 +13,17 @@ export interface RepoLocation {
 }
 
 /**
- * The workspace: a monorepo whose root package.json says `"jive": { "root": true }`. Every repo jive loads into it is a
- * submodule at `packages/<its package.json name>` (`workspace-layout.ts`).
+ * The workspace: the nearest git repository from the current directory up, at any nesting level, a submodule
+ * included. Nothing marks it and nothing else picks it; to work in an outer repository, run jive there (Alex,
+ * 2026-11-25: "no weird edge cases for the auto complete behavior just looking at the nearest git repo root"). Every
+ * repo jive loads into it is a submodule at `packages/<its package.json name>` (`workspace-layout.ts`).
  */
 export interface IToolState {
-  /** The nearest directory, from the current one upward, whose package.json marks it the workspace root. */
-  findWorkspaceRoot(): EffectGen<e.Option.Option<string>>;
-  assertInWorkspace(): EffectGen<{ workspaceRoot: string }, NotInWorkspaceError>;
   /**
-   * Adds `"jive": { "root": true }` to `directory`'s package.json, creating the file when there is none, and keeps the
-   * rest of it. Returns whether it wrote the file (false when the mark was already there).
+   * The root of the nearest git repository at or above `directory`: the nearest folder holding `.git`, the directory
+   * of a repository or the file of a submodule or worktree. None when no folder from there up holds one.
    */
-  markWorkspaceRoot(directory: string): EffectGen<boolean, BadPreconditionsError>;
+  findWorkspaceRoot(directory: string): EffectGen<e.Option.Option<string>>;
+  /** The workspace the current directory is in. */
+  assertInWorkspace(): EffectGen<{ workspaceRoot: string }, NotInWorkspaceError>;
 }

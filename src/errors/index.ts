@@ -19,6 +19,26 @@ export class BadArgumentError extends e.Data.TaggedError("BadArgumentError")<{
   }
 }
 
+/**
+ * The words after `command` are not the ones it takes. The entrypoint prints that command's help, as `--help` does,
+ * before `report`.
+ */
+export class UsageError extends e.Data.TaggedError("UsageError")<{
+  readonly command: ReadonlyArray<string>;
+  readonly problems: ReadonlyArray<string>;
+}> {
+  /**
+   * Prints each problem, then stops the CLI with exit code 2, the one jive-abstract-library's `Cli` gives words it
+   * can't run.
+   */
+  public report(): e.Effect.Effect<never, Cli.CliError> {
+    return e.Effect.andThen(
+      e.Effect.forEach(this.problems, (problem) => e.Effect.logError(problem), { discard: true }),
+      e.Effect.fail(new Cli.CliError({ message: this.problems.join("\n"), exitCode: 2 })),
+    );
+  }
+}
+
 export class BadPreconditionsError extends e.Data.TaggedError("BadPreconditionsError")<{
   readonly cause: string;
   readonly fix: string;
@@ -31,8 +51,8 @@ export class BadPreconditionsError extends e.Data.TaggedError("BadPreconditionsE
   }
   public static fromNotInWorkspaceError(err: NotInWorkspaceError) {
     return new BadPreconditionsError({
-      cause: `${err.path} is not within a ${TOOL_NAME} workspace: no package.json from here up says "jive": { "root": true }.`,
-      fix: `Run \`${TOOL_NAME} init\` in the monorepo, which marks its root package.json, then run this again`
+      cause: `${err.path} is in no git repository, and a ${TOOL_NAME} workspace is the nearest git repository from where it runs`,
+      fix: `Run this inside the repository, or \`${TOOL_NAME} init\` to make this folder one`
     });
   }
   public static fromNotLoggedInError(err: NotLoggedInError) {

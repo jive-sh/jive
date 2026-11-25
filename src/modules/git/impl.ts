@@ -13,8 +13,6 @@ import { LoadOutcome, type IGit, type LoadedRepository, type LoadedSubmodule, ty
 
 /** One line of `git submodule status`: a state character (space, -, + or U), the commit, then the path. */
 const SUBMODULE_STATUS_LINE = /^([ +\-U])[0-9a-f]+ (\S+)/;
-/** One line of `git config --get-regexp` over .gitmodules' URLs: the key, then the URL. */
-const SUBMODULE_URL_LINE = /^(submodule\..+\.url) (.+)$/;
 /** One line of `git config --get-regexp` over .gitmodules' paths and URLs: the submodule's name, the field, its value. */
 const SUBMODULE_FIELD_LINE = /^submodule\.(.+)\.(path|url) (.+)$/;
 /** Submodules nest at most this deep; a loop past it means a submodule names itself. */
@@ -74,11 +72,11 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return maybeLoaded;
   }
 
-  *loadAsSubmodule({ repo, settings }: { readonly repo: RepoIdentifier; readonly settings: RepositorySettings }): EffectGen<LoadedSubmodule, BadArgumentError | BadPreconditionsError> {
+  *loadAsSubmodule(repo: RepoIdentifier): EffectGen<LoadedSubmodule, BadArgumentError | BadPreconditionsError> {
     const workspaceRoot = yield* this.workspaceRoot();
     const gitDirectory = yield* this.absoluteGitDirectory(workspaceRoot);
     const staging = path.join(gitDirectory, LOAD_STAGING_DIRECTORY, repo.org, repo.repo);
-    const placed = yield* e.pipe(
+    return yield* e.pipe(
       e.Effect.gen(() => this.placeAsSubmodule({ repo, workspaceRoot, gitDirectory, staging })),
       // The staging clone is gone on every path: moved into place, or removed here.
       e.Effect.ensuring(e.pipe(
@@ -86,30 +84,15 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
         e.Effect.ignore,
       )),
     );
-    yield* this.checkOutSubmodulesOverHttps(placed.location.absolutePath);
-    for (const repository of yield* this.repositoriesUnder(placed.location.absolutePath)) {
-      yield* this.configureRepository({ repository, settings });
-    }
-    return placed;
+  }
+
+  *clone({ repo, directory }: { readonly repo: RepoIdentifier; readonly directory: string }): EffectGen<void, BadPreconditionsError> {
+    yield* this.git([...yield* this.fetchConfig(), "clone", githubHttpsUrl(repo), directory], path.dirname(directory));
   }
 
   *repositoryRoot(directory: string): EffectGen<string, BadPreconditionsError> {
     const { stdout } = yield* this.git(["rev-parse", "--show-toplevel"], directory, "capture");
     return stdout.trim();
-  }
-
-  *outermostRepositoryRoot(directory: string): EffectGen<e.Option.Option<string>, BadPreconditionsError> {
-    // Prints "true" inside a working tree; fails outside every repository.
-    const { stdout: inside } = yield* this.gitAllowingFailure(["rev-parse", "--is-inside-work-tree"], directory);
-    if (inside.trim() !== "true") return e.Option.none();
-    let root = yield* this.repositoryRoot(directory);
-    for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
-      const { stdout } = yield* this.gitAllowingFailure(["rev-parse", "--show-superproject-working-tree"], root);
-      const superproject = stdout.trim();
-      if (superproject === "") return e.Option.some(root);
-      root = superproject;
-    }
-    return yield* BadPreconditionsError.withoutFix(`${directory} is a submodule more than ${MAX_SUBMODULE_DEPTH} deep`);
   }
 
   *localIdentity(repository: string): EffectGen<e.Option.Option<GitIdentity>, BadPreconditionsError> {
@@ -152,6 +135,7 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
       }
       const packageName = yield* this.packageNameIn({ repo, directory: registered.absolutePath });
       yield* this.assertInPlace({ repo, packageName, relativePath: registered.relativePath });
+      yield* logLoading({ repo, workspaceRoot, destination: registered.absolutePath });
       return { packageName, location: registered, outcome: LoadOutcome.AlreadyLoaded() };
     }
 
@@ -160,6 +144,7 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
       const adopted = location(maybeCheckout.value);
       const packageName = yield* this.packageNameIn({ repo, directory: adopted.absolutePath });
       yield* this.assertInPlace({ repo, packageName, relativePath: adopted.relativePath });
+      yield* logLoading({ repo, workspaceRoot, destination: adopted.absolutePath });
       yield* this.stageSubmodule({ repo, workspaceRoot, gitDirectory, relativePath: adopted.relativePath });
       return { packageName, location: adopted, outcome: LoadOutcome.Adopted() };
     }
@@ -171,6 +156,7 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     yield* this.git([...yield* this.fetchConfig(), "clone", githubHttpsUrl(repo), staging], workspaceRoot);
     const packageName = yield* this.packageNameIn({ repo, directory: staging });
     const cloned = location(packageRelativePath(packageName));
+    yield* logLoading({ repo, workspaceRoot, destination: cloned.absolutePath });
     if (yield* this.pathExists(cloned.absolutePath)) {
       const contents = yield* this.readDirectory(cloned.absolutePath);
       if (contents.length > 0) {
@@ -333,19 +319,6 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return repositories;
   }
 
-  private *useHttpsSubmoduleUrls(repository: string): EffectGen<number, BadPreconditionsError> {
-    let changed = 0;
-    for (const { key, url } of yield* this.submoduleUrls(repository)) {
-      const maybeRepo = repoOfGitHubRemote(url);
-      if (e.Option.isNone(maybeRepo)) continue;
-      const https = githubHttpsUrl(maybeRepo.value);
-      if (url === https) continue;
-      yield* this.git(["config", "-f", ".gitmodules", key, https], repository, "capture");
-      changed += 1;
-    }
-    return changed;
-  }
-
   /** Returns how many submodules it checked out. */
   private *fetchSubmodules(root: string): EffectGen<number, BadPreconditionsError> {
     const fetchConfig = yield* this.fetchConfig();
@@ -375,34 +348,21 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     }
   }
 
-  /** Each pass checks out the level of submodules the previous one revealed, until a pass rewrites nothing. */
-  *checkOutSubmodulesOverHttps(root: string): EffectGen<number, BadPreconditionsError> {
-    let rewritten = 0;
+  /**
+   * Each pass checks out the submodules of every repository the previous one revealed (a repository git doesn't track
+   * can hold submodules of its own), until a pass checks out none.
+   */
+  *checkOutSubmodules(root: string): EffectGen<number, BadPreconditionsError> {
+    let checkedOut = 0;
     for (let depth = 0; depth < MAX_SUBMODULE_DEPTH; depth += 1) {
-      const repositories = yield* this.repositoriesUnder(root);
-      let changed = 0;
-      for (const repository of repositories) {
-        changed += yield* this.useHttpsSubmoduleUrls(repository);
+      let checkedOutThisPass = 0;
+      for (const repository of yield* this.repositoriesUnder(root)) {
+        checkedOutThisPass += yield* this.fetchSubmodules(repository);
       }
-      let checkedOut = 0;
-      for (const repository of repositories) {
-        checkedOut += yield* this.fetchSubmodules(repository);
-      }
-      rewritten += changed;
-      // A checkout can reveal a .gitmodules not yet rewritten, so only a pass that does neither is the last.
-      if (changed === 0 && checkedOut === 0) return rewritten;
+      if (checkedOutThisPass === 0) return checkedOut;
+      checkedOut += checkedOutThisPass;
     }
     return yield* BadPreconditionsError.withoutFix(`Submodules under ${root} nest more than ${MAX_SUBMODULE_DEPTH} deep`);
-  }
-
-  /** `repository`'s .gitmodules URLs with their config keys; none when it has no .gitmodules. */
-  private *submoduleUrls(repository: string): EffectGen<ReadonlyArray<{ readonly key: string; readonly url: string }>, BadPreconditionsError> {
-    if (!(yield* this.pathExists(path.join(repository, ".gitmodules")))) return [];
-    const { stdout } = yield* this.gitAllowingFailure(["config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.url$"], repository);
-    return stdout.split("\n").flatMap((line) => {
-      const match = SUBMODULE_URL_LINE.exec(line.trim());
-      return match === null ? [] : [{ key: match[1]!, url: match[2]! }];
-    });
   }
 
   /**
@@ -511,4 +471,9 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
       e.Effect.mapError(({ message }) => BadPreconditionsError.withoutFix(`Failed to read ${directory} as a directory`, message)),
     );
   }
+}
+
+/** Where `jive load` puts the repo, and in which workspace: the nearest git repository, whose level the person chose by where they ran it. */
+function logLoading({ repo, workspaceRoot, destination }: { readonly repo: RepoIdentifier; readonly workspaceRoot: string; readonly destination: string }) {
+  return e.Effect.log(`Loading ${repo.org}/${repo.repo} into ${destination}, in the workspace at ${workspaceRoot}`);
 }

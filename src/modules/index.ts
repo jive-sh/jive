@@ -7,6 +7,7 @@ import type { IDaemonClient } from "./daemon-client/interface";
 import type { IExtensionDaemon } from "./extension-daemon/interface";
 import type { IExtensionSignIn } from "./extension-sign-in/interface";
 import type { IGit } from "./git/interface";
+import type { IGitHub } from "./github/interface";
 import type { IJiveServer } from "./jive-server/interface";
 import type { INpmCredentialPoster } from "./npm-credential-poster/interface";
 import type { IPipelineIdentity } from "./pipeline-identity/interface";
@@ -25,6 +26,7 @@ export enum Module {
   extensionDaemon = "extensionDaemon",
   extensionSignIn = "extensionSignIn",
   git = "git",
+  github = "github",
   jiveServer = "jiveServer",
   npmCredentialPoster = "npmCredentialPoster",
   pipelineIdentity = "pipelineIdentity",
@@ -45,6 +47,7 @@ export const modules = interfaces<Module, {
   [Module.extensionDaemon]: IExtensionDaemon;
   [Module.extensionSignIn]: IExtensionSignIn;
   [Module.git]: IGit;
+  [Module.github]: IGitHub;
   [Module.jiveServer]: IJiveServer;
   [Module.npmCredentialPoster]: INpmCredentialPoster;
   [Module.pipelineIdentity]: IPipelineIdentity;

@@ -3,12 +3,12 @@ import * as path from "node:path";
 import { Cli, OSPlatform, daemonStatuses, repairDaemonRecords, upgrade } from "jive-abstract-library";
 import { renderTemplate, templateInputNames } from "jive-abstract-abstraction";
 import { PACKAGE_NAME, TOOL_NAME } from "@/constants";
-import { BadArgumentError, BadPreconditionsError, NotLoggedInError } from "@/errors";
+import { BadArgumentError, BadPreconditionsError, NotLoggedInError, UsageError } from "@/errors";
 import { modules } from "@/modules";
 import { AbstractSource } from "@/modules/abstracts/interface";
 import { abstractNameForKind, newPackageName, parseCreateArguments, pinAbstractDependency } from "@/modules/abstracts/new-package";
 import { LinkResult, LinkScope, type WorkspaceLink } from "@/modules/bun/interface";
-import { parseGitIdentity } from "@/modules/git/identity";
+import { parseGitIdentity, type GitIdentity } from "@/modules/git/identity";
 import { LoadOutcome } from "@/modules/git/interface";
 import { accountKeyFailure } from "@/modules/account-key/interface";
 import { jiveServerFailure } from "@/modules/jive-server/interface";
@@ -36,29 +36,43 @@ const workspaceOrgChoice = (description: string, next: (org: string) => Cli.Node
 
 export const jive = Cli.make(TOOL_NAME, {
   load: Cli.choose({
-    description: "add a GitHub repo to this workspace as a submodule at packages/<its package name>, install it, link it with the workspace's packages, and give it the workspace's git identity",
+    description: `\`${TOOL_NAME} load <org> <repo>\`: in a git repository, add the GitHub repo <org>/<repo> to the workspace, the nearest git repository from here up, as a submodule at packages/<its package name>, install it and link it with the workspace's packages; in no repository, clone it into ./<repo>. Either way it ends by running \`${TOOL_NAME} init\` in the repo it loaded`,
     *choices() { return yield* (yield* modules.git).localOrgs(); },
-    next: (org) => Cli.choose({
-      description: "a repo of the org on GitHub",
-      // Listing an org's repos needs a GitHub sign-in, which jive no longer has; the name is typed.
-      *choices() { return []; },
-      next: (repo) => Cli.command({
-        description: `add ${org}/${repo} at packages/<its package name>`,
-        *run() {
-          const chosenRepo = new RepoIdentifier(org, repo);
-          const bun = yield* modules.bun;
-          const gitIdentity = yield* workspaceGitIdentity();
-          const { packageName, location, outcome } = yield* (yield* modules.git).loadAsSubmodule({ repo: chosenRepo, settings: { accountKey: yield* accountKey(), gitIdentity } });
-          yield* e.Effect.log(e.pipe(outcome, LoadOutcome.$match({
-            Cloned: () => `Cloned ${org}/${repo} to ${location.relativePath} and staged it as a submodule`,
-            Adopted: () => `Added the checkout of ${org}/${repo} at ${location.relativePath} as a submodule and staged it`,
-            AlreadyLoaded: () => `${org}/${repo} is already the submodule at ${location.relativePath}`,
-          })));
-          yield* bun.install({ directory: location.absolutePath, packageName });
-          const { workspaceRoot, repositories } = yield* workspaceRepositories();
-          yield* logLinks({ workspaceRoot, links: yield* bun.linkWorkspace({ repositories, scope: LinkScope.Touching({ directory: location.absolutePath }) }) });
-        },
-      }),
+    // The repo is a word of the command, not a choice: listing an org's repos needs a GitHub sign-in, which jive doesn't have.
+    next: (org) => Cli.command({
+      description: `add the GitHub repo <repo> of ${org}: \`${TOOL_NAME} load ${org} <repo>\``,
+      *run({ args }) {
+        const [repo, ...extra] = args;
+        if (repo === undefined || extra.length > 0) {
+          const github = yield* modules.github;
+          const orgAnswer = yield* e.Effect.result(e.Effect.gen(() => github.accountExists(org)));
+          // GitHub not answering leaves it unknown, so only its definite "no such account" is said.
+          const githubHasNoSuchOrg = e.Result.isSuccess(orgAnswer) && !orgAnswer.success;
+          return yield* new UsageError({ command: ["load"], problems: githubHasNoSuchOrg ? [`No access to an org named ${org}`] : [] });
+        }
+        const chosenRepo = new RepoIdentifier(org, repo);
+        const currentDirectory = yield* (yield* OSPlatform).getCurrentDirectory();
+        if (e.Option.isNone(yield* (yield* modules.toolState).findWorkspaceRoot(currentDirectory))) {
+          const destination = path.join(currentDirectory, repo);
+          yield* e.Effect.log(`Not in a workspace: cloning ${org}/${repo} into ${destination}`);
+          yield* (yield* modules.git).clone({ repo: chosenRepo, directory: destination });
+          return yield* initialize({ directory: destination, maybeGitIdentity: e.Option.none() });
+        }
+        // The identity and the sign-in come before anything is written, so either failing leaves the workspace as it was.
+        const gitIdentity = yield* workspaceGitIdentity();
+        yield* accountKey();
+        const { packageName, location, outcome } = yield* (yield* modules.git).loadAsSubmodule(chosenRepo);
+        yield* e.Effect.log(e.pipe(outcome, LoadOutcome.$match({
+          Cloned: () => `Cloned ${org}/${repo} and staged it as a submodule`,
+          Adopted: () => `Added the checkout of ${org}/${repo} already there as a submodule and staged it`,
+          AlreadyLoaded: () => `${org}/${repo} is already the submodule there`,
+        })));
+        const bun = yield* modules.bun;
+        yield* bun.install({ directory: location.absolutePath, packageName });
+        const { workspaceRoot, repositories } = yield* workspaceRepositories();
+        yield* logLinks({ workspaceRoot, links: yield* bun.linkWorkspace({ repositories, scope: LinkScope.Touching({ directory: location.absolutePath }) }) });
+        yield* initialize({ directory: location.absolutePath, maybeGitIdentity: e.Option.some(gitIdentity) });
+      },
     }),
   }),
 
@@ -182,43 +196,9 @@ export const jive = Cli.make(TOOL_NAME, {
   }),
 
   init: Cli.command({
-    description: "make this monorepo a jive workspace (its root package.json gets \"jive\": { \"root\": true }) whose every repository signs with your Jive account key and fetches and pushes over SSH through jive's agent; .gitmodules on https, every submodule checked out, and the packages among them linked with each other. Every repository commits as the workspace's git identity, the root's user.name and user.email, asked for the first time. A folder in no repository becomes a new one, on main; inside a workspace already, it asks before configuring that workspace",
+    description: "set up the git repository you are in, the nearest one from here up, as a jive workspace, changing none of its files: every submodule checked out, and it, every submodule and every repository inside it that git doesn't track commit as the workspace's git identity (the root's user.name and user.email, asked for the first time), sign with your Jive account key and fetch and push over SSH through jive's agent; the packages among them are linked with each other. A folder in no repository becomes a new one, on main",
     *run() {
-      const git = yield* modules.git;
-      const toolState = yield* modules.toolState;
-      const currentDirectory = yield* (yield* OSPlatform).getCurrentDirectory();
-      const maybeRoot = yield* toolState.findWorkspaceRoot();
-      if (e.Option.isSome(maybeRoot) && maybeRoot.value !== currentDirectory) {
-        const workspaceRoot = maybeRoot.value;
-        yield* e.Effect.logWarning(`${currentDirectory} is inside the jive workspace at ${workspaceRoot}: init configures that workspace, and makes no new workspace or repository here`);
-        const proceed = yield* e.pipe(
-          e.Effect.gen(function* () { return yield* (yield* modules.prompt).confirm("Are you sure you want to continue?"); }),
-          e.Effect.mapError(() => new BadPreconditionsError({
-            cause: `Not configuring ${workspaceRoot}: there is no terminal to ask whether to`,
-            fix: `Run \`${TOOL_NAME} init\` in ${workspaceRoot}`,
-          })),
-        );
-        if (!proceed) return yield* e.Effect.log("Nothing changed");
-      }
-      const maybeRepositoryRoot = e.Option.isSome(maybeRoot) ? maybeRoot : yield* git.outermostRepositoryRoot(currentDirectory);
-      const root = e.Option.isSome(maybeRepositoryRoot) ? maybeRepositoryRoot.value : currentDirectory;
-      // The identity and the sign-in come before anything is written, so either failing leaves the folder as it was.
-      const gitIdentity = yield* workspaceGitIdentityOrAsk(root);
-      const key = yield* accountKey();
-      if (e.Option.isNone(maybeRepositoryRoot)) {
-        yield* git.createRepository(currentDirectory);
-        yield* e.Effect.log(`Made ${currentDirectory} a git repository on branch main`);
-      }
-      if (yield* toolState.markWorkspaceRoot(root)) {
-        yield* e.Effect.log(`Marked ${path.join(root, "package.json")} as the workspace root with "jive": { "root": true }`);
-      }
-      const rewritten = yield* git.checkOutSubmodulesOverHttps(root);
-      const repositories = yield* git.repositoriesUnder(root);
-      for (const repository of repositories) {
-        yield* git.configureRepository({ repository, settings: { accountKey: key, gitIdentity } });
-      }
-      yield* e.Effect.log(`${rewritten} submodule URL${rewritten === 1 ? "" : "s"} moved to https; ${repositories.length} repositor${repositories.length === 1 ? "y commits" : "ies commit"} as ${gitIdentity.name} <${gitIdentity.email}>, sign${repositories.length === 1 ? "s" : ""} with your Jive account key and fetch and push over SSH through jive's agent`);
-      yield* logLinks({ workspaceRoot: root, links: yield* (yield* modules.bun).linkWorkspace({ repositories, scope: LinkScope.Workspace() }) });
+      yield* initialize({ directory: yield* (yield* OSPlatform).getCurrentDirectory(), maybeGitIdentity: e.Option.none() });
     },
   }),
 
@@ -352,6 +332,35 @@ function workspaceGitIdentityOrAsk(root: string) {
     const name = yield* e.pipe(e.Effect.gen(() => prompt.ask("Name:")), e.Effect.mapError(noTerminal));
     const email = yield* e.pipe(e.Effect.gen(() => prompt.ask("Email:")), e.Effect.mapError(noTerminal));
     return yield* fromResult(parseGitIdentity({ name, email }), "git identity");
+  });
+}
+
+/**
+ * `jive init` in `directory`: sets up the nearest git repository from there up, or makes `directory` a new one on
+ * main when it is in none. The identity is `maybeGitIdentity` when `jive load` passes the workspace's, or else the
+ * root's own, asked for when it has none. It writes git config and checks out submodules, and never a file the
+ * repository tracks.
+ */
+function initialize({ directory, maybeGitIdentity }: { readonly directory: string; readonly maybeGitIdentity: e.Option.Option<GitIdentity> }) {
+  return e.Effect.gen(function* () {
+    const git = yield* modules.git;
+    const maybeRoot = yield* (yield* modules.toolState).findWorkspaceRoot(directory);
+    const root = e.Option.isSome(maybeRoot) ? maybeRoot.value : directory;
+    // The identity and the sign-in come before anything is written, so either failing leaves the folder as it was.
+    const gitIdentity = e.Option.isSome(maybeGitIdentity) ? maybeGitIdentity.value : yield* workspaceGitIdentityOrAsk(root);
+    const key = yield* accountKey();
+    if (e.Option.isNone(maybeRoot)) {
+      yield* git.createRepository(directory);
+      yield* e.Effect.log(`Made ${directory} a git repository on branch main`);
+    }
+    yield* e.Effect.log(`Setting up the workspace at ${root}`);
+    const checkedOut = yield* git.checkOutSubmodules(root);
+    const repositories = yield* git.repositoriesUnder(root);
+    for (const repository of repositories) {
+      yield* git.configureRepository({ repository, settings: { accountKey: key, gitIdentity } });
+    }
+    yield* e.Effect.log(`${checkedOut} submodule${checkedOut === 1 ? "" : "s"} checked out; ${repositories.length} repositor${repositories.length === 1 ? "y commits" : "ies commit"} as ${gitIdentity.name} <${gitIdentity.email}>, sign${repositories.length === 1 ? "s" : ""} with your Jive account key and fetch and push over SSH through jive's agent`);
+    yield* logLinks({ workspaceRoot: root, links: yield* (yield* modules.bun).linkWorkspace({ repositories, scope: LinkScope.Workspace() }) });
   });
 }
 

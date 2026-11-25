@@ -8,8 +8,7 @@ import { version } from "../package.json";
 
 const entrypoint = path.join(import.meta.dir, "entrypoints", "jive.ts");
 const workspace = realpathSync(mkdtempSync(path.join(tmpdir(), "jive-entrypoint-test-")));
-// A workspace whose .gitmodules lists one repo, not checked out.
-writeFileSync(path.join(workspace, "package.json"), JSON.stringify({ jive: { root: true } }));
+// A workspace, a git repository whose .gitmodules lists one repo, not checked out.
 writeFileSync(path.join(workspace, ".gitmodules"), `[submodule "packages/@acme/widget"]\n\tpath = packages/@acme/widget\n\turl = https://github.com/acme/widget\n`);
 Bun.spawnSync(["git", "init", "-q"], { cwd: workspace });
 afterAll(() => rmSync(workspace, { recursive: true, force: true }));
@@ -55,6 +54,18 @@ test("a refused command prints its cause and fix, without a stack, and exits 1",
     exitCode: 1,
     stdout: "",
     stderr: "ERROR: @acme/widget is a submodule at packages/@acme/widget, but it isn't checked out\nERROR: Fix: Run `jive init`, which checks out every submodule\n",
+  });
+});
+
+test("load given anything but an org and one repo prints load's help on stderr, says when GitHub has no such org, and exits 2", async () => {
+  const help = await jive("load", "--help");
+  expect(help.exitCode).toBe(0);
+  expect(help.stdout).toStartWith("Usage: jive load <choice>\n\n`jive load <org> <repo>`: in a git repository");
+  expect(help.stdout).toContain("Choices:\n  acme\n");
+  expect(await jive("load", "ozyman42/workspace")).toEqual({
+    exitCode: 2,
+    stdout: "",
+    stderr: `${help.stdout}ERROR: No access to an org named ozyman42/workspace\n`,
   });
 });
 

@@ -5,9 +5,11 @@ import { Cli, OSPlatform, OSPlatformImpl } from "jive-abstract-library";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { BadArgumentError, BadPreconditionsError } from "@/errors";
+import { BadArgumentError, BadPreconditionsError, UsageError } from "@/errors";
 import { AccountKeyImpl } from "@/modules/account-key/impl";
 import type { AccountKey } from "@/modules/account-key/interface";
+import { GitHubImpl } from "@/modules/github/impl";
+import { GitHubUnanswered } from "@/modules/github/interface";
 import { TerminalPromptImpl } from "@/modules/prompt/impl";
 import { NoTerminalToAsk } from "@/modules/prompt/interface";
 import { ProvisioningImpl } from "@/modules/provisioning/impl";
@@ -16,8 +18,8 @@ import { jive } from "@/program";
 
 /**
  * Runs `jive load`, `on` and `unload` against a scratch workspace. Nothing reaches GitHub: a git config the test
- * owns (GIT_CONFIG_GLOBAL) rewrites https://github.com/ to a directory of local bare repos, and sign-in is a fake
- * user. HOME, which every tool jive starts reads, is a scratch directory too, and so is BUN_INSTALL, where `bun link`
+ * owns (GIT_CONFIG_GLOBAL) rewrites https://github.com/ and git@github.com: to a directory of local bare repos, GitHub's
+ * API is a fake knowing only the acme account, and sign-in is a fake user. HOME, which every tool jive starts reads, is a scratch directory too, and so is BUN_INSTALL, where `bun link`
  * registers packages.
  */
 
@@ -28,8 +30,8 @@ const bunHome = path.join(scratch, "bun-home");
 const home = path.join(scratch, "home");
 const originalDirectory = process.cwd();
 const originalEnv = { ...process.env };
-/** The workspace root's package.json, which marks it the workspace. */
-const rootManifest = `${JSON.stringify({ private: true, jive: { root: true } })}\n`;
+/** The workspace root's package.json; nothing in it says it is the workspace, which is the git repository itself. */
+const rootManifest = `${JSON.stringify({ private: true })}\n`;
 
 function sh(command: ReadonlyArray<string>, cwd: string): string {
   // Bun.spawnSync without env passes the environment the test started with, not the scratch git config.
@@ -44,7 +46,7 @@ beforeAll(() => {
   const gitConfig = path.join(scratch, "gitconfig");
   writeFileSync(gitConfig, [
     // The acme repos only: longer than jive's own https://github.com/ rewrite to SSH, so git takes this one.
-    `[url "file://${remotes}/acme/"]`, `\tinsteadOf = https://github.com/acme/`,
+    `[url "file://${remotes}/acme/"]`, `\tinsteadOf = https://github.com/acme/`, `\tinsteadOf = git@github.com:acme/`,
     `[protocol "file"]`, `\tallow = always`,
     `[user]`, `\tname = Jive Test`, `\temail = test@example.com`,
     `[init]`, `\tdefaultBranch = main`,
@@ -117,8 +119,18 @@ const scratchHost = e.Layer.effect(OSPlatform, e.Effect.gen(function* () {
 
 interface Outcome {
   readonly stdout: string;
+  /** Every line jive logged, in order. */
+  readonly logs: ReadonlyArray<string>;
   readonly exit: e.Exit.Exit<void, unknown>;
 }
+
+/** GitHub's API as these tests see it: only acme has an account, and the name "unanswered" gets no answer. */
+const fakeGitHub = GitHubImpl.mockLayer({
+  *accountExists(name: string) {
+    if (name === "unanswered") return yield* new GitHubUnanswered({ reason: "no answer within 5s" });
+    return name === "acme";
+  },
+});
 
 /** Runs jive in this process on `args`, the way the entrypoint does, with sign-in replaced by the fake user. */
 const runJive = (args: ReadonlyArray<string>): Promise<Outcome> => runJiveWithPrompt({ args, prompt: e.Layer.empty });
@@ -126,9 +138,14 @@ const runJive = (args: ReadonlyArray<string>): Promise<Outcome> => runJiveWithPr
 /** `runJive`, with `prompt` answering every question jive asks in place of the terminal. */
 async function runJiveWithPrompt({ args, prompt }: { readonly args: ReadonlyArray<string>; readonly prompt: e.Layer.Layer<never> | ReturnType<typeof TerminalPromptImpl.mockLayer> }): Promise<Outcome> {
   const stdout: Array<string> = [];
+  const logs: Array<string> = [];
   const exit = await e.Effect.runPromise(e.pipe(
     Cli.run(jive, { version: "0.0.0-test" }),
+    e.Effect.provide(e.Logger.layer([e.Logger.make(({ message }) => {
+      logs.push((Array.isArray(message) ? message : [message]).map(String).join(" "));
+    })])),
     e.Effect.provide(prompt),
+    e.Effect.provide(fakeGitHub),
     // No test signs in to Jive: the account key is a fake, so nothing opens a sign-in page in the browser.
     e.Effect.provide(AccountKeyImpl.mockLayer({ *ensure() { return fakeAccountKey(); } })),
     e.Effect.provide(ProvisioningImpl.mockLayer({ *ensure(input: { kind: string; instance: unknown }) { provisioned.push(input); return { instanceId: "fake-instance" }; } })),
@@ -143,7 +160,7 @@ async function runJiveWithPrompt({ args, prompt }: { readonly args: ReadonlyArra
     e.Effect.provide(BunServices.layer),
     e.Effect.exit,
   ));
-  return { stdout: stdout.join(""), exit };
+  return { stdout: stdout.join(""), logs, exit };
 }
 
 const provisioned: Array<{ kind: string; instance: unknown }> = [];
@@ -154,8 +171,9 @@ const gitConfigIn = (directory: string, key: string) => sh(["git", "config", "--
 
 describe("jive in a workspace", () => {
   test("load clones the repo as a submodule, configures it to sign and push through jive, and installs it", async () => {
-    const { exit } = await runJive(["load", "acme", "widget"]);
+    const { exit, logs } = await runJive(["load", "acme", "widget"]);
     expect(exit).toEqual(e.Exit.void);
+    expect(logs).toContain(`Loading acme/widget into ${widget()}, in the workspace at ${workspace}`);
 
     expect(JSON.parse(readFileSync(path.join(widget(), "package.json"), "utf8")).name).toBe("@acme/widget");
     expect(readFileSync(path.join(workspace, ".gitmodules"), "utf8")).toContain("url = https://github.com/acme/widget\n");
@@ -211,7 +229,7 @@ describe("jive in a workspace", () => {
   test("provision sends the kind and the instance --instance gives, or the one package.json declares", async () => {
     provisioned.length = 0;
     expect((await runJive(["provision", "connector-package-registry", "@acme/widget", "--instance", '{"packageName":"@acme/widget"}'])).exit).toEqual(e.Exit.void);
-    writeFileSync(path.join(workspace, "package.json"), JSON.stringify({ jive: { root: true, resources: { "connector-package-registry": { "@acme/gadget": { packageName: "@acme/gadget" } } } } }));
+    writeFileSync(path.join(workspace, "package.json"), JSON.stringify({ jive: { resources: { "connector-package-registry": { "@acme/gadget": { packageName: "@acme/gadget" } } } } }));
     expect((await runJive(["provision", "connector-package-registry", "@acme/gadget"])).exit).toEqual(e.Exit.void);
     const undeclared = await runJive(["provision", "connector-package-registry", "@acme/missing"]);
     expect(errorOf(undeclared.exit)).toBeInstanceOf(BadArgumentError);
@@ -227,21 +245,25 @@ describe("jive in a workspace", () => {
     try {
       const error = errorOf((await runJive(["unload", "acme", "widget"])).exit);
       expect(error).toBeInstanceOf(BadPreconditionsError);
-      expect(error instanceof BadPreconditionsError && error.cause).toBe(`${scratch} is not within a jive workspace: no package.json from here up says "jive": { "root": true }.`);
+      expect(error).toEqual(new BadPreconditionsError({
+        cause: `${scratch} is in no git repository, and a jive workspace is the nearest git repository from where it runs`,
+        fix: "Run this inside the repository, or `jive init` to make this folder one",
+      }));
     } finally {
       process.chdir(workspace);
     }
   });
 });
 
+
 /**
- * `jive load` in monorepos shaped like the two it serves: open-empires (its submodules at `packages/<repo>`, whose
- * package names are scoped) and chaine (at `packages/<package name>`, scoped and not). Each monorepo is a fresh git
- * repository whose submodules come from the local bare repos, as `git submodule add` records them. The ones testing
- * placement, staging and adoption also hold an empty `.jive` directory, the mark jive 0.8.0 looked for, so on 0.8.0
- * each of them fails on the defect it tests rather than on finding the root.
+ * `jive load` and `jive init` in monorepos shaped like the two jive serves: open-empires (its submodules at
+ * `packages/<repo>`, whose package names are scoped) and chaine (at `packages/<package name>`, scoped and not), and in
+ * repositories nested inside others. Each monorepo is a fresh git repository whose submodules come from the local bare
+ * repos, as `git submodule add` records them. None has a package.json saying it is a workspace: the workspace is the
+ * nearest git repository from where jive runs.
  */
-describe("jive load in a monorepo", () => {
+describe("jive in the nearest git repository", () => {
   /** A repo on "GitHub" (a local bare repo) whose package.json names `packageName`. */
   function publish({ repo, packageName }: { readonly repo: string; readonly packageName: string }) {
     const source = path.join(scratch, "sources", repo);
@@ -253,28 +275,23 @@ describe("jive load in a monorepo", () => {
     sh(["git", "clone", "-q", "--bare", source, path.join(remotes, "acme", `${repo}.git`)], scratch);
   }
 
-  /**
-   * A monorepo with the given submodules committed, the root mark or the 0.8.0 `.jive` directory, and `persona` as
-   * its root's git identity unless `identity` is "none".
-   */
-  function monorepo({ name, mark, submodules, identity = "persona" }: {
+  /** A monorepo with the given submodules committed, and `persona` as its root's git identity unless `identity` is "none". */
+  function monorepo({ name, submodules, identity = "persona" }: {
     readonly name: string;
-    readonly mark: "package.json" | ".jive" | "none";
-    readonly submodules: ReadonlyArray<{ readonly repo: string; readonly path: string }>;
+    readonly submodules: ReadonlyArray<{ readonly url: string; readonly path: string }>;
     readonly identity?: "persona" | "none";
   }): string {
     const root = path.join(scratch, "monorepos", name);
     mkdirSync(root, { recursive: true });
     writeFileSync(path.join(root, "README.md"), `${name}\n`);
-    if (mark === "package.json") writeFileSync(path.join(root, "package.json"), rootManifest);
-    if (mark === ".jive") mkdirSync(path.join(root, ".jive"));
     sh(["git", "init", "-q"], root);
     if (identity === "persona") setWorkspaceIdentity(root);
-    for (const submodule of submodules) sh(["git", "submodule", "add", "-q", `https://github.com/acme/${submodule.repo}`, submodule.path], root);
+    for (const submodule of submodules) sh(["git", "submodule", "add", "-q", submodule.url, submodule.path], root);
     sh(["git", "add", "."], root);
     sh(["git", "commit", "-qm", name], root);
     return root;
   }
+  const acme = (repo: string) => `https://github.com/acme/${repo}`;
 
   async function runJiveIn(directory: string, args: ReadonlyArray<string>, prompt: Parameters<typeof runJiveWithPrompt>[0]["prompt"] = e.Layer.empty): Promise<Outcome> {
     process.chdir(directory);
@@ -285,10 +302,32 @@ describe("jive load in a monorepo", () => {
     }
   }
 
-  const loaded = async (root: string, repo: string) => {
-    const { exit } = await runJiveIn(root, ["load", "acme", repo]);
-    if (e.Exit.isFailure(exit)) throw new Error(`jive load acme ${repo} failed: ${JSON.stringify(e.Cause.squash(exit.cause))}`);
+  const succeeded = (outcome: Outcome): Outcome => {
+    if (e.Exit.isFailure(outcome.exit)) throw new Error(`jive failed: ${JSON.stringify(e.Cause.squash(outcome.exit.cause))}`);
+    return outcome;
   };
+  const loaded = async (directory: string, repo: string, prompt?: Parameters<typeof runJiveWithPrompt>[0]["prompt"]) =>
+    succeeded(await runJiveIn(directory, ["load", "acme", repo], prompt));
+
+  /** Whether every file `repository` tracks is as committed and nothing untracked appeared: `git status` shows nothing. */
+  const status = (repository: string) => sh(["git", "status", "--porcelain", "--ignore-submodules=none"], repository);
+
+  /**
+   * A prompt that records each question and answers it, as a person at a terminal would; or, with `terminal: false`,
+   * one that fails every question as jive's real prompt does when its input is not a terminal.
+   */
+  function prompting({ terminal, identity = typed }: { readonly terminal: boolean; readonly identity?: { readonly name: string; readonly email: string } }) {
+    const asked: Array<string> = [];
+    const prompt = TerminalPromptImpl.mockLayer({
+      *ask(question: string) {
+        asked.push(question);
+        if (!terminal) return yield* new NoTerminalToAsk();
+        return question === "Name:" ? identity.name : identity.email;
+      },
+    });
+    return { asked, prompt };
+  }
+  const typed = { name: "  Łukasz O'Brien-Müller ", email: " lukasz@example.com " };
 
   beforeAll(() => {
     publish({ repo: "aoe2-in-browser", packageName: "@acme/aoe2-in-browser" });
@@ -298,59 +337,172 @@ describe("jive load in a monorepo", () => {
     publish({ repo: "jive-abstract-library", packageName: "jive-abstract-library" });
     // A repo whose package name is not its repo name: its place follows the package name.
     publish({ repo: "server-repo", packageName: "@jive-sh/server" });
+    publish({ repo: "inner", packageName: "@acme/inner" });
   });
 
-  test("after jive init marks a plain monorepo's root package.json, jive load works in it", async () => {
-    const root = monorepo({ name: "plain", mark: "none", submodules: [] });
-    expect((await runJiveIn(root, ["init"])).exit).toEqual(e.Exit.void);
-    expect(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))).toEqual({ jive: { root: true } });
-    await loaded(root, "decomp-project-image");
-    expect(JSON.parse(readFileSync(path.join(root, "packages", "decomp-project-image", "package.json"), "utf8")).name).toBe("decomp-project-image");
+  test("load from inside a submodule lands in that submodule's packages/, and from the outer repository in the outer one's, naming the folder and the workspace", async () => {
+    const outer = monorepo({ name: "nested", submodules: [{ url: acme("inner"), path: "packages/@acme/inner" }] });
+    const inner = path.join(outer, "packages", "@acme", "inner");
+    setWorkspaceIdentity(inner);
+    const below = path.join(outer, "docs");
+    mkdirSync(below);
+
+    const fromInner = await loaded(inner, "decomp-project-image");
+    expect(fromInner.logs).toContain(`Loading acme/decomp-project-image into ${inner}/packages/decomp-project-image, in the workspace at ${inner}`);
+    expect(JSON.parse(readFileSync(path.join(inner, "packages", "decomp-project-image", "package.json"), "utf8")).name).toBe("decomp-project-image");
+    expect(sh(["git", "ls-files", "--stage", "--", "packages/decomp-project-image"], inner)).toStartWith("160000 ");
+    expect(sh(["git", "config", "-f", ".gitmodules", "submodule.packages/decomp-project-image.url"], inner)).toBe(acme("decomp-project-image"));
+    // The outer repository gains nothing of it: its .gitmodules and index are as committed, apart from the submodule's new commit state.
+    expect(readFileSync(path.join(outer, ".gitmodules"), "utf8")).not.toContain("decomp-project-image");
+    expect(existsSync(path.join(outer, "packages", "decomp-project-image"))).toBe(false);
+
+    const fromOuter = await loaded(below, "jive-abstract-library");
+    expect(fromOuter.logs).toContain(`Loading acme/jive-abstract-library into ${outer}/packages/jive-abstract-library, in the workspace at ${outer}`);
+    expect(sh(["git", "ls-files", "--stage", "--", "packages/jive-abstract-library"], outer)).toStartWith("160000 ");
+    expect(existsSync(path.join(inner, "packages", "jive-abstract-library"))).toBe(false);
+    // Both loaded repos were set up by jive init, run in them as the load's last step.
+    for (const repository of [path.join(inner, "packages", "decomp-project-image"), path.join(outer, "packages", "jive-abstract-library")]) {
+      expect(gitConfigIn(repository, "gpg.format")).toBe("ssh");
+      expect(gitConfigIn(repository, "core.sshCommand")).toEndWith("/jive-ssh");
+      expect(gitConfigIn(repository, "user.email")).toBe(persona.email);
+    }
+    expect(fromInner.logs).toContain(`Setting up the workspace at ${inner}/packages/decomp-project-image`);
+    expect(fromOuter.logs).toContain(`Setting up the workspace at ${outer}/packages/jive-abstract-library`);
+
+    // Tab answers from the same repository: the inner one lists its own loaded org.
+    expect((await runJiveIn(inner, ["--compgen", "on", ""])).stdout).toBe("acme\n");
+    expect((await runJiveIn(inner, ["--compgen", "on", "acme", ""])).stdout).toBe("decomp-project-image\n");
+    expect((await runJiveIn(below, ["--compgen", "on", "acme", ""])).stdout).toBe("inner\njive-abstract-library\n");
+    // `on` and `unload` find the repo in the nearest repository too.
+    expect((await runJiveIn(inner, ["on", "acme", "decomp-project-image", "--", "sh", "-c", "pwd > ran-here.txt"])).exit).toEqual(e.Exit.void);
+    expect(readFileSync(path.join(inner, "packages", "decomp-project-image", "ran-here.txt"), "utf8").trim()).toBe(path.join(inner, "packages", "decomp-project-image"));
+    expect((await runJiveIn(inner, ["unload", "acme", "decomp-project-image"])).exit).toEqual(e.Exit.void);
+    expect(existsSync(path.join(inner, "packages", "decomp-project-image"))).toBe(false);
+    expect(existsSync(path.join(outer, "packages", "jive-abstract-library"))).toBe(true);
+  }, 60_000);
+
+  test("load in no repository clones into ./<repo>, saying so, and runs jive init there", async () => {
+    const folder = path.join(scratch, "no-repository");
+    mkdirSync(folder);
+    const { asked, prompt } = prompting({ terminal: true });
+    const { logs } = await loaded(folder, "decomp-project-image", prompt);
+    const clone = path.join(folder, "decomp-project-image");
+    expect(logs[0]).toBe(`Not in a workspace: cloning acme/decomp-project-image into ${clone}`);
+    expect(sh(["git", "rev-parse", "--show-toplevel"], clone)).toBe(clone);
+    expect(gitConfigIn(clone, "remote.origin.url")).toBe(acme("decomp-project-image"));
+    expect(existsSync(path.join(folder, ".git"))).toBe(false);
+    // jive init in the clone: it has no git identity of its own yet, so init asks for one as it does in any such repository.
+    expect(asked).toEqual(["Name:", "Email:"]);
+    expect(logs).toContain(`Setting up the workspace at ${clone}`);
+    expect(gitConfigIn(clone, "user.name")).toBe("Łukasz O'Brien-Müller");
+    expect(gitConfigIn(clone, "gpg.format")).toBe("ssh");
+    expect(gitConfigIn(clone, "core.sshCommand")).toEndWith("/jive-ssh");
+    expect(gitConfigIn(clone, "url.git@github.com:.insteadOf")).toBe("https://github.com/");
+    expect(status(clone)).toBe("");
   }, 30_000);
 
-  test("init keeps every other field of an existing root package.json, and its indentation", async () => {
-    const root = monorepo({ name: "with-manifest", mark: "none", submodules: [] });
-    writeFileSync(path.join(root, "package.json"), `{\n    "name": "monorepo",\n    "jive": { "other": 1 }\n}\n`);
-    expect((await runJiveIn(root, ["init"])).exit).toEqual(e.Exit.void);
-    expect(readFileSync(path.join(root, "package.json"), "utf8"))
-      .toBe(`{\n    "name": "monorepo",\n    "jive": {\n        "other": 1,\n        "root": true\n    }\n}\n`);
+  test("init in an existing repository with no package.json changes none of its files, and sets the git config it sets", async () => {
+    // A submodule .gitmodules names over SSH, as a repository cloned with `gh` has it: init fetches it as it is.
+    const root = monorepo({ name: "untouched", submodules: [] });
+    sh(["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", "git@github.com:acme/aoe2-in-browser", "packages/aoe2-in-browser"], root);
+    sh(["git", "commit", "-qm", "submodule"], root);
+    sh(["git", "submodule", "deinit", "-q", "--all"], root);
+    const gitmodules = readFileSync(path.join(root, ".gitmodules"), "utf8");
+    const { asked, prompt } = prompting({ terminal: false });
+
+    const { logs } = succeeded(await runJiveIn(root, ["init"], prompt));
+    expect(asked).toEqual([]);
+    expect(logs).toContain(`Setting up the workspace at ${root}`);
+    expect(status(root)).toBe("");
+    expect(existsSync(path.join(root, "package.json"))).toBe(false);
+    expect(readFileSync(path.join(root, ".gitmodules"), "utf8")).toBe(gitmodules);
+    expect(readFileSync(path.join(root, "packages", "aoe2-in-browser", "package.json"), "utf8")).toContain("@acme/aoe2-in-browser");
+    for (const repository of [root, path.join(root, "packages", "aoe2-in-browser")]) {
+      expect(gitConfigIn(repository, "user.name")).toBe(persona.name);
+      expect(gitConfigIn(repository, "user.email")).toBe(persona.email);
+      expect(gitConfigIn(repository, "gpg.format")).toBe("ssh");
+      expect(gitConfigIn(repository, "user.signingKey")).toBe(path.join(scratch, "account.pub"));
+      expect(gitConfigIn(repository, "commit.gpgSign")).toBe("true");
+      expect(gitConfigIn(repository, "gpg.ssh.program")).toEndWith("/jive-ssh-sign");
+      expect(gitConfigIn(repository, "core.sshCommand")).toEndWith("/jive-ssh");
+      expect(gitConfigIn(repository, "ssh.variant")).toBe("ssh");
+      expect(gitConfigIn(repository, "url.git@github.com:.insteadOf")).toBe("https://github.com/");
+    }
+  }, 30_000);
+
+  test("init below a repository's root, or inside one of its submodules, sets up that nearest repository and asks nothing, with or without a terminal", async () => {
+    for (const terminal of [true, false]) {
+      const outer = monorepo({ name: `below-${terminal}`, submodules: [{ url: acme("inner"), path: "packages/@acme/inner" }] });
+      const inner = path.join(outer, "packages", "@acme", "inner");
+      setWorkspaceIdentity(inner);
+      const below = path.join(outer, "docs");
+      mkdirSync(below);
+      const { asked, prompt } = prompting({ terminal });
+      expect(succeeded(await runJiveIn(below, ["init"], prompt)).logs).toContain(`Setting up the workspace at ${outer}`);
+      expect(existsSync(path.join(below, ".git"))).toBe(false);
+      expect(gitConfigIn(outer, "gpg.format")).toBe("ssh");
+      const insideInner = path.join(inner, "notes");
+      mkdirSync(insideInner);
+      expect(succeeded(await runJiveIn(insideInner, ["init"], prompt)).logs).toContain(`Setting up the workspace at ${inner}`);
+      expect(existsSync(path.join(insideInner, ".git"))).toBe(false);
+      expect(asked).toEqual([]);
+      expect(status(outer)).toBe("");
+    }
+  }, 60_000);
+
+  test("load in a repository asks nothing, with or without a terminal", async () => {
+    for (const terminal of [true, false]) {
+      const root = monorepo({ name: `load-asks-nothing-${terminal}`, submodules: [] });
+      const { asked, prompt } = prompting({ terminal });
+      await loaded(root, "server-repo", prompt);
+      expect(asked).toEqual([]);
+      expect(gitConfigIn(path.join(root, "packages", "@jive-sh", "server"), "commit.gpgSign")).toBe("true");
+    }
+  }, 60_000);
+
+  test("load with words other than an org and one repo is refused with load's help, saying when GitHub has no such org", async () => {
+    const root = monorepo({ name: "wrong-words", submodules: [] });
+    const refusal = async (args: ReadonlyArray<string>) => errorOf((await runJiveIn(root, args)).exit);
+    expect(await refusal(["load", "ozyman42/workspace"])).toEqual(new UsageError({ command: ["load"], problems: ["No access to an org named ozyman42/workspace"] }));
+    expect(await refusal(["load", "no-such-org"])).toEqual(new UsageError({ command: ["load"], problems: ["No access to an org named no-such-org"] }));
+    expect(await refusal(["load", "acme"])).toEqual(new UsageError({ command: ["load"], problems: [] }));
+    expect(await refusal(["load", "acme", "decomp-project-image", "extra"])).toEqual(new UsageError({ command: ["load"], problems: [] }));
+    // GitHub not answering is no proof the org is out of reach, so only the help is shown.
+    expect(await refusal(["load", "unanswered"])).toEqual(new UsageError({ command: ["load"], problems: [] }));
+    expect(existsSync(path.join(root, "packages"))).toBe(false);
   }, 30_000);
 
   test("in a monorepo shaped like open-empires, load puts the repo at packages/<package name>", async () => {
-    const root = monorepo({ name: "open-empires", mark: ".jive", submodules: [
-      { repo: "aoe2-in-browser", path: "packages/aoe2-in-browser" },
-      { repo: "open-empires-web", path: "packages/open-empires-web" },
+    const root = monorepo({ name: "open-empires", submodules: [
+      { url: acme("aoe2-in-browser"), path: "packages/aoe2-in-browser" },
+      { url: acme("open-empires-web"), path: "packages/open-empires-web" },
     ] });
-    writeFileSync(path.join(root, "package.json"), rootManifest);
     await loaded(root, "decomp-project-image");
     expect(existsSync(path.join(root, "packages", "decomp-project-image", "package.json"))).toBe(true);
-    expect(sh(["git", "config", "-f", ".gitmodules", "submodule.packages/decomp-project-image.url"], root)).toBe("https://github.com/acme/decomp-project-image");
+    expect(sh(["git", "config", "-f", ".gitmodules", "submodule.packages/decomp-project-image.url"], root)).toBe(acme("decomp-project-image"));
     expect(sh(["git", "ls-files", "--stage", "--", "packages/decomp-project-image"], root)).toStartWith("160000 ");
     expect(gitConfigIn(path.join(root, "packages", "decomp-project-image"), "gpg.format")).toBe("ssh");
     expect(gitConfigIn(path.join(root, "packages", "decomp-project-image"), "core.sshCommand")).toEndWith("/jive-ssh");
   }, 30_000);
 
   test("in a monorepo shaped like chaine, load puts a scoped package at packages/@scope/name, by its package name", async () => {
-    const root = monorepo({ name: "chaine", mark: ".jive", submodules: [
-      { repo: "jive", path: "packages/@jive-sh/jive" },
-      { repo: "jive-abstract-library", path: "packages/jive-abstract-library" },
+    const root = monorepo({ name: "chaine", submodules: [
+      { url: acme("jive"), path: "packages/@jive-sh/jive" },
+      { url: acme("jive-abstract-library"), path: "packages/jive-abstract-library" },
     ] });
-    writeFileSync(path.join(root, "package.json"), rootManifest);
     await loaded(root, "server-repo");
     expect(JSON.parse(readFileSync(path.join(root, "packages", "@jive-sh", "server", "package.json"), "utf8")).name).toBe("@jive-sh/server");
-    expect(sh(["git", "config", "-f", ".gitmodules", "submodule.packages/@jive-sh/server.url"], root)).toBe("https://github.com/acme/server-repo");
+    expect(sh(["git", "config", "-f", ".gitmodules", "submodule.packages/@jive-sh/server.url"], root)).toBe(acme("server-repo"));
     // The clone that told jive the package name is gone from the git directory.
     expect(existsSync(path.join(root, ".git", "jive-load"))).toBe(false);
     // Running it again changes nothing and says it is loaded.
-    await loaded(root, "server-repo");
+    const again = await loaded(root, "server-repo");
+    expect(again.logs).toContain("acme/server-repo is already the submodule there");
     expect(sh(["git", "config", "-f", ".gitmodules", "--get-all", "submodule.packages/@jive-sh/server.path"], root)).toBe("packages/@jive-sh/server");
   }, 30_000);
 
   test("load stages only its own .gitmodules entry and gitlink, leaving others' uncommitted .gitmodules edits unstaged", async () => {
-    const root = monorepo({ name: "busy", mark: ".jive", submodules: [{ repo: "aoe2-in-browser", path: "packages/aoe2-in-browser" }] });
-    writeFileSync(path.join(root, "package.json"), rootManifest);
-    sh(["git", "add", "package.json"], root);
-    sh(["git", "commit", "-qm", "mark"], root);
+    const root = monorepo({ name: "busy", submodules: [{ url: acme("aoe2-in-browser"), path: "packages/aoe2-in-browser" }] });
     // Another agent's edit, not staged: a URL rewritten in the working tree's .gitmodules.
     sh(["git", "config", "-f", ".gitmodules", "submodule.packages/aoe2-in-browser.url", "https://github.com/acme/edited-by-someone-else"], root);
     await loaded(root, "decomp-project-image");
@@ -368,10 +520,9 @@ describe("jive load in a monorepo", () => {
   }, 30_000);
 
   test("load adopts a checkout already at packages/<package name>, keeping its uncommitted work", async () => {
-    const root = monorepo({ name: "adopting", mark: ".jive", submodules: [{ repo: "aoe2-in-browser", path: "packages/aoe2-in-browser" }] });
-    writeFileSync(path.join(root, "package.json"), rootManifest);
+    const root = monorepo({ name: "adopting", submodules: [{ url: acme("aoe2-in-browser"), path: "packages/aoe2-in-browser" }] });
     const checkout = path.join(root, "packages", "decomp-project-image");
-    sh(["git", "clone", "-q", "https://github.com/acme/decomp-project-image", checkout], root);
+    sh(["git", "clone", "-q", acme("decomp-project-image"), checkout], root);
     // Its remote as `gh repo clone` leaves it, over SSH; jive recognises the repo either way.
     sh(["git", "remote", "set-url", "origin", "git@github.com:acme/decomp-project-image"], checkout);
     writeFileSync(path.join(checkout, "package.json"), JSON.stringify({ name: "decomp-project-image", version: "0.0.1" }));
@@ -385,102 +536,29 @@ describe("jive load in a monorepo", () => {
     expect(sh(["git", "ls-files", "--stage", "--", "packages/decomp-project-image"], root)).toStartWith(`160000 ${head} `);
     // Its git directory moved under the monorepo's, as for every submodule `git submodule add` clones.
     expect(readFileSync(path.join(checkout, ".git"), "utf8").trim()).toBe("gitdir: ../../.git/modules/packages/decomp-project-image");
-    expect(sh(["git", "remote", "get-url", "origin"], checkout)).toBe("git@github.com:acme/decomp-project-image");
+    expect(gitConfigIn(checkout, "remote.origin.url")).toBe("git@github.com:acme/decomp-project-image");
     expect(gitConfigIn(checkout, "commit.gpgSign")).toBe("true");
   }, 30_000);
 
-  /** A prompt answering the yes-or-no question with `confirm` and the name and email questions with `identity`, recording what it was asked. */
-  function answering({ confirm, identity }: { readonly confirm: boolean; readonly identity: { readonly name: string; readonly email: string } }) {
-    const asked: Array<string> = [];
-    const prompt = TerminalPromptImpl.mockLayer({
-      *confirm(question: string) { asked.push(question); return confirm; },
-      *ask(question: string) { asked.push(question); return question === "Name:" ? identity.name : identity.email; },
-    });
-    return { asked, prompt };
-  }
-  const typed = { name: "  Łukasz O'Brien-Müller ", email: " lukasz@example.com " };
-
-  test("init in a folder in no repository and no workspace makes it a repository on main, asks for its git identity, marks it the root and configures it", async () => {
+  test("init in a folder in no repository makes it a repository on main, asks for its git identity and configures it, writing no file", async () => {
     const folder = path.join(scratch, "monorepos", "fresh");
     mkdirSync(folder, { recursive: true });
-    const { asked, prompt } = answering({ confirm: false, identity: typed });
-    const { exit } = await runJiveIn(folder, ["init"], prompt);
-    expect(exit).toEqual(e.Exit.void);
+    const { asked, prompt } = prompting({ terminal: true });
+    succeeded(await runJiveIn(folder, ["init"], prompt));
     expect(asked).toEqual(["Name:", "Email:"]);
     expect(gitConfigIn(folder, "user.name")).toBe("Łukasz O'Brien-Müller");
     expect(gitConfigIn(folder, "user.email")).toBe("lukasz@example.com");
     expect(sh(["git", "rev-parse", "--show-toplevel"], folder)).toBe(folder);
     expect(sh(["git", "symbolic-ref", "HEAD"], folder)).toBe("refs/heads/main");
-    expect(JSON.parse(readFileSync(path.join(folder, "package.json"), "utf8"))).toEqual({ jive: { root: true } });
+    expect(status(folder)).toBe("");
     expect(gitConfigIn(folder, "gpg.format")).toBe("ssh");
     expect(gitConfigIn(folder, "core.sshCommand")).toEndWith("/jive-ssh");
   }, 30_000);
 
-  test("init in a repository that is no workspace yet marks that repository's root, making no new repository", async () => {
-    const root = monorepo({ name: "existing-repository", mark: "none", submodules: [] });
-    const below = path.join(root, "docs");
-    mkdirSync(below);
-    expect((await runJiveIn(below, ["init"])).exit).toEqual(e.Exit.void);
-    expect(existsSync(path.join(below, ".git"))).toBe(false);
-    expect(JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"))).toEqual({ jive: { root: true } });
-    expect(gitConfigIn(root, "gpg.format")).toBe("ssh");
-  }, 30_000);
-
-  /** A workspace, and a folder inside it that is no repository, as a person's new project folder would be. */
-  function folderInsideWorkspace(name: string) {
-    const root = monorepo({ name, mark: "package.json", submodules: [] });
-    const folder = path.join(root, "new-project");
-    mkdirSync(folder);
-    return { root, folder };
-  }
-
-  /** Nothing init writes is in `root` or `folder`: no repository made, no root marked, no config set. */
-  function expectUnchanged({ root, folder }: { readonly root: string; readonly folder: string }) {
-    expect(existsSync(path.join(folder, ".git"))).toBe(false);
-    expect(existsSync(path.join(folder, "package.json"))).toBe(false);
-    expect(Bun.spawnSync(["git", "config", "--local", "--get", "gpg.format"], { cwd: root, env: process.env }).exitCode).toBe(1);
-  }
-
-  test("init inside a workspace asks, and on yes configures that workspace without a new repository", async () => {
-    const { root, folder } = folderInsideWorkspace("asked-yes");
-    const asked: Array<string> = [];
-    const { exit } = await runJiveIn(folder, ["init"], TerminalPromptImpl.mockLayer({ *confirm(question: string) { asked.push(question); return true; } }));
-    expect(exit).toEqual(e.Exit.void);
-    expect(asked).toEqual(["Are you sure you want to continue?"]);
-    expect(existsSync(path.join(folder, ".git"))).toBe(false);
-    expect(gitConfigIn(root, "gpg.format")).toBe("ssh");
-    expect(gitConfigIn(root, "core.sshCommand")).toEndWith("/jive-ssh");
-  }, 30_000);
-
-  test("init inside a workspace, answered no, changes nothing", async () => {
-    const workspaceAndFolder = folderInsideWorkspace("asked-no");
-    const { exit } = await runJiveIn(workspaceAndFolder.folder, ["init"], TerminalPromptImpl.mockLayer({ *confirm() { return false; } }));
-    expect(exit).toEqual(e.Exit.void);
-    expectUnchanged(workspaceAndFolder);
-  }, 30_000);
-
-  test("init inside a workspace with no terminal to ask fails, naming the workspace, and changes nothing", async () => {
-    const workspaceAndFolder = folderInsideWorkspace("no-terminal");
-    const { exit } = await runJiveIn(workspaceAndFolder.folder, ["init"], TerminalPromptImpl.mockLayer({ *confirm() { return yield* new NoTerminalToAsk(); } }));
-    expect(errorOf(exit)).toEqual(new BadPreconditionsError({
-      cause: `Not configuring ${workspaceAndFolder.root}: there is no terminal to ask whether to`,
-      fix: `Run \`jive init\` in ${workspaceAndFolder.root}`,
-    }));
-    expectUnchanged(workspaceAndFolder);
-  }, 30_000);
-
-  test("init at the workspace's root asks nothing", async () => {
-    const { root } = folderInsideWorkspace("at-root");
-    const asked: Array<string> = [];
-    expect((await runJiveIn(root, ["init"], TerminalPromptImpl.mockLayer({ *confirm(question: string) { asked.push(question); return false; } }))).exit).toEqual(e.Exit.void);
-    expect(asked).toEqual([]);
-    expect(gitConfigIn(root, "gpg.format")).toBe("ssh");
-  }, 30_000);
-
   test("init in a repository with no git identity asks for one and writes it into the root and every submodule", async () => {
-    const root = monorepo({ name: "no-identity", mark: "none", submodules: [{ repo: "aoe2-in-browser", path: "packages/aoe2-in-browser" }], identity: "none" });
-    const { asked, prompt } = answering({ confirm: false, identity: typed });
-    expect((await runJiveIn(root, ["init"], prompt)).exit).toEqual(e.Exit.void);
+    const root = monorepo({ name: "no-identity", submodules: [{ url: acme("aoe2-in-browser"), path: "packages/aoe2-in-browser" }], identity: "none" });
+    const { asked, prompt } = prompting({ terminal: true });
+    succeeded(await runJiveIn(root, ["init"], prompt));
     expect(asked).toEqual(["Name:", "Email:"]);
     for (const repository of [root, path.join(root, "packages", "aoe2-in-browser")]) {
       expect(gitConfigIn(repository, "user.name")).toBe("Łukasz O'Brien-Müller");
@@ -489,37 +567,25 @@ describe("jive load in a monorepo", () => {
     }
   }, 30_000);
 
-  test("init with the root's git identity already set uses it without asking", async () => {
-    const root = monorepo({ name: "has-identity", mark: "none", submodules: [{ repo: "aoe2-in-browser", path: "packages/aoe2-in-browser" }] });
-    const { asked, prompt } = answering({ confirm: false, identity: typed });
-    expect((await runJiveIn(root, ["init"], prompt)).exit).toEqual(e.Exit.void);
-    expect(asked).toEqual([]);
-    expect(gitConfigIn(path.join(root, "packages", "aoe2-in-browser"), "user.name")).toBe(persona.name);
-    expect(gitConfigIn(root, "user.email")).toBe(persona.email);
-  }, 30_000);
-
   test("init with no git identity and no terminal to ask fails before changing anything, saying to run jive init in a terminal", async () => {
-    const root = monorepo({ name: "no-identity-no-terminal", mark: "none", submodules: [], identity: "none" });
-    const prompt = TerminalPromptImpl.mockLayer({ *ask() { return yield* new NoTerminalToAsk(); } });
-    const { exit } = await runJiveIn(root, ["init"], prompt);
+    const root = monorepo({ name: "no-identity-no-terminal", submodules: [], identity: "none" });
+    const { exit } = await runJiveIn(root, ["init"], prompting({ terminal: false }).prompt);
     expect(errorOf(exit)).toEqual(new BadPreconditionsError({
       cause: `${root} has no git identity: its own git config sets no user.name and user.email, and there is no terminal to ask for one`,
       fix: `Run \`jive init\` in ${root} in a terminal: it asks for the name and email this workspace's commits carry`,
     }));
-    expect(existsSync(path.join(root, "package.json"))).toBe(false);
     expect(Bun.spawnSync(["git", "config", "--local", "--get", "gpg.format"], { cwd: root, env: process.env }).exitCode).toBe(1);
   }, 30_000);
 
   test("init refuses a name or email git couldn't put in a commit, changing nothing", async () => {
-    const root = monorepo({ name: "bad-identity", mark: "none", submodules: [], identity: "none" });
-    const { prompt } = answering({ confirm: false, identity: { name: "Zoë", email: "not an email" } });
-    const { exit } = await runJiveIn(root, ["init"], prompt);
+    const root = monorepo({ name: "bad-identity", submodules: [], identity: "none" });
+    const { exit } = await runJiveIn(root, ["init"], prompting({ terminal: true, identity: { name: "Zoë", email: "not an email" } }).prompt);
     expect(errorOf(exit)).toEqual(new BadArgumentError({ argument: "git identity", reason: "a git email has an @ and holds no spaces, <, > or line break" }));
     expect(Bun.spawnSync(["git", "config", "--local", "--get", "user.name"], { cwd: root, env: process.env }).exitCode).toBe(1);
   }, 30_000);
 
   test("load refuses in a workspace whose root has no git identity, saying to run jive init", async () => {
-    const root = monorepo({ name: "load-no-identity", mark: "package.json", submodules: [], identity: "none" });
+    const root = monorepo({ name: "load-no-identity", submodules: [], identity: "none" });
     const { exit } = await runJiveIn(root, ["load", "acme", "decomp-project-image"]);
     expect(errorOf(exit)).toEqual(new BadPreconditionsError({
       cause: `${root} has no git identity: its own git config sets no user.name and user.email`,
@@ -529,8 +595,8 @@ describe("jive load in a monorepo", () => {
   }, 30_000);
 
   test("load refuses a checkout of the repo that isn't at packages/<package name>, naming where it belongs", async () => {
-    const root = monorepo({ name: "misplaced", mark: "package.json", submodules: [] });
-    sh(["git", "clone", "-q", "https://github.com/acme/server-repo", path.join(root, "packages", "server")], root);
+    const root = monorepo({ name: "misplaced", submodules: [] });
+    sh(["git", "clone", "-q", acme("server-repo"), path.join(root, "packages", "server")], root);
     const error = errorOf((await runJiveIn(root, ["load", "acme", "server-repo"])).exit);
     expect(error instanceof BadPreconditionsError && error.cause)
       .toBe("acme/server-repo is at packages/server, but jive keeps the package @jive-sh/server at packages/@jive-sh/server");

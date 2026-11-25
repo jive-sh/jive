@@ -46,18 +46,16 @@ export interface IGit {
   /**
    * Makes the repo a submodule of the workspace at `packages/<its package.json name>`: cloned by its https URL, or a
    * checkout of it already there adopted as it is. Only its own `.gitmodules` entry and its gitlink are staged; nothing
-   * else in the index changes, so uncommitted edits to `.gitmodules` stay unstaged. Then fetches its submodules and
-   * configures it and them (`configureRepository`). Running it again on a loaded repo only fetches and configures.
+   * else in the index changes, so uncommitted edits to `.gitmodules` stay unstaged. It logs where the repo goes, and
+   * leaves its submodules and its config to `jive init`, which `jive load` runs in it afterwards. On a repo already
+   * loaded it changes nothing.
    */
-  loadAsSubmodule(input: { readonly repo: RepoIdentifier; readonly settings: RepositorySettings }): EffectGen<LoadedSubmodule, BadArgumentError | BadPreconditionsError>;
+  loadAsSubmodule(repo: RepoIdentifier): EffectGen<LoadedSubmodule, BadArgumentError | BadPreconditionsError>;
+  /** Clones the repo by its https URL into `directory`, fetching over SSH through `jive-ssh`, as `git clone` would. */
+  clone(input: { readonly repo: RepoIdentifier; readonly directory: string }): EffectGen<void, BadPreconditionsError>;
   removeSubmodule(repo: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError>;
   /** The top of the git repository `directory` is in. */
   repositoryRoot(directory: string): EffectGen<string, BadPreconditionsError>;
-  /**
-   * The top of the outermost git repository holding `directory`: its repository, or the superproject it is a submodule
-   * of, at any depth; none when `directory` is in no git repository.
-   */
-  outermostRepositoryRoot(directory: string): EffectGen<e.Option.Option<string>, BadPreconditionsError>;
   /** The name and email `repository`'s own git config sets (`git config --local`); none unless it sets both. */
   localIdentity(repository: string): EffectGen<e.Option.Option<GitIdentity>, BadPreconditionsError>;
   /** Makes `directory` a new git repository whose first branch is `main` (`git init -b main`). */
@@ -65,11 +63,11 @@ export interface IGit {
   /** `root`, every submodule checked out under it, and every repository inside it that git doesn't track, at any depth. */
   repositoriesUnder(root: string): EffectGen<ReadonlyArray<string>, BadPreconditionsError>;
   /**
-   * Rewrites every GitHub URL in every .gitmodules under `root` to `https://github.com/<owner>/<repo>`, syncs them
-   * into git config, and checks out every submodule not yet checked out, at any depth. A submodule already checked
-   * out keeps its HEAD and working tree. Returns how many URLs it rewrote.
+   * Checks out every submodule under `root` not yet checked out, at any depth, fetching over SSH through `jive-ssh`
+   * whatever URL its .gitmodules names; no .gitmodules is written. A submodule already checked out keeps its HEAD and
+   * working tree. Returns how many it checked out.
    */
-  checkOutSubmodulesOverHttps(root: string): EffectGen<number, BadPreconditionsError>;
+  checkOutSubmodules(root: string): EffectGen<number, BadPreconditionsError>;
   /**
    * Sets exactly what jive needs in `repository`: commits made as the workspace's git identity and signed with the
    * account key through `jive-ssh-sign`, and GitHub's https URLs fetched and pushed over SSH through `jive-ssh`.

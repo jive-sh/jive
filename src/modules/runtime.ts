@@ -8,6 +8,7 @@ import { DaemonClientImpl } from "./daemon-client/impl";
 import { ExtensionDaemonImpl } from "./extension-daemon/impl";
 import { ExtensionSignInImpl } from "./extension-sign-in/impl";
 import { GitImpl } from "./git/impl";
+import { GitHubImpl } from "./github/impl";
 import { JiveServerImpl } from "./jive-server/impl";
 import { NpmCredentialPosterNotDecidedImpl } from "./npm-credential-poster/not-decided";
 import { GitHubActionsIdentityImpl } from "./pipeline-identity/impl";
@@ -36,6 +37,7 @@ const serverLayer = e.pipe(
 export const ModulesLayer = e.pipe(
   AbstractsImpl.Layer,
   e.Layer.provideMerge(GitImpl.Layer),
+  e.Layer.provideMerge(GitHubImpl.Layer),
   e.Layer.provideMerge(BunImpl.Layer),
   e.Layer.provideMerge(ToolStateImpl.Layer),
   e.Layer.provideMerge(ProvisioningImpl.Layer),
