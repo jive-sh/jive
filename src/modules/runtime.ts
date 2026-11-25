@@ -4,6 +4,7 @@ import { AbstractsImpl } from "./abstracts/impl";
 import { AccountKeyImpl } from "./account-key/impl";
 import { BrowserImpl } from "./browser/impl";
 import { BunImpl } from "./bun/impl";
+import { CommandEchoImpl } from "./command-echo/impl";
 import { DaemonClientImpl } from "./daemon-client/impl";
 import { ExtensionDaemonImpl } from "./extension-daemon/impl";
 import { ExtensionSignInImpl } from "./extension-sign-in/impl";
@@ -21,7 +22,7 @@ import { ToolStateImpl } from "./tool-state/impl";
 
 /**
  * Every module jive owns, composed most-dependent first. What is left for the entrypoint to provide is the host: its
- * processes and facts (`OSPlatformImpl.Layer`) and its filesystem, paths and terminal (`BunServices.layer`), which a
+ * processes and facts (`OSPlatformImpl.Layer`) and its filesystem, paths, terminal and stdio (`BunServices.layer`), which a
  * test replaces to give the modules a home and an install directory of its own. The CLI and `jive-daemon` share one
  * session file, and differ in how a sign-in reaches the person: the CLI prints it, and the daemon hands it to the Jive
  * extension, the only one that asks the daemon to sign in (the signing agent never does).
@@ -39,6 +40,7 @@ export const ModulesLayer = e.pipe(
   e.Layer.provideMerge(GitImpl.Layer),
   e.Layer.provideMerge(GitHubImpl.Layer),
   e.Layer.provideMerge(BunImpl.Layer),
+  e.Layer.provideMerge(CommandEchoImpl.Layer),
   e.Layer.provideMerge(ToolStateImpl.Layer),
   e.Layer.provideMerge(ProvisioningImpl.Layer),
   e.Layer.provideMerge(TerminalPromptImpl.Layer),

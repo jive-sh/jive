@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { BadArgumentError, BadPreconditionsError, UsageError } from "@/errors";
 import { AccountKeyImpl } from "@/modules/account-key/impl";
 import type { AccountKey } from "@/modules/account-key/interface";
+import { formatShellCommand } from "@/modules/command-echo/shell-command";
 import { GitHubImpl } from "@/modules/github/impl";
 import { GitHubUnanswered } from "@/modules/github/interface";
 import { TerminalPromptImpl } from "@/modules/prompt/impl";
@@ -119,6 +120,8 @@ const scratchHost = e.Layer.effect(OSPlatform, e.Effect.gen(function* () {
 
 interface Outcome {
   readonly stdout: string;
+  /** What jive wrote to stderr itself (not the commands it ran), its command echoes among it. */
+  readonly stderr: string;
   /** Every line jive logged, in order. */
   readonly logs: ReadonlyArray<string>;
   readonly exit: e.Exit.Exit<void, unknown>;
@@ -138,6 +141,7 @@ const runJive = (args: ReadonlyArray<string>): Promise<Outcome> => runJiveWithPr
 /** `runJive`, with `prompt` answering every question jive asks in place of the terminal. */
 async function runJiveWithPrompt({ args, prompt }: { readonly args: ReadonlyArray<string>; readonly prompt: e.Layer.Layer<never> | ReturnType<typeof TerminalPromptImpl.mockLayer> }): Promise<Outcome> {
   const stdout: Array<string> = [];
+  const stderr: Array<string> = [];
   const logs: Array<string> = [];
   const exit = await e.Effect.runPromise(e.pipe(
     Cli.run(jive, { version: "0.0.0-test" }),
@@ -156,11 +160,14 @@ async function runJiveWithPrompt({ args, prompt }: { readonly args: ReadonlyArra
       stdout: () => e.Sink.forEach((chunk: string | Uint8Array) => e.Effect.sync(() => {
         stdout.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
       })),
+      stderr: () => e.Sink.forEach((chunk: string | Uint8Array) => e.Effect.sync(() => {
+        stderr.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+      })),
     })),
     e.Effect.provide(BunServices.layer),
     e.Effect.exit,
   ));
-  return { stdout: stdout.join(""), logs, exit };
+  return { stdout: stdout.join(""), stderr: stderr.join(""), logs, exit };
 }
 
 const provisioned: Array<{ kind: string; instance: unknown }> = [];
@@ -171,8 +178,10 @@ const gitConfigIn = (directory: string, key: string) => sh(["git", "config", "--
 
 describe("jive in a workspace", () => {
   test("load clones the repo as a submodule, configures it to sign and push through jive, and installs it", async () => {
-    const { exit, logs } = await runJive(["load", "acme", "widget"]);
+    const { exit, logs, stderr } = await runJive(["load", "acme", "widget"]);
     expect(exit).toEqual(e.Exit.void);
+    // bun install runs in the widget, so its echo names that folder, as the command that does the same from here.
+    expect(stderr.split("\n")).toContain(`bun install --cwd ${widget()}`);
     expect(logs).toContain(`Loading acme/widget into ${widget()}, in the workspace at ${workspace}`);
 
     expect(JSON.parse(readFileSync(path.join(widget(), "package.json"), "utf8")).name).toBe("@acme/widget");
@@ -381,13 +390,20 @@ describe("jive in the nearest git repository", () => {
     expect(existsSync(path.join(outer, "packages", "jive-abstract-library"))).toBe(true);
   }, 60_000);
 
-  test("load in no repository clones into ./<repo>, saying so, and runs jive init there", async () => {
+  test("load in no repository clones into ./<repo>, its echoed git clone showing where, and runs jive init there", async () => {
     const folder = path.join(scratch, "no-repository");
     mkdirSync(folder);
     const { asked, prompt } = prompting({ terminal: true });
-    const { logs } = await loaded(folder, "decomp-project-image", prompt);
+    const { logs, stderr } = await loaded(folder, "decomp-project-image", prompt);
     const clone = path.join(folder, "decomp-project-image");
-    expect(logs[0]).toBe(`Not in a workspace: cloning acme/decomp-project-image into ${clone}`);
+    // The first thing jive prints is the clone itself, as the shell command that does it from this folder.
+    expect(stderr).toStartWith(`${formatShellCommand({
+      program: "git",
+      optionLines: [["-c", `core.sshCommand=${gitConfigIn(clone, "core.sshCommand")}`], ["-c", "ssh.variant=ssh"], ["-c", "url.git@github.com:.insteadOf=https://github.com/"]],
+      arguments: ["clone", acme("decomp-project-image"), clone],
+    })}\n`);
+    expect(logs.join("\n")).not.toContain("Not in a workspace");
+    expect(logs.join("\n") + stderr).not.toContain("Running");
     expect(sh(["git", "rev-parse", "--show-toplevel"], clone)).toBe(clone);
     expect(gitConfigIn(clone, "remote.origin.url")).toBe(acme("decomp-project-image"));
     expect(existsSync(path.join(folder, ".git"))).toBe(false);

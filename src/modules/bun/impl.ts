@@ -34,7 +34,7 @@ interface WorkspacePackage {
   readonly manifest: PackageManifest;
 }
 
-export class BunImpl extends implementing(modules.bun).uses(OSPlatform, e.FileSystem.FileSystem) implements IBun {
+export class BunImpl extends implementing(modules.bun).uses(modules.commandEcho, OSPlatform, e.FileSystem.FileSystem) implements IBun {
   *install({ directory, packageName }: { readonly directory: string; readonly packageName: string }): EffectGen<void, BadPreconditionsError> {
     yield* this.bunIn(directory, packageName, ["install"]);
   }
@@ -158,7 +158,9 @@ export class BunImpl extends implementing(modules.bun).uses(OSPlatform, e.FileSy
 
   private *bunIn(directory: string, packageName: string, args: ReadonlyArray<string>): EffectGen<void, BadPreconditionsError> {
     const commandLine = `bun ${args.join(" ")}`;
-    yield* e.Effect.log(`Running ${commandLine} in ${packageName}`);
+    // Echoed as the command that does the same from where jive was started.
+    const elsewhere = directory !== (yield* this.dependencies.OSPlatform.getCurrentDirectory());
+    yield* this.dependencies.commandEcho.show({ program: "bun", optionLines: [], arguments: elsewhere ? [...args, "--cwd", directory] : args });
     const { exitCode } = yield* e.pipe(
       e.Effect.gen(() => this.dependencies.OSPlatform.spawnProcess({ command: "bun", args, cwd: directory, stdout: "inherit", stderr: "inherit" })),
       e.Effect.mapError(message => BadPreconditionsError.withoutFix(`Failed to run ${commandLine}`, message)),

@@ -6,6 +6,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import * as path from "node:path";
 import type { EffectGen } from "effective-modules";
 import { modules } from "@/modules";
+import { CommandEchoImpl } from "@/modules/command-echo/impl";
 import { BunImpl } from "./impl";
 import { LinkScope, type IBun, type LinkResult, type WorkspaceLink } from "./interface";
 
@@ -78,6 +79,7 @@ function run<A>(use: (bun: IBun) => EffectGen<A, unknown>): Promise<A> {
   return e.Effect.runPromise(e.pipe(
     e.Effect.gen(function* () { return yield* use(yield* modules.bun); }),
     e.Effect.provide(BunImpl.Layer),
+    e.Effect.provide(CommandEchoImpl.Layer),
     e.Effect.provide(recordingHost),
     e.Effect.provide(BunServices.layer),
   ));

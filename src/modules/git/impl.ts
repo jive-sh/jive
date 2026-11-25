@@ -32,7 +32,7 @@ interface SubmoduleEntry {
   readonly url: string;
 }
 
-export class GitImpl extends implementing(modules.git).uses(modules.toolState, modules.bun, OSPlatform, e.FileSystem.FileSystem) implements IGit {
+export class GitImpl extends implementing(modules.git).uses(modules.toolState, modules.bun, modules.commandEcho, OSPlatform, e.FileSystem.FileSystem) implements IGit {
   *removeSubmodule(repoId: RepoIdentifier): EffectGen<void, BadArgumentError | BadPreconditionsError> {
     const { submoduleName, location: { relativePath } } = yield* this.loadedRepository(repoId);
     const workspaceRoot = yield* this.workspaceRoot();
@@ -445,11 +445,22 @@ export class GitImpl extends implementing(modules.git).uses(modules.toolState, m
     return installedCommandPath(yield* this.dependencies.OSPlatform.getExecutablePath(), commandName);
   }
 
-  /** Runs git in `cwd`, failing when it exits nonzero; "capture" returns its output instead of showing it. */
+  /**
+   * Runs git in `cwd`, failing when it exits nonzero; "capture" returns its output instead of showing it. A command whose
+   * output shows is echoed first, as the git command that does the same from where jive was started: `-C <cwd>` when
+   * that differs, and each leading `-c key=value` on a line of its own.
+   */
   private *git(args: ReadonlyArray<string>, cwd: string, output: "inherit" | "capture" = "inherit"): EffectGen<{ stdout: string }, BadPreconditionsError> {
     const commandLine = `git ${args.join(" ")}`;
     if (output === "inherit") {
-      yield* e.Effect.log(`Running ${commandLine}`);
+      const optionLines: Array<ReadonlyArray<string>> = [];
+      if (cwd !== (yield* this.dependencies.OSPlatform.getCurrentDirectory())) optionLines.push(["-C", cwd]);
+      let first = 0;
+      while (args[first] === "-c" && args[first + 1] !== undefined) {
+        optionLines.push(["-c", args[first + 1]!]);
+        first += 2;
+      }
+      yield* this.dependencies.commandEcho.show({ program: "git", optionLines, arguments: args.slice(first) });
     }
     const stdio = output === "inherit" ? "inherit" : "pipe";
     const result = yield* e.pipe(

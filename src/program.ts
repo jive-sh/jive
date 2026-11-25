@@ -54,7 +54,7 @@ export const jive = Cli.make(TOOL_NAME, {
         const currentDirectory = yield* (yield* OSPlatform).getCurrentDirectory();
         if (e.Option.isNone(yield* (yield* modules.toolState).findWorkspaceRoot(currentDirectory))) {
           const destination = path.join(currentDirectory, repo);
-          yield* e.Effect.log(`Not in a workspace: cloning ${org}/${repo} into ${destination}`);
+          // The echoed `git clone` shows where it goes.
           yield* (yield* modules.git).clone({ repo: chosenRepo, directory: destination });
           return yield* initialize({ directory: destination, maybeGitIdentity: e.Option.none() });
         }

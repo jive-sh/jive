@@ -3,6 +3,7 @@ import type { IAbstracts } from "./abstracts/interface";
 import type { IAccountKey } from "./account-key/interface";
 import type { IBrowser } from "./browser/interface";
 import type { IBun } from "./bun/interface";
+import type { ICommandEcho } from "./command-echo/interface";
 import type { IDaemonClient } from "./daemon-client/interface";
 import type { IExtensionDaemon } from "./extension-daemon/interface";
 import type { IExtensionSignIn } from "./extension-sign-in/interface";
@@ -22,6 +23,7 @@ export enum Module {
   accountKey = "accountKey",
   browser = "browser",
   bun = "bun",
+  commandEcho = "commandEcho",
   daemonClient = "daemonClient",
   extensionDaemon = "extensionDaemon",
   extensionSignIn = "extensionSignIn",
@@ -43,6 +45,7 @@ export const modules = interfaces<Module, {
   [Module.accountKey]: IAccountKey;
   [Module.browser]: IBrowser;
   [Module.bun]: IBun;
+  [Module.commandEcho]: ICommandEcho;
   [Module.daemonClient]: IDaemonClient;
   [Module.extensionDaemon]: IExtensionDaemon;
   [Module.extensionSignIn]: IExtensionSignIn;
