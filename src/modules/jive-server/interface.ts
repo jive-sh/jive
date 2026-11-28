@@ -1,5 +1,6 @@
 import * as e from "effect";
 import type { EffectGen } from "effective-modules";
+import type { MachineDescription } from "@/modules/machine-identity/interface";
 
 /**
  * The calls jive makes to `@jive-sh/server`, Jive's Convex backend. Every call that acts for a person takes a session
@@ -20,6 +21,11 @@ export interface OpenedSignInRequest {
  * A program's session on the server: the token every call takes, and when the server last said it ends. Each use of a
  * person's session moves its end on, so a saved `expiresAt` can be in the past while the server still honours it.
  */
+/** One program that asked to sign in: its process chain as program names, oldest ancestor first, the direct caller last. */
+export interface SignInCaller {
+  readonly programs: ReadonlyArray<string>;
+}
+
 export interface Session {
   readonly sessionToken: string;
   readonly expiresAt: number;
@@ -82,11 +88,22 @@ export const JIVE_API_AUDIENCE = "https://api.jive.sh";
 
 export interface IJiveServer {
   /**
-   * Opens a sign-in request. Given the session this machine last held, even an expired one, the server also asks that
-   * account's phones to approve it, unless that session was revoked.
+   * Opens this machine's sign-in request (`POST <site>/sign-in-requests`), naming the machine and the programs asking.
+   * `signature` is the machine key's signature of `jive-sign-in-open\n<publicKey>\n<signedAt>`. Given the session this
+   * machine last held, even an expired one, the server also asks that account's phones to approve it, unless that
+   * session was revoked. A refusal fails with the server's reason.
    */
-  openSignInRequest(input: { readonly previousSession: e.Option.Option<Session> }): EffectGen<OpenedSignInRequest, JiveServerError>;
-  claimSignInRequest(request: OpenedSignInRequest): EffectGen<SignInClaim, JiveServerError>;
+  openMachineSignInRequest(input: {
+    readonly previousSession: e.Option.Option<Session>;
+    readonly machine: MachineDescription;
+    readonly signedAt: number;
+    readonly signature: string;
+    readonly callers: ReadonlyArray<SignInCaller>;
+  }): EffectGen<OpenedSignInRequest, JiveServerError>;
+  /** Another program asked while `request` waits: it joins the request (`signInRequests:addCaller`); false when the request is gone. */
+  addSignInCaller(input: { readonly request: OpenedSignInRequest; readonly caller: SignInCaller }): EffectGen<boolean, JiveServerError>;
+  /** `signature` is the machine key's signature of `jive-sign-in-claim\n<requestId>`. */
+  claimSignInRequest(input: { readonly request: OpenedSignInRequest; readonly signature: string }): EffectGen<SignInClaim, JiveServerError>;
   /**
    * Exchanges a CI/CD job's ID token, minted for `JIVE_API_AUDIENCE`, for a session of that job's pipeline
    * (`pipelineSessions:signIn`). The server checks the token's workflow, ref, runner and repository; a refusal fails

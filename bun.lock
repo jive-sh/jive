@@ -6,7 +6,7 @@
       "name": "@chaine-dance/jive",
       "dependencies": {
         "@effect/platform-bun": "^4.0.0",
-        "@jive-sh/server-client": "0.12.0",
+        "@jive-sh/server-client": "0.13.0",
         "convex": "^1.48.0",
         "effect": "^4.0.0",
         "effective-modules": "0.3.6",
@@ -76,7 +76,7 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.27.0", "", { "os": "win32", "cpu": "x64" }, "sha512-aIitBcjQeyOhMTImhLZmtxfdOcuNRpwlPNmlFKPcHQYPhEssw75Cl1TSXJXpMkzaua9FUetx/4OQKq7eJul5Cg=="],
 
-    "@jive-sh/server-client": ["@jive-sh/server-client@0.12.0", "", { "peerDependencies": { "convex": "^1.48.0" } }, "sha512-hYJc4BweWxD7oE6ezxOSWWeanrxIGNDte10DHydy/HF5QCkfpkjAKw49ybtFlPrO6qUJBga7yhjWVxxAjHoJVg=="],
+    "@jive-sh/server-client": ["@jive-sh/server-client@0.13.0", "", { "peerDependencies": { "convex": "^1.48.0" } }, "sha512-woVj6+96AjpNHhk1a0ffwlR5W1OVK1KrZLeI4fy0Z6mK/QlHsSx5wWQe+WIllXItea4cUwKYRrt6PuBeVdinhw=="],
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 

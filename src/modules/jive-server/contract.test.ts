@@ -5,6 +5,7 @@ import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import type { api } from "@jive-sh/server-client";
 import {
   AccountValue,
+  AddCallerValue,
   ClaimValue,
   OpenedSignInRequestValue,
   PipelineSignInValue,
@@ -26,6 +27,7 @@ type Decodes<S extends e.Schema.Top, F extends FunctionReference<"query" | "acti
 
 const contract: {
   readonly open: Decodes<typeof OpenedSignInRequestValue, typeof api.signInRequests.open>;
+  readonly addCaller: Decodes<typeof AddCallerValue, typeof api.signInRequests.addCaller>;
   readonly claim: Decodes<typeof ClaimValue, typeof api.signInRequests.claim>;
   readonly pipelineSignIn: Decodes<typeof PipelineSignInValue, typeof api.pipelineSessions.signIn>;
   readonly provision: Decodes<typeof ProvisionValue, typeof api.provision.default>;
@@ -36,6 +38,7 @@ const contract: {
   readonly signingPasskeySign: Decodes<typeof SigningPasskeySignatureValue, typeof api.signingPasskey.sign>;
 } = {
   open: true,
+  addCaller: true,
   claim: true,
   pipelineSignIn: true,
   provision: true,

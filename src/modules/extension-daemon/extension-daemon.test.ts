@@ -7,15 +7,17 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { jiveHomePaths } from "@/jive-home";
 import { modules } from "@/modules";
-import { ExtensionSignInImpl } from "@/modules/extension-sign-in/impl";
 import { JiveServerImpl } from "@/modules/jive-server/impl";
-import { JiveServerRefused, JiveServerUnreachable, SignInClaim, type OpenedSignInRequest, type Session } from "@/modules/jive-server/interface";
+import { JiveServerRefused, JiveServerUnreachable, SignInClaim, type OpenedSignInRequest, type Session, type SignInCaller } from "@/modules/jive-server/interface";
+import { FileMachineIdentityImpl } from "@/modules/machine-identity/impl";
+import type { MachineDescription } from "@/modules/machine-identity/interface";
+import { MachineSignInImpl } from "@/modules/machine-sign-in/impl";
 import { bytesToBase64, bytesToBase64Url, readBase64 } from "@/modules/security-key/bytes";
 import { buildCeremony } from "@/modules/security-key/webauthn";
 import { NpmCredentialPosterNotDecidedImpl } from "@/modules/npm-credential-poster/not-decided";
 import { GitHubActionsIdentityImpl } from "@/modules/pipeline-identity/impl";
 import { SessionImpl } from "@/modules/session/impl";
-import { ExtensionSignInPromptImpl } from "@/modules/session/sign-in-prompt";
+import { InsideDaemonSignInRouteImpl } from "@/modules/session/sign-in-route";
 import { ExtensionDaemonImpl } from "./impl";
 import { extensionIdOf } from "./native-messaging/extension-id";
 import { encodeFrame, FrameReader } from "./native-messaging/framing";
@@ -38,6 +40,12 @@ const ORIGIN = `chrome-extension://${extensionIdOf(EXTENSION_PUBLIC_KEY)}/`;
 /** What the fake server and poster saw, and what the test lets them do. */
 const server = {
   opened: [] as Array<OpenedSignInRequest>,
+  /** What each opened request named: the machine and the programs, and the signature over the open message. */
+  openedFor: [] as Array<{ readonly machine: MachineDescription; readonly callers: ReadonlyArray<SignInCaller>; readonly signedAt: number; readonly signature: string }>,
+  /** Programs that joined a request already waiting, by request. */
+  joined: [] as Array<{ readonly requestId: string; readonly caller: SignInCaller }>,
+  /** The machine signature each claim carried. */
+  claimSignatures: [] as Array<{ readonly requestId: string; readonly signature: string }>,
   approved: new Set<string>(),
   issuedTokens: [] as Array<string>,
   refuseToOpen: false,
@@ -60,8 +68,9 @@ let verifyingKey: CryptoKey | undefined;
 let signingSpki = "";
 
 const fakeServer = JiveServerImpl.mockLayer({
-  *openSignInRequest() {
-    if (server.refuseToOpen) return yield* new JiveServerRefused({ call: "signInRequests:open", reason: "the test's server refused" });
+  *openMachineSignInRequest(input: { readonly machine: MachineDescription; readonly callers: ReadonlyArray<SignInCaller>; readonly signedAt: number; readonly signature: string }) {
+    if (server.refuseToOpen) return yield* new JiveServerRefused({ call: "POST /sign-in-requests", reason: "the test's server refused" });
+    server.openedFor.push({ machine: input.machine, callers: input.callers, signedAt: input.signedAt, signature: input.signature });
     yield* e.Effect.sleep(server.openDelayMs);
     const requestId = `request-${server.opened.length + 1}`;
     const request: OpenedSignInRequest = {
@@ -74,7 +83,12 @@ const fakeServer = JiveServerImpl.mockLayer({
     server.opened.push(request);
     return request;
   },
-  *claimSignInRequest(request: OpenedSignInRequest) {
+  *addSignInCaller({ request, caller }: { readonly request: OpenedSignInRequest; readonly caller: SignInCaller }) {
+    server.joined.push({ requestId: request.requestId, caller });
+    return true;
+  },
+  *claimSignInRequest({ request, signature }: { readonly request: OpenedSignInRequest; readonly signature: string }) {
+    server.claimSignatures.push({ requestId: request.requestId, signature });
     if (!server.approved.has(request.requestId)) return SignInClaim.Pending();
     server.approved.delete(request.requestId);
     const sessionToken = `jive_session_${request.requestId}`;
@@ -112,9 +126,10 @@ const recordingPoster = NpmCredentialPosterNotDecidedImpl.mockLayer({
 const daemonLayer = (poster: typeof recordingPoster | typeof NpmCredentialPosterNotDecidedImpl.Layer) => e.pipe(
   ExtensionDaemonImpl.Layer,
   e.Layer.provideMerge(poster),
+  e.Layer.provideMerge(MachineSignInImpl.Layer),
+  e.Layer.provideMerge(FileMachineIdentityImpl.Layer),
   e.Layer.provideMerge(SessionImpl.Layer),
-  e.Layer.provideMerge(ExtensionSignInPromptImpl.Layer),
-  e.Layer.provideMerge(ExtensionSignInImpl.Layer),
+  e.Layer.provideMerge(InsideDaemonSignInRouteImpl.Layer),
   e.Layer.provideMerge(GitHubActionsIdentityImpl.mockLayer({})),
   e.Layer.provideMerge(fakeServer),
   // Bun reads HOME once at startup, so the scratch home reaches the modules through the platform they ask.
@@ -186,6 +201,12 @@ async function waitFor<A>(input: { readonly probe: () => Promise<A | undefined>;
   throw new Error(`timed out waiting for ${input.what}`);
 }
 
+/** A program that signs in through the daemon's socket the way `jive login` does. */
+const SIGN_IN_FIXTURE = path.join(import.meta.dir, "sign-in-through-daemon.fixture.ts");
+
+/** The caller a request answered in this process names: there is no socket peer to read. */
+const TEST_CALLER: SignInCaller = { programs: ["extension-daemon.test"] };
+
 const storedSessionToken = () => JSON.parse(readFileSync(paths.sessionFile, "utf8")).sessionToken as string;
 
 let stopDaemon: () => Promise<void>;
@@ -232,23 +253,36 @@ describe("signing in", () => {
     expect(await host.request({ _tag: "GetSession" })).toEqual({ _tag: "SignedOut" });
   });
 
-  test("opens a sign-in request through jive's session and answers with its page, never its secret", async () => {
+  test("opens a sign-in request signed with this machine's key, naming the program that asked, and answers with its page, never its secret", async () => {
     const response = await host.request({ _tag: "StartSignIn" });
     const opened = server.opened.at(-1)!;
-    expect(response).toEqual({ _tag: "SigningIn", loginUrl: opened.loginUrl, expiresAt: new Date(opened.expiresAt).toISOString() });
+    expect(response).toEqual({ _tag: "SigningIn", loginUrl: opened.loginUrl, expiresAt: new Date(opened.expiresAt).toISOString(), approvalDevices: 0 });
+    const openedFor = server.openedFor.at(-1)!;
+    // The native host relays the extension, so it is the program on the socket's other end.
+    expect(openedFor.callers).toHaveLength(1);
+    expect(openedFor.callers[0]!.programs.at(-1)).toContain("jive-native-host");
+    expect(openedFor.machine.keyStorage).toBe("file");
+    const stored = JSON.parse(readFileSync(paths.machineKeyFile, "utf8"));
+    expect(stored.publicKey).toBe(openedFor.machine.publicKey);
+    expect(statSync(paths.machineKeyFile).mode & 0o777).toBe(0o600);
+    const publicKey = await crypto.subtle.importKey("raw", Buffer.from(openedFor.machine.publicKey, "base64url"), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+    const verifies = (signature: string, message: string) => crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, publicKey, Buffer.from(signature, "base64url"), new TextEncoder().encode(message));
+    expect(await verifies(openedFor.signature, `jive-sign-in-open\n${openedFor.machine.publicKey}\n${openedFor.signedAt}`)).toBe(true);
+    const claim = await waitFor({ probe: async () => server.claimSignatures.find(({ requestId }) => requestId === opened.requestId), what: "the daemon's first claim" });
+    expect(await verifies(claim.signature, `jive-sign-in-claim\n${opened.requestId}`)).toBe(true);
     expect(JSON.stringify(response).includes(opened.claimSecret)).toBe(false);
     expect(await host.request({ _tag: "GetSession" })).toMatchObject({ _tag: "SigningIn", loginUrl: opened.loginUrl });
   });
 
-  test("two sign-ins started at once both answer, the later one waits, and each connection keeps answering", async () => {
+  test("a sign-in started while one waits joins it: the same page, no second request, and the program is added to it", async () => {
     const other = startNativeHost();
-    server.openDelayMs = 300;
+    const openedBefore = server.opened.length;
     const [first, second] = await Promise.all([host.request({ _tag: "StartSignIn" }), other.request({ _tag: "StartSignIn" })]);
-    server.openDelayMs = 0;
-    expect([first._tag, second._tag]).toEqual(["SigningIn", "SigningIn"]);
-    const waiting = await host.request({ _tag: "GetSession" });
-    expect(waiting).toMatchObject({ _tag: "SigningIn", loginUrl: server.opened.at(-1)!.loginUrl });
-    expect(await other.request({ _tag: "GetSession" })).toEqual(waiting);
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({ _tag: "SigningIn", loginUrl: server.opened.at(-1)!.loginUrl });
+    expect(server.opened.length).toBe(openedBefore);
+    expect(server.joined.filter(({ requestId }) => requestId === server.opened.at(-1)!.requestId)).toHaveLength(2);
+    expect(await other.request({ _tag: "GetSession" })).toEqual(await host.request({ _tag: "GetSession" }));
     other.close();
   });
 
@@ -308,6 +342,36 @@ describe("signing in", () => {
   });
 });
 
+describe("two programs signing in at once", () => {
+  test("each its own process: one request names both, and both get the session once it is approved", { timeout: 60_000 }, async () => {
+    await host.request({ _tag: "SignOut" });
+    const openedBefore = server.opened.length;
+    const joinedBefore = server.joined.length;
+    const start = () => Bun.spawn(["bun", SIGN_IN_FIXTURE], { env: { ...process.env, HOME: scratch }, stdout: "pipe", stderr: "pipe" });
+    const programs = [start(), start()];
+    const request = await waitFor({
+      probe: async () => server.opened.length === openedBefore + 1 && server.joined.length === joinedBefore + 1 ? server.opened.at(-1) : undefined,
+      what: "one request, with the second program joined to it",
+    });
+    server.approved.add(request.requestId);
+    const finished = await Promise.all(programs.map(async (child) => ({
+      exitCode: await child.exited,
+      stdout: await new Response(child.stdout).text(),
+      stderr: await new Response(child.stderr).text(),
+    })));
+    expect(finished).toEqual([0, 1].map(() => ({
+      exitCode: 0,
+      stdout: `page ${request.loginUrl}\nsigned in jive_session_${request.requestId}\n`,
+      stderr: "",
+    })));
+    expect(server.opened.length).toBe(openedBefore + 1);
+    const fixtureName = path.basename(SIGN_IN_FIXTURE).replace(/\.ts$/, "");
+    expect(server.openedFor.at(-1)!.callers.map(({ programs: names }) => names.at(-1))).toEqual([fixtureName]);
+    expect(server.joined.at(-1)).toEqual({ requestId: request.requestId, caller: expect.objectContaining({ programs: expect.arrayContaining([fixtureName]) }) });
+    expect(storedSessionToken()).toBe(`jive_session_${request.requestId}`);
+  });
+});
+
 describe("the npm credential", () => {
   test("is ready to post once signed in", async () => {
     expect(await host.request({ _tag: "GetNpmConnectionReadiness" })).toEqual({ _tag: "Ready" });
@@ -323,7 +387,7 @@ describe("the npm credential", () => {
     const answer = await e.Effect.runPromise(e.pipe(
       e.Effect.gen(function* () {
         const daemon = yield* modules.extensionDaemon;
-        return yield* daemon.answerLine(JSON.stringify({ protocolVersion: PROTOCOL_VERSION, requestId: "r", request: { _tag: "GetNpmConnectionReadiness" } }));
+        return yield* daemon.answerLine({ line: JSON.stringify({ protocolVersion: PROTOCOL_VERSION, requestId: "r", request: { _tag: "GetNpmConnectionReadiness" } }), caller: TEST_CALLER });
       }),
       e.Effect.provide(daemonLayer(NpmCredentialPosterNotDecidedImpl.Layer)),
     ));
@@ -427,11 +491,11 @@ describe("the signing passkey", () => {
     const prepare = await e.Effect.runPromise(e.pipe(
       e.Effect.gen(function* () {
         const daemon = yield* modules.extensionDaemon;
-        return yield* daemon.answerLine(JSON.stringify({
+        return yield* daemon.answerLine({ caller: TEST_CALLER, line: JSON.stringify({
           protocolVersion: PROTOCOL_VERSION,
           requestId: "prepare-stored",
           request: { _tag: "PrepareSigningPasskey", repositoryOwner: "jive-sh", repositoryName: "stored-example" },
-        }));
+        }) });
       }),
       e.Effect.provide(daemonLayer(recordingPoster)),
     ));
@@ -443,7 +507,7 @@ describe("the signing passkey", () => {
     const answer = await e.Effect.runPromise(e.pipe(
       e.Effect.gen(function* () {
         const daemon = yield* modules.extensionDaemon;
-        return yield* daemon.answerLine(JSON.stringify({
+        return yield* daemon.answerLine({ caller: TEST_CALLER, line: JSON.stringify({
           protocolVersion: PROTOCOL_VERSION,
           requestId: "answer-stored",
           request: {
@@ -454,7 +518,7 @@ describe("the signing passkey", () => {
             origin,
             crossOrigin: false,
           },
-        }));
+        }) });
       }),
       e.Effect.provide(daemonLayer(recordingPoster)),
     ));

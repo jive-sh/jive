@@ -16,6 +16,14 @@ export const OpenedSignInRequestValue = e.Schema.Struct({
   approvalDevices: e.Schema.optionalKey(e.Schema.Number),
 });
 
+/** What `POST <site>/sign-in-requests` answers (`@jive-sh/server`'s `convex/http.ts`), plain JSON rather than Convex's encoding. */
+export const MachineOpenValue = e.Schema.Union([
+  e.Schema.Struct({ status: e.Schema.Literal("opened"), request: OpenedSignInRequestValue }),
+  e.Schema.Struct({ status: e.Schema.Literal("refused"), reason: e.Schema.String }),
+]);
+
+export const AddCallerValue = e.Schema.Literals(["added", "gone"]);
+
 export const ClaimValue = e.Schema.Union([
   e.Schema.Struct({ status: e.Schema.Literal("pending") }),
   e.Schema.Struct({ status: e.Schema.Literal("approved"), sessionToken: e.Schema.NonEmptyString, expiresAt: e.Schema.Number }),

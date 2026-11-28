@@ -40,11 +40,14 @@ export const DaemonRequest = e.Schema.Union([
    */
   e.Schema.TaggedStruct("GetSession", {}),
   /**
-   * Starts signing this machine in: the daemon opens a sign-in request and answers with the jive.sh page to open,
-   * where the person signs in with their passkey. The session then goes from Jive to the daemon, never through the
-   * extension.
+   * Starts signing this machine in for the program asking: the daemon opens a sign-in request signed with the
+   * machine's key, or adds that program to the request already waiting, and answers with the jive.sh page, where the
+   * person signs in with their passkey. The daemon names the program from the socket's peer process, never from the
+   * request. The session then goes from Jive to the daemon, never through the program.
    */
   e.Schema.TaggedStruct("StartSignIn", {}),
+  /** Answers when the sign-in under way ends: `SignInFinished` once the session is stored, or `SignInFailed`. */
+  e.Schema.TaggedStruct("AwaitSignIn", {}),
   /** Signs this machine out of Jive: the session `jive login` and the extension share is forgotten. */
   e.Schema.TaggedStruct("SignOut", {}),
   /** Whether a collected npm credential could be posted now; asked before anything on npm changes. */
@@ -83,8 +86,11 @@ export type RequestEnvelope = typeof RequestEnvelope.Type;
 
 export const SessionStatus = e.Schema.Union([
   e.Schema.TaggedStruct("SignedOut", {}),
-  /** Waiting for the person to sign in on `loginUrl` before `expiresAt` (ISO-8601). */
-  e.Schema.TaggedStruct("SigningIn", { loginUrl: e.Schema.String, expiresAt: e.Schema.String }),
+  /**
+   * Waiting for the person to sign in on `loginUrl` before `expiresAt` (ISO-8601); `approvalDevices` is how many of
+   * the account's phones were asked.
+   */
+  e.Schema.TaggedStruct("SigningIn", { loginUrl: e.Schema.String, expiresAt: e.Schema.String, approvalDevices: e.Schema.optionalKey(e.Schema.Number) }),
   /**
    * Signed in as `username`; `expiresAt` (ISO-8601) is when Jive ends this machine's session unless it is used before
    * then. `confirmedByServer` is false when the server at `unreachableServerUrl` could not be reached: `username` and
@@ -114,8 +120,10 @@ export type PostOutcome = typeof PostOutcome.Type;
 
 export const DaemonResponse = e.Schema.Union([
   ...SessionStatus.members,
-  /** Sign-in could not start, for example because Jive could not be reached. */
+  /** Sign-in could not start or did not finish, for example because Jive could not be reached or the request expired. */
   e.Schema.TaggedStruct("SignInFailed", { reason: e.Schema.String }),
+  /** The sign-in finished: the session is stored. */
+  e.Schema.TaggedStruct("SignInFinished", {}),
   ...NpmConnectionReadiness.members,
   ...PostOutcome.members,
   /** The request could not be handled: malformed, another protocol version, or a failure inside the daemon. */

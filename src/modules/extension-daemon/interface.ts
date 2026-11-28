@@ -1,4 +1,5 @@
 import type { EffectGen } from "effective-modules";
+import type { SignInCaller } from "@/modules/jive-server/interface";
 import type { ResponseEnvelope } from "./protocol";
 
 /**
@@ -8,6 +9,9 @@ import type { ResponseEnvelope } from "./protocol";
  * contents.
  */
 export interface IExtensionDaemon {
-  /** Answers one line from the socket. A line that isn't a request of this protocol version is refused. */
-  answerLine(line: string): EffectGen<ResponseEnvelope>;
+  /**
+   * Answers one line from the socket. `caller` is the program on the other end, read from the socket's peer process
+   * (`modules/caller-chain`); a sign-in it starts names it. A line that isn't a request of this protocol version is refused.
+   */
+  answerLine(input: { readonly line: string; readonly caller: SignInCaller }): EffectGen<ResponseEnvelope>;
 }

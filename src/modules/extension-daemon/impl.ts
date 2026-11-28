@@ -4,10 +4,10 @@ import { OSPlatform } from "jive-abstract-library";
 import * as path from "node:path";
 import { jiveHomePaths } from "@/jive-home";
 import { modules } from "@/modules";
-import { jiveServerFailure, type JiveServerError, type OpenedSignInRequest, type Session } from "@/modules/jive-server/interface";
+import { jiveServerFailure, type JiveServerError, type OpenedSignInRequest, type SignInCaller } from "@/modules/jive-server/interface";
 import { readBase64, readBase64Url, bytesToBase64 } from "@/modules/security-key/bytes";
 import { buildCeremony } from "@/modules/security-key/webauthn";
-import { SignedInAccount, SignInFailed } from "@/modules/session/interface";
+import { SignedInAccount } from "@/modules/session/interface";
 import type { IExtensionDaemon } from "./interface";
 import { PROTOCOL_VERSION, RequestEnvelope, type DaemonRequest, type DaemonResponse, type ResponseEnvelope } from "./protocol";
 
@@ -27,26 +27,19 @@ interface PreparedRepository {
 
 export class ExtensionDaemonImpl extends implementing(modules.extensionDaemon).uses(
   modules.session,
-  modules.extensionSignIn,
+  modules.machineSignIn,
   modules.npmCredentialPoster,
   modules.jiveServer,
   OSPlatform,
   e.FileSystem.FileSystem,
 ) implements IExtensionDaemon {
-  /** The sign-in the extension started, claiming in the background until it ends or another replaces it. */
-  private readonly signInFiber = e.Ref.makeUnsafe(e.Option.none<e.Fiber.Fiber<Session, SignInFailed>>());
   /**
    * The repository whose signing passkey answers npm, also stored in the jive home so a restart keeps it. The page
    * does not name one. Empty means refuse, and the page keeps the browser's own prompt.
    */
   private readonly preparedRepository = e.Ref.makeUnsafe(e.Option.none<PreparedRepository>());
-  /**
-   * One start or sign-out at a time: another one replacing that sign-in's fiber mid-start would interrupt the start
-   * waiting on it. Several connections can each send one.
-   */
-  private readonly startingOrSigningOut = e.Semaphore.makeUnsafe(1);
 
-  *answerLine(line: string): EffectGen<ResponseEnvelope> {
+  *answerLine({ line, caller }: { readonly line: string; readonly caller: SignInCaller }): EffectGen<ResponseEnvelope> {
     // A decode error would quote the line, which can hold a token or secret, so none is kept.
     const maybeEnvelope = decodeRequestLine(line);
     if (e.Option.isNone(maybeEnvelope)) {
@@ -60,7 +53,7 @@ export class ExtensionDaemonImpl extends implementing(modules.extensionDaemon).u
     return {
       requestId,
       response: yield* e.pipe(
-        e.Effect.gen(() => this.answer(request)),
+        e.Effect.gen(() => this.answer({ request, caller })),
         // A defect answers this request only; the connection keeps answering the ones after it.
         e.Effect.catchCause((cause) => e.pipe(
           e.Effect.logError(`Could not answer the extension's ${request._tag}: ${e.Cause.pretty(cause)}`),
@@ -70,9 +63,8 @@ export class ExtensionDaemonImpl extends implementing(modules.extensionDaemon).u
     };
   }
 
-  private *answer(request: DaemonRequest): EffectGen<DaemonResponse> {
-    const { session, extensionSignIn, npmCredentialPoster } = this.dependencies;
-    const self = this;
+  private *answer({ request, caller }: { readonly request: DaemonRequest; readonly caller: SignInCaller }): EffectGen<DaemonResponse> {
+    const { session, machineSignIn, npmCredentialPoster } = this.dependencies;
     switch (request._tag) {
       case "GetSession": {
         const account = yield* e.Effect.result(e.Effect.gen(() => session.whoIsSignedIn()));
@@ -90,7 +82,7 @@ export class ExtensionDaemonImpl extends implementing(modules.extensionDaemon).u
             confirmedByServer: false,
             unreachableServerUrl: unreachableUrl,
           }),
-          SignedOut: () => e.Effect.map(e.Effect.gen(() => extensionSignIn.waiting()), e.Option.match({
+          SignedOut: () => e.Effect.map(e.Effect.gen(() => machineSignIn.waiting()), e.Option.match({
             onNone: (): DaemonResponse => ({ _tag: "SignedOut" }),
             onSome: (waiting): DaemonResponse => signingIn(waiting),
           })),
@@ -98,16 +90,19 @@ export class ExtensionDaemonImpl extends implementing(modules.extensionDaemon).u
       }
       case "StartSignIn":
         return yield* e.pipe(
-          e.Effect.gen(() => this.startSignIn()),
-          e.Semaphore.withPermits(this.startingOrSigningOut, 1),
+          e.Effect.gen(() => machineSignIn.startOrJoin(caller)),
           e.Effect.map(signingIn),
           e.Effect.catchTag("SignInFailed", ({ reason }) => e.Effect.succeed<DaemonResponse>({ _tag: "SignInFailed", reason })),
         );
+      case "AwaitSignIn":
+        return yield* e.pipe(
+          e.Effect.gen(() => machineSignIn.awaitEnd()),
+          e.Effect.as<DaemonResponse>({ _tag: "SignInFinished" }),
+          e.Effect.catchTag("SignInFailed", ({ reason }) => e.Effect.succeed<DaemonResponse>({ _tag: "SignInFailed", reason })),
+        );
       case "SignOut":
-        yield* e.Semaphore.withPermits(this.startingOrSigningOut, 1)(e.Effect.gen(function* () {
-          yield* self.cancelSignIn();
-          yield* session.forget();
-        }));
+        yield* machineSignIn.cancel();
+        yield* session.forget();
         return { _tag: "SignedOut" };
       case "GetNpmConnectionReadiness": {
         if (e.Option.isNone(yield* session.current())) return { _tag: "NotReady", reason: "this machine is not signed in to Jive" };
@@ -193,29 +188,6 @@ export class ExtensionDaemonImpl extends implementing(modules.extensionDaemon).u
     return { _tag: "SecurityKeyAnswer", credentialId: credential, clientDataJSON, authenticatorData, signature, attestationObject: bytesToBase64(ceremony.attestationObject) };
   }
 
-  /**
-   * Signs in through jive's session, replacing a sign-in already waiting, and answers once the request is open. The
-   * session keeps claiming in the background and stores the session when the person approves; the extension sees it
-   * on its next `GetSession`.
-   */
-  private *startSignIn(): EffectGen<OpenedSignInRequest, SignInFailed> {
-    const { session, extensionSignIn } = this.dependencies;
-    yield* this.cancelSignIn();
-    yield* extensionSignIn.expect();
-    const fiber = yield* e.Effect.forkDetach(e.pipe(
-      e.Effect.gen(() => session.signIn()),
-      e.Effect.tap(({ expiresAt }) => e.Effect.log(`Signed in to Jive until ${isoTime(expiresAt)}`)),
-      e.Effect.tapError(({ reason }) => e.Effect.logWarning(`The extension's sign-in did not finish: ${reason}`)),
-      e.Effect.ensuring(e.Effect.gen(() => extensionSignIn.ended())),
-    ));
-    yield* e.Ref.set(this.signInFiber, e.Option.some(fiber));
-    // The request opens before the session claims it, so the sign-in ends first only when it could not open one.
-    return yield* e.Effect.raceFirst(
-      e.Effect.gen(() => extensionSignIn.awaitOpened()),
-      e.pipe(e.Fiber.join(fiber), e.Effect.andThen(e.Effect.fail(new SignInFailed({ reason: "the sign-in ended before it opened a request" })))),
-    );
-  }
-
   /** This process's repository, or the one stored for the next start of the daemon. */
   private *prepared(): EffectGen<e.Option.Option<PreparedRepository>> {
     const current = yield* e.Ref.get(this.preparedRepository);
@@ -241,11 +213,6 @@ export class ExtensionDaemonImpl extends implementing(modules.extensionDaemon).u
   private *paths() {
     return jiveHomePaths(yield* this.dependencies.OSPlatform.getHomeDirectory());
   }
-
-  private *cancelSignIn(): EffectGen<void> {
-    const maybeFiber = yield* e.Ref.getAndSet(this.signInFiber, e.Option.none());
-    if (e.Option.isSome(maybeFiber)) yield* e.Fiber.interrupt(maybeFiber.value);
-  }
 }
 
 const refused = (error: JiveServerError): DaemonResponse => {
@@ -255,5 +222,5 @@ const refused = (error: JiveServerError): DaemonResponse => {
 };
 
 function signingIn(request: OpenedSignInRequest): DaemonResponse {
-  return { _tag: "SigningIn", loginUrl: request.loginUrl, expiresAt: isoTime(request.expiresAt) };
+  return { _tag: "SigningIn", loginUrl: request.loginUrl, expiresAt: isoTime(request.expiresAt), approvalDevices: request.approvalDevices };
 }

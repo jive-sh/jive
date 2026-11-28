@@ -6,15 +6,16 @@ import type { IBun } from "./bun/interface";
 import type { ICommandEcho } from "./command-echo/interface";
 import type { IDaemonClient } from "./daemon-client/interface";
 import type { IExtensionDaemon } from "./extension-daemon/interface";
-import type { IExtensionSignIn } from "./extension-sign-in/interface";
 import type { IGit } from "./git/interface";
 import type { IGitHub } from "./github/interface";
 import type { IJiveServer } from "./jive-server/interface";
+import type { IMachineIdentity } from "./machine-identity/interface";
+import type { IMachineSignIn } from "./machine-sign-in/interface";
 import type { INpmCredentialPoster } from "./npm-credential-poster/interface";
 import type { IPipelineIdentity } from "./pipeline-identity/interface";
 import type { IPrompt } from "./prompt/interface";
 import type { IProvisioning } from "./provisioning/interface";
-import type { ISession, ISignInPrompt } from "./session/interface";
+import type { ISession, ISignInPrompt, ISignInRoute } from "./session/interface";
 import type { ISigningAgent } from "./signing-agent/interface";
 import type { IToolState } from "./tool-state/interface";
 
@@ -26,16 +27,18 @@ export enum Module {
   commandEcho = "commandEcho",
   daemonClient = "daemonClient",
   extensionDaemon = "extensionDaemon",
-  extensionSignIn = "extensionSignIn",
   git = "git",
   github = "github",
   jiveServer = "jiveServer",
+  machineIdentity = "machineIdentity",
+  machineSignIn = "machineSignIn",
   npmCredentialPoster = "npmCredentialPoster",
   pipelineIdentity = "pipelineIdentity",
   prompt = "prompt",
   provisioning = "provisioning",
   session = "session",
   signInPrompt = "signInPrompt",
+  signInRoute = "signInRoute",
   signingAgent = "signingAgent",
   toolState = "toolState",
 }
@@ -48,16 +51,18 @@ export const modules = interfaces<Module, {
   [Module.commandEcho]: ICommandEcho;
   [Module.daemonClient]: IDaemonClient;
   [Module.extensionDaemon]: IExtensionDaemon;
-  [Module.extensionSignIn]: IExtensionSignIn;
   [Module.git]: IGit;
   [Module.github]: IGitHub;
   [Module.jiveServer]: IJiveServer;
+  [Module.machineIdentity]: IMachineIdentity;
+  [Module.machineSignIn]: IMachineSignIn;
   [Module.npmCredentialPoster]: INpmCredentialPoster;
   [Module.pipelineIdentity]: IPipelineIdentity;
   [Module.prompt]: IPrompt;
   [Module.provisioning]: IProvisioning;
   [Module.session]: ISession;
   [Module.signInPrompt]: ISignInPrompt;
+  [Module.signInRoute]: ISignInRoute;
   [Module.signingAgent]: ISigningAgent;
   [Module.toolState]: IToolState;
 }>(Module);

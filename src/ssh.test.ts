@@ -10,13 +10,14 @@ import { jiveHomePaths } from "@/jive-home";
 import { AccountKeyImpl } from "@/modules/account-key/impl";
 import { ExtensionDaemonImpl } from "@/modules/extension-daemon/impl";
 import { serveExtensionDaemon } from "@/modules/extension-daemon/socket-server";
-import { ExtensionSignInImpl } from "@/modules/extension-sign-in/impl";
 import { JiveServerImpl } from "@/modules/jive-server/impl";
+import { MachineSignInImpl } from "@/modules/machine-sign-in/impl";
 import { JiveServerUnreachable, type Session } from "@/modules/jive-server/interface";
 import { NpmCredentialPosterNotDecidedImpl } from "@/modules/npm-credential-poster/not-decided";
 import { GitHubActionsIdentityImpl } from "@/modules/pipeline-identity/impl";
 import { SessionImpl } from "@/modules/session/impl";
-import { TerminalSignInPromptImpl } from "@/modules/session/sign-in-prompt";
+import { SignInFailed } from "@/modules/session/interface";
+import { InsideDaemonSignInRouteImpl } from "@/modules/session/sign-in-route";
 import { SigningAgentImpl } from "@/modules/signing-agent/impl";
 import { sshString } from "@/modules/signing-agent/protocol";
 import { serveSigningAgent } from "@/modules/signing-agent/socket-server";
@@ -63,16 +64,22 @@ const fakeServer = JiveServerImpl.mockLayer({
 });
 /** A sign-in would show the person a page; no case here may start one. */
 let signInsShown = 0;
-const countingPrompt = TerminalSignInPromptImpl.mockLayer({ *show() { signInsShown += 1; } });
+const countingSignIn = MachineSignInImpl.mockLayer({
+  *waiting() { return e.Option.none(); },
+  *startOrJoin() {
+    signInsShown += 1;
+    return yield* new SignInFailed({ reason: "no case here signs in" });
+  },
+});
 
 const daemonLayer = e.pipe(
   SigningAgentImpl.Layer,
   e.Layer.provideMerge(ExtensionDaemonImpl.Layer),
   e.Layer.provideMerge(AccountKeyImpl.Layer),
   e.Layer.provideMerge(NpmCredentialPosterNotDecidedImpl.Layer),
+  e.Layer.provideMerge(countingSignIn),
   e.Layer.provideMerge(SessionImpl.Layer),
-  e.Layer.provideMerge(countingPrompt),
-  e.Layer.provideMerge(ExtensionSignInImpl.Layer),
+  e.Layer.provideMerge(InsideDaemonSignInRouteImpl.Layer),
   e.Layer.provideMerge(GitHubActionsIdentityImpl.mockLayer({})),
   e.Layer.provideMerge(fakeServer),
   // Bun reads HOME once at startup, so the scratch home reaches the daemon through the platform it asks.

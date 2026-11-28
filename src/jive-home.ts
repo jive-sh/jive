@@ -21,6 +21,8 @@ export const jiveHomePaths = (homeDirectory: string) => {
      * restart. The page does not name a repository, so this is the only copy.
      */
     signingPasskeyRepositoryFile: path.join(jiveHome, "signing-passkey-repository.json"),
+    /** This machine's P-256 key, which proves a sign-in request comes from this machine (`modules/machine-identity`). Owner-only. */
+    machineKeyFile: path.join(jiveHome, "machine-key.json"),
     /** The account's OpenSSH public key, as the server returned it; the private key never leaves the server. */
     accountPublicKeyFile: path.join(jiveHome, "ssh", "account.pub"),
     agentSocket: path.join(jiveHome, "signing-agent.sock"),

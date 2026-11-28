@@ -13,7 +13,7 @@ import type { Session } from "@/modules/jive-server/interface";
 import { ModulesLayer } from "@/modules/runtime";
 import { ExtensionDaemonImpl } from "@/modules/extension-daemon/impl";
 import { serveExtensionDaemon } from "@/modules/extension-daemon/socket-server";
-import { ExtensionSignInImpl } from "@/modules/extension-sign-in/impl";
+import { MachineSignInImpl } from "@/modules/machine-sign-in/impl";
 import { NpmCredentialPosterNotDecidedImpl } from "@/modules/npm-credential-poster/not-decided";
 import { TerminalPromptImpl } from "@/modules/prompt/impl";
 import { SessionImpl } from "@/modules/session/impl";
@@ -217,7 +217,7 @@ beforeAll(async () => {
     e.Layer.provideMerge(ExtensionDaemonImpl.Layer),
     e.Layer.provideMerge(AccountKeyImpl.Layer),
     e.Layer.provideMerge(NpmCredentialPosterNotDecidedImpl.Layer),
-    e.Layer.provideMerge(ExtensionSignInImpl.Layer),
+    e.Layer.provideMerge(MachineSignInImpl.mockLayer({ *waiting() { return e.Option.none(); } })),
     e.Layer.provideMerge(signedIn),
     e.Layer.provideMerge(fakeServer),
     e.Layer.provideMerge(scratchHost),

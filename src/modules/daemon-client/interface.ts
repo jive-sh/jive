@@ -1,6 +1,7 @@
 import * as e from "effect";
 import type { EffectGen } from "effective-modules";
 import type { SessionStatus } from "@/modules/extension-daemon/protocol";
+import type { SignInFailed, SignInPage } from "@/modules/session/interface";
 
 /**
  * Asks `jive-daemon` on its API socket (`~/.jive/jive-daemon.sock`), for the commands that run outside it:
@@ -20,4 +21,11 @@ export class DaemonRefused extends e.Data.TaggedError("DaemonRefused")<{ readonl
 export interface IDaemonClient {
   /** The daemon's `GetSession` answer: signed out, waiting for a sign-in, or signed in and as whom. */
   getSession(): EffectGen<SessionStatus, DaemonNotRunning | DaemonDidNotAnswer | DaemonRefused>;
+  /**
+   * Asks the daemon to sign this machine in for this program (`StartSignIn`): it opens the request, or adds this
+   * program to the one waiting. Answers with the page to approve it on and when it expires (epoch milliseconds).
+   */
+  startSignIn(): EffectGen<SignInPage & { readonly expiresAt: number }, DaemonNotRunning | DaemonDidNotAnswer | SignInFailed>;
+  /** Waits, until `until` (epoch milliseconds) and a little after, for the daemon's sign-in to store its session (`AwaitSignIn`). */
+  awaitSignIn(input: { readonly until: number }): EffectGen<void, DaemonNotRunning | DaemonDidNotAnswer | SignInFailed>;
 }

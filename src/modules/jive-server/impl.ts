@@ -3,12 +3,13 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { implementing, type EffectGen } from "effective-modules";
 import { getFunctionName, type FunctionArgs, type FunctionReference } from "convex/server";
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
-import { api, convexUrl } from "@jive-sh/server-client";
+import { api, convexSiteUrl, convexUrl } from "@jive-sh/server-client";
 import { modules } from "@/modules";
 import {
   AccountValue,
+  AddCallerValue,
   ClaimValue,
-  OpenedSignInRequestValue,
+  MachineOpenValue,
   PipelineSignInValue,
   ProvisionValue,
   PublicKeyValue,
@@ -17,7 +18,8 @@ import {
   SigningPasskeyValue,
 } from "./contract";
 import { bytesToBase64, readBase64 } from "@/modules/security-key/bytes";
-import { JiveServerRefused, JiveServerUnreachable, ProvisionAnswer, SignInClaim, type IJiveServer, type JiveServerError, type OpenedSignInRequest, type Session, type SessionAccount } from "./interface";
+import type { MachineDescription } from "@/modules/machine-identity/interface";
+import { JiveServerRefused, JiveServerUnreachable, ProvisionAnswer, SignInClaim, type IJiveServer, type JiveServerError, type OpenedSignInRequest, type Session, type SessionAccount, type SignInCaller } from "./interface";
 
 /**
  * Calls the server through Convex's HTTP API (`POST <deployment>/api/<query|action>`) in `convex_encoded_json`, the
@@ -34,14 +36,47 @@ const ConvexAnswer = e.Schema.Union([
 ]);
 
 export class JiveServerImpl extends implementing(modules.jiveServer).uses(HttpClient.HttpClient) implements IJiveServer {
-  *openSignInRequest({ previousSession }: { readonly previousSession: e.Option.Option<Session> }): EffectGen<OpenedSignInRequest, JiveServerError> {
-    const args = e.Option.match(previousSession, { onNone: () => ({}), onSome: (session) => ({ previousSessionToken: session.sessionToken }) });
-    const opened = yield* this.call("action", api.signInRequests.open, args, OpenedSignInRequestValue);
+  *openMachineSignInRequest(input: {
+    readonly previousSession: e.Option.Option<Session>;
+    readonly machine: MachineDescription;
+    readonly signedAt: number;
+    readonly signature: string;
+    readonly callers: ReadonlyArray<SignInCaller>;
+  }): EffectGen<OpenedSignInRequest, JiveServerError> {
+    const call = "POST /sign-in-requests";
+    const url = `${convexSiteUrl}/sign-in-requests`;
+    const client = this.getDependency(HttpClient.HttpClient);
+    const body = {
+      ...e.Option.match(input.previousSession, { onNone: () => ({}), onSome: (session) => ({ previousSessionToken: session.sessionToken }) }),
+      machine: input.machine,
+      signedAt: input.signedAt,
+      signature: input.signature,
+      callers: input.callers,
+    };
+    const answer = yield* e.pipe(
+      client.execute(e.pipe(HttpClientRequest.post(url), HttpClientRequest.bodyJsonUnsafe(body))),
+      // A refusal answers 403 with its reason in the same shape, so the status is not checked here.
+      e.Effect.flatMap(HttpClientResponse.schemaJson(e.Schema.Struct({ body: MachineOpenValue }))),
+      // Neither error quotes the body, which holds the previous session token.
+      e.Effect.catchTag("HttpClientError", (error) => e.Effect.fail(new JiveServerUnreachable({ call, url, transportFailure: error.reason._tag }))),
+      e.Effect.catchTag("SchemaError", () => e.Effect.fail(new JiveServerRefused({ call, reason: `${url} answered in an unexpected shape` }))),
+    );
+    if (answer.body.status === "refused") return yield* new JiveServerRefused({ call, reason: answer.body.reason });
+    const opened = answer.body.request;
     return { ...opened, approvalDevices: opened.approvalDevices !== undefined ? opened.approvalDevices : 0 };
   }
 
-  *claimSignInRequest(request: OpenedSignInRequest): EffectGen<SignInClaim, JiveServerError> {
-    const claim = yield* this.call("action", api.signInRequests.claim, { requestId: request.requestId, claimSecret: request.claimSecret }, ClaimValue);
+  *addSignInCaller({ request, caller }: { readonly request: OpenedSignInRequest; readonly caller: SignInCaller }): EffectGen<boolean, JiveServerError> {
+    const added = yield* this.call("action", api.signInRequests.addCaller, {
+      requestId: request.requestId,
+      claimSecret: request.claimSecret,
+      caller: { programs: [...caller.programs] },
+    }, AddCallerValue);
+    return added === "added";
+  }
+
+  *claimSignInRequest({ request, signature }: { readonly request: OpenedSignInRequest; readonly signature: string }): EffectGen<SignInClaim, JiveServerError> {
+    const claim = yield* this.call("action", api.signInRequests.claim, { requestId: request.requestId, claimSecret: request.claimSecret, signature }, ClaimValue);
     switch (claim.status) {
       case "pending": return SignInClaim.Pending();
       case "gone": return SignInClaim.Gone();

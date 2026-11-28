@@ -1,9 +1,26 @@
 import * as e from "effect";
 import { chmodSync, rmSync } from "node:fs";
 import { modules, type Module } from "@/modules";
+import { resolveCallerChainUnix } from "@/modules/caller-chain/peer-process";
+import { programNamesOf } from "@/modules/caller-chain/program-names";
+import type { SignInCaller } from "@/modules/jive-server/interface";
 import { ResponseEnvelope } from "./protocol";
 
 const encodeResponseLine = e.Schema.encodeSync(e.Schema.fromJsonString(ResponseEnvelope));
+
+/**
+ * The program on the socket's other end and its ancestors, by name; a chain the kernel won't give is named as such.
+ * Bun's socket carries its file descriptor as `fd`, which its type declarations leave out.
+ */
+function callerOf(socket: object): SignInCaller {
+  const fd: unknown = Reflect.get(socket, "fd");
+  if (typeof fd !== "number") return { programs: ["an unidentified program"] };
+  try {
+    return { programs: programNamesOf(resolveCallerChainUnix(fd).map(({ command }) => command)) };
+  } catch {
+    return { programs: ["an unidentified program"] };
+  }
+}
 
 /**
  * Serves the extension daemon on a unix socket until the scope closes, then removes the socket: newline-delimited
@@ -15,7 +32,7 @@ export const serveExtensionDaemon = (socketPath: string): e.Effect.Effect<void, 
   e.Effect.gen(function* () {
     const daemon = yield* modules.extensionDaemon;
     const context = yield* e.Effect.context<never>();
-    const answer = (line: string) => e.Effect.runPromiseWith(context)(e.Effect.map(e.Effect.gen(() => daemon.answerLine(line)), encodeResponseLine));
+    const answer = (input: { readonly line: string; readonly caller: SignInCaller }) => e.Effect.runPromiseWith(context)(e.Effect.map(e.Effect.gen(() => daemon.answerLine(input)), encodeResponseLine));
     // The kernel's limit on a unix socket path, terminator included (`sun_path`): 104 bytes on macOS, 108 on Linux.
     const limit = process.platform === "darwin" ? 104 : 108;
     if (Buffer.byteLength(socketPath) >= limit) {
@@ -26,11 +43,12 @@ export const serveExtensionDaemon = (socketPath: string): e.Effect.Effect<void, 
       e.Effect.try({
         try: () => {
           rmSync(socketPath, { force: true });
-          const listener = Bun.listen<{ decoder: TextDecoder; received: string; answered: Promise<void> }>({
+          const listener = Bun.listen<{ decoder: TextDecoder; received: string; answered: Promise<void>; caller: SignInCaller }>({
             unix: socketPath,
             socket: {
               open(socket) {
-                socket.data = { decoder: new TextDecoder(), received: "", answered: Promise.resolve() };
+                // Read at connect, while the peer is surely alive, from the kernel's record of who connected.
+                socket.data = { decoder: new TextDecoder(), received: "", answered: Promise.resolve(), caller: callerOf(socket) };
               },
               data(socket, chunk) {
                 // Streaming, so a character split across chunks decodes whole.
@@ -41,7 +59,7 @@ export const serveExtensionDaemon = (socketPath: string): e.Effect.Effect<void, 
                   socket.data.received = socket.data.received.slice(newline + 1);
                   if (line === "") continue;
                   socket.data.answered = socket.data.answered.then(async () => {
-                    socket.write(`${await answer(line)}\n`);
+                    socket.write(`${await answer({ line, caller: socket.data.caller })}\n`);
                   });
                 }
               },

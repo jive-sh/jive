@@ -113,7 +113,7 @@ you, a scheduled task on Windows).
 
 | Command | What it does |
 | --- | --- |
-| `jive login` | Opens `https://jive.sh/login?request=…`, where you sign in with your jive.sh passkey, and waits; then prints the account you signed in as, saves its handle beside the session, and fetches your account's public key (`ssh:publicKey`) into `~/.jive/ssh/account.pub`. |
+| `jive login` | Asks `jive-daemon` to sign this machine in (see Signing in), opens `https://jive.sh/login?request=…`, where you sign in with your jive.sh passkey, and waits for the daemon to store the session; then prints the account you signed in as, saves its handle beside the session, and fetches your account's public key (`ssh:publicKey`) into `~/.jive/ssh/account.pub`. Two programs signing in at once get one request, and one prompt on your phone. |
 | `jive login --cicd` | In a GitHub Actions job with `id-token: write`: exchanges the job's ID token for a session of its pipeline. |
 | `jive whoami` | Prints the handle of the Jive account this machine is signed in as, as `jive-daemon` reports it. When the server can't be reached it prints the handle saved at the last check, followed by `(not confirmed: can't reach Jive's server)`. |
 | `jive init` | Sets up the workspace: the nearest git repository from the current folder up, at any nesting level (a submodule is a repository of its own), found by the nearest folder holding `.git`; in a folder in no repository, it makes that folder a new repository on branch `main` (`git init -b main`) first. The only files it changes are the `.gitmodules` already there, at every depth, whose GitHub URLs it rewrites to `https://github.com/<owner>/<repo>` in the working tree (a repository with none gets none); nothing is asked except the git identity below. It takes the workspace's git identity from the root's own git config (`user.name`, `user.email`), saying which it used; when the root has none it asks for a name and an email in the terminal, and with no terminal it exits 1 changing nothing, saying to run it in one (see Git identity). Then it rewrites those `.gitmodules` URLs, syncs them, checks out every submodule not yet checked out, at every depth, fetching over SSH through `jive-ssh` (one already checked out keeps its HEAD), and configures the root, every submodule and every untracked repository inside it: `user.name` and `user.email` (the workspace's git identity), `gpg.format=ssh`, `user.signingKey` (the account key's public half), `commit.gpgSign=true`, `gpg.ssh.program=jive-ssh-sign`, `core.sshCommand=jive-ssh`, `ssh.variant=ssh`, and `url."git@github.com:".insteadOf "https://github.com/"` so https URLs fetch and push over SSH. Then it links the packages among those repositories with each other (see Workspace links). Nothing else, and no GitHub sign-in. Safe to run again: a submodule already checked out keeps its HEAD, and the links are made again. |
@@ -215,6 +215,36 @@ range (a pin of `0.3.6` against a checkout at `0.3.7` installs the registry copy
 member then writes the root lockfile instead of the member's own. `bun link` registers each package in bun's global
 folder, where it replaces any globally installed package of the same name (a checkout of jive would replace the jive
 you run), and its links are undone by the same `bun install`.
+
+## Signing in
+
+Only `jive-daemon` signs a machine in to Jive. `jive login`, a `jive` command that needs a session, the Jive browser
+extension and any program that runs one of them ask the daemon on its socket, `~/.jive/jive-daemon.sock`
+(`StartSignIn`), and the daemon:
+
+1. Reads which program asked from the socket itself: the kernel gives the connecting process (`SO_PEERCRED` on Linux,
+   `LOCAL_PEERPID` on macOS), and the daemon walks up its parents and keeps each one's program name, plus its first
+   argument when that is a plain word (`agenticloud-connect › jive login`). Nothing else of a command line leaves
+   the machine ([`src/modules/caller-chain`](src/modules/caller-chain)).
+2. When a request is already waiting, adds that program to it on the server and answers with the same page, so the
+   person gets one prompt naming every program. Otherwise it opens a request at `@jive-sh/server`'s
+   `POST /sign-in-requests`, naming the machine by its key and the name its operating system gives it, and signing the
+   request with the machine's key. It names the session it last held, even an expired one, so the server pushes the
+   request to that account's phones.
+3. Claims the request every 2 seconds, each claim signed with the machine's key, until the person approves it with
+   their passkey; then stores the session in `~/.jive/session.json`. The program that asked waits for that
+   (`AwaitSignIn`) and reads the session from the file.
+
+The phone's notification and the approval page show the programs, the machine's name, whether the account trusts the
+machine, and the address the request came from. "Trust this machine" on the approval page names the machine and marks
+it trusted; trust is only a label, and every sign-in still needs the passkey.
+
+**The machine's key** is an ECDSA P-256 key the daemon creates the first time it signs in and keeps in
+`~/.jive/machine-key.json` (owner-only) ([`src/modules/machine-identity`](src/modules/machine-identity)). Its private
+half never leaves the machine, so only that machine can claim a session its request opened. *Planned:* the Secure
+Enclave on a Mac and a TPM elsewhere, where the private half can't be read even by the daemon.
+
+A daemon restart drops a sign-in still waiting, because the claim secret is kept in memory only.
 
 ## How signing works
 
@@ -348,8 +378,9 @@ mismatch is refused with which side to upgrade.
 
 | Request | Response |
 | --- | --- |
-| `GetSession` | `SignedOut`, `SigningIn { loginUrl, expiresAt }`, `SignedIn { username, expiresAt, confirmedByServer, unreachableServerUrl }`, or `Failed { message }` when the server refused to check the session. `confirmedByServer` is false when the server could not be reached: `username` and `expiresAt` are then the ones saved at the last check, and `unreachableServerUrl` names the server. `jive-ssh`, `jive-ssh-sign` and `jive whoami` send it on the daemon socket directly. |
-| `StartSignIn` | `SigningIn`, or `SignInFailed { reason }` when Jive can't be reached |
+| `GetSession` | `SignedOut`, `SigningIn { loginUrl, expiresAt, approvalDevices }`, `SignedIn { username, expiresAt, confirmedByServer, unreachableServerUrl }`, or `Failed { message }` when the server refused to check the session. `confirmedByServer` is false when the server could not be reached: `username` and `expiresAt` are then the ones saved at the last check, and `unreachableServerUrl` names the server. `jive-ssh`, `jive-ssh-sign` and `jive whoami` send it on the daemon socket directly. |
+| `StartSignIn` | `SigningIn`, or `SignInFailed { reason }` when Jive can't be reached. Opens this machine's sign-in request, or adds the asking program to the one waiting (see Signing in). `jive login` sends it on the daemon socket directly. |
+| `AwaitSignIn` | `SignInFinished` once the sign-in under way stored its session, or `SignInFailed { reason }`. |
 | `SignOut` | `SignedOut`. Forgets this machine's session, so `jive` signs in again too. |
 | `GetNpmConnectionReadiness` | `Ready` or `NotReady { reason }`. The extension asks this before it changes anything on npm. |
 | `PostNpmCredential { credential: { npmUser, token } }` | `Posted` or `Refused { reason }` |
@@ -360,15 +391,13 @@ No response carries the session token, the claim secret or a credential.
 
 ### How the extension signs in
 
-1. The extension's Sign in button sends `StartSignIn`.
-2. The daemon signs in the way `jive login` does: it opens a sign-in request on `@jive-sh/server` and answers with its
-   page, `https://jive.sh/login?request=…`.
+1. The extension's Sign in button sends `StartSignIn`, through the native host, so the request names
+   `jive-native-host` and the browser that started it.
+2. The daemon signs in as for any program (see Signing in) and answers with the page, `https://jive.sh/login?request=…`.
 3. The extension opens the page, and the person signs in there with their jive.sh passkey.
-4. The daemon claims the request every 2 seconds. Once the person has approved it, the claim returns a session, which
-   the daemon stores in `~/.jive/session.json`. The extension sees `SignedIn` on its next `GetSession`.
+4. Once the daemon has stored the session, the extension sees `SignedIn` on its next `GetSession`.
 
-A daemon restart drops a sign-in still waiting, because the claim secret is kept in memory only. A stored session
-survives restarts until it expires.
+A stored session survives restarts until it expires.
 
 **Not decided yet: who accepts the npm credential.** Either jive.sh or `@jive-sh/server`, which holds npm connections,
 could. Posting is behind `INpmCredentialPoster` ([`src/modules/npm-credential-poster/interface.ts`](src/modules/npm-credential-poster/interface.ts)).
@@ -388,6 +417,6 @@ against a fake server; `src/workspace-cutover.test.ts` runs `jive init` on a scr
 signs a commit through the agent and pushes it over SSH to a local sshd. The extension daemon's tests
 ([`src/modules/extension-daemon/extension-daemon.test.ts`](src/modules/extension-daemon/extension-daemon.test.ts)) run the
 daemon against a fake server and speak Chrome's framing to the native host started from the manifest the daemon
-wrote: sign-in end to end into `~/.jive/session.json`, a session `jive login` stored, a restart, posting, sign-out,
+wrote: sign-in end to end into `~/.jive/session.json` (the request signed with the machine's key and naming the program, two sign-ins sharing one request, and two separate `jive login`-style processes getting one request), a session `jive login` stored, a restart, posting, sign-out,
 protocol refusal, a second daemon standing down, and the native host reporting a stopped daemon. Not covered by tests:
 registration with the OS service manager, the compiled binary under a real Chrome, Linux, and Windows.

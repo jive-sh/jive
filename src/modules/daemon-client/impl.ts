@@ -5,10 +5,13 @@ import { createConnection } from "node:net";
 import { jiveHomePaths } from "@/jive-home";
 import { modules } from "@/modules";
 import { PROTOCOL_VERSION, ResponseEnvelope, encodeRequestLine, type DaemonRequest, type DaemonResponse, type SessionStatus } from "@/modules/extension-daemon/protocol";
+import { SignInFailed, type SignInPage } from "@/modules/session/interface";
 import { DaemonDidNotAnswer, DaemonNotRunning, DaemonRefused, type IDaemonClient } from "./interface";
 
 /** Longer than the daemon's own 5-second limit on asking the server, so an offline answer arrives first. */
 const ANSWER_TIMEOUT = e.Duration.seconds(15);
+/** How long past a sign-in request's expiry `AwaitSignIn` waits for the daemon's answer, which comes at the expiry. */
+const AWAIT_MARGIN_MS = 30_000;
 
 const decodeResponseLine = e.Schema.decodeUnknownOption(e.Schema.fromJsonString(ResponseEnvelope));
 
@@ -27,8 +30,36 @@ export class DaemonClientImpl extends implementing(modules.daemonClient).uses(OS
     }
   }
 
-  /** One request on a connection of its own: one line out, the first line back. */
-  private *ask(request: DaemonRequest): EffectGen<DaemonResponse, DaemonNotRunning | DaemonDidNotAnswer> {
+  *startSignIn(): EffectGen<SignInPage & { readonly expiresAt: number }, DaemonNotRunning | DaemonDidNotAnswer | SignInFailed> {
+    const response = yield* this.ask({ _tag: "StartSignIn" });
+    switch (response._tag) {
+      case "SigningIn":
+        return { loginUrl: response.loginUrl, approvalDevices: response.approvalDevices !== undefined ? response.approvalDevices : 0, expiresAt: Date.parse(response.expiresAt) };
+      case "SignInFailed":
+        return yield* new SignInFailed({ reason: response.reason });
+      case "Failed":
+        return yield* new SignInFailed({ reason: `jive-daemon could not start signing in: ${response.message}` });
+      default:
+        return yield* new DaemonDidNotAnswer({ detail: `it answered StartSignIn with ${response._tag}` });
+    }
+  }
+
+  *awaitSignIn({ until }: { readonly until: number }): EffectGen<void, DaemonNotRunning | DaemonDidNotAnswer | SignInFailed> {
+    const response = yield* this.ask({ _tag: "AwaitSignIn" }, e.Duration.millis(Math.max(0, until - Date.now()) + AWAIT_MARGIN_MS));
+    switch (response._tag) {
+      case "SignInFinished":
+        return;
+      case "SignInFailed":
+        return yield* new SignInFailed({ reason: response.reason });
+      case "Failed":
+        return yield* new SignInFailed({ reason: `jive-daemon could not wait for the sign-in: ${response.message}` });
+      default:
+        return yield* new DaemonDidNotAnswer({ detail: `it answered AwaitSignIn with ${response._tag}` });
+    }
+  }
+
+  /** One request on a connection of its own: one line out, the first line back, within `timeout`. */
+  private *ask(request: DaemonRequest, timeout: e.Duration.Duration = ANSWER_TIMEOUT): EffectGen<DaemonResponse, DaemonNotRunning | DaemonDidNotAnswer> {
     const { daemonSocket } = jiveHomePaths(yield* this.dependencies.OSPlatform.getHomeDirectory());
     const line = yield* e.Effect.timeoutOrElse(
       e.Effect.callback<string, DaemonNotRunning | DaemonDidNotAnswer>((resume) => {
@@ -57,8 +88,8 @@ export class DaemonClientImpl extends implementing(modules.daemonClient).uses(OS
         return e.Effect.sync(() => socket.destroy());
       }),
       {
-        duration: ANSWER_TIMEOUT,
-        orElse: () => e.Effect.fail(new DaemonDidNotAnswer({ detail: `no answer within ${e.Duration.format(ANSWER_TIMEOUT)}` })),
+        duration: timeout,
+        orElse: () => e.Effect.fail(new DaemonDidNotAnswer({ detail: `no answer within ${e.Duration.format(timeout)}` })),
       },
     );
     // A response carries no token or secret, but the line is not quoted either way.

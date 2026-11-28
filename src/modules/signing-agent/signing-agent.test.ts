@@ -13,7 +13,9 @@ import { JiveServerRefused, JiveServerUnreachable, SignInClaim, type OpenedSignI
 import { SessionImpl } from "@/modules/session/impl";
 import { GitHubActionsIdentityImpl } from "@/modules/pipeline-identity/impl";
 import { modules } from "@/modules";
-import { TerminalSignInPromptImpl } from "@/modules/session/sign-in-prompt";
+import { FileMachineIdentityImpl } from "@/modules/machine-identity/impl";
+import { MachineSignInImpl } from "@/modules/machine-sign-in/impl";
+import { InsideDaemonSignInRouteImpl } from "@/modules/session/sign-in-route";
 import { SigningAgentImpl } from "./impl";
 import { serveSigningAgent } from "./socket-server";
 import { sshString } from "./protocol";
@@ -57,7 +59,8 @@ const request: OpenedSignInRequest = {
 
 let claims = 0;
 const fakeServer = JiveServerImpl.mockLayer({
-  *openSignInRequest({ previousSession }: { previousSession: e.Option.Option<Session> }) {
+  *openMachineSignInRequest({ previousSession }: { previousSession: e.Option.Option<Session> }) {
+    server.promptsShown += 1;
     server.previousSessionTokens.push(e.Option.getOrUndefined(e.Option.map(previousSession, (session) => session.sessionToken)));
     return request;
   },
@@ -95,13 +98,14 @@ const fakeJobIdentity = GitHubActionsIdentityImpl.mockLayer({
   },
 });
 
-const fakePrompt = TerminalSignInPromptImpl.mockLayer({ *show() { server.promptsShown += 1; } });
 
 const agentLayer = e.pipe(
   SigningAgentImpl.Layer,
   e.Layer.provideMerge(AccountKeyImpl.Layer),
+  e.Layer.provideMerge(MachineSignInImpl.Layer),
+  e.Layer.provideMerge(FileMachineIdentityImpl.Layer),
   e.Layer.provideMerge(SessionImpl.Layer),
-  e.Layer.provideMerge(fakePrompt),
+  e.Layer.provideMerge(InsideDaemonSignInRouteImpl.Layer),
   e.Layer.provideMerge(fakeJobIdentity),
   e.Layer.provideMerge(fakeServer),
   // Bun reads HOME once at startup, so the scratch home reaches the modules through the platform they ask.
@@ -301,12 +305,16 @@ test("a stored session past its saved end still signs, without asking the person
   expect(server.signedWith.at(-1)).toBe("jive_session_used_daily");
 });
 
-test("jive login after the server ended the stored session names that session, so the server can ask the account's phones", async () => {
+test("a sign-in after the server ended the stored session names that session, so the server can ask the account's phones", async () => {
   writeFileSync(paths.sessionFile, `${JSON.stringify({ sessionToken: "jive_ended_session", expiresAt: Date.now() - 1000 })}\n`);
   expect(await signRefused()).toContain("agent refused operation");
   server.previousSessionTokens.length = 0;
   const session = await e.Effect.runPromise(e.pipe(
-    e.Effect.gen(function* () { return yield* (yield* modules.session).signIn(); }),
+    e.Effect.gen(function* () {
+      const machineSignIn = yield* modules.machineSignIn;
+      yield* machineSignIn.startOrJoin({ programs: ["jive login"] });
+      return yield* machineSignIn.awaitEnd();
+    }),
     e.Effect.provide(agentLayer),
   ));
   expect(server.previousSessionTokens).toEqual(["jive_ended_session"]);

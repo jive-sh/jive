@@ -1,10 +1,12 @@
 import * as e from "effect";
 import type { EffectGen } from "effective-modules";
-import type { JiveServerError, JiveServerRefused, OpenedSignInRequest, Session } from "@/modules/jive-server/interface";
+import type { JiveServerError, JiveServerRefused, Session } from "@/modules/jive-server/interface";
 
 /**
- * This machine's session on `@jive-sh/server`, shared by the CLI, the signing agent and the extension daemon through
- * one owner-only file. Signing in opens a sign-in request, shows the person its page, and claims the session once they approve it on jive.sh with their passkey.
+ * This machine's session on `@jive-sh/server`, shared by the CLI, the signing agent and `jive-daemon` through one
+ * owner-only file. Only `jive-daemon` signs in (`modules/machine-sign-in`): it opens one sign-in request with the
+ * machine's key for every program that asks, and stores the session once the person approves it with their passkey.
+ * Every other program asks the daemon (`ISignInRoute`).
  */
 
 /** Signing in did not finish: the request expired or was claimed elsewhere, or the server could not be reached. */
@@ -30,8 +32,12 @@ export interface ISession {
    * it has ended (`checkWithServer`, or a refused call).
    */
   current(): EffectGen<e.Option.Option<Session>>;
-  /** Signs in afresh with a passkey, replacing any stored session. */
+  /** Signs in afresh with a passkey, replacing any stored session, through this process's `ISignInRoute`. */
   signIn(): EffectGen<Session, SignInFailed>;
+  /** The stored session even when the server has ended it: the one a new sign-in request names so the account's phones are asked. */
+  lastIssued(): EffectGen<e.Option.Option<Session>>;
+  /** Stores a session `jive-daemon` just claimed, replacing any stored one. */
+  adopt(session: Session): EffectGen<void, SignInFailed>;
   /**
    * Signs a CI/CD job in by exchanging its ID token for a session of its pipeline, replacing any stored session. The
    * only other way to a session; nothing here accepts a token from elsewhere.
@@ -54,10 +60,21 @@ export interface ISession {
   forget(): EffectGen<void>;
 }
 
-/**
- * How a sign-in request reaches the person: the CLI prints it, and `jive-daemon` hands it to the Jive browser
- * extension, which asked for it. The signing agent never signs in.
- */
+/** The page the person approves a sign-in on, and how many of their phones were asked to. */
+export interface SignInPage {
+  readonly loginUrl: string;
+  readonly approvalDevices: number;
+}
+
+/** How the CLI shows the person a sign-in: it prints the page and opens it. */
 export interface ISignInPrompt {
-  show(request: OpenedSignInRequest): EffectGen<void>;
+  show(page: SignInPage): EffectGen<void>;
+}
+
+/**
+ * How this process gets a new session. The CLI asks `jive-daemon` and waits, after which the session file holds the
+ * session; inside the daemon, nothing signs in through `ISession`, so its route refuses.
+ */
+export interface ISignInRoute {
+  signIn(): EffectGen<void, SignInFailed>;
 }
