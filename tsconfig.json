@@ -1,40 +1,7 @@
 {
+  "extends": "jive-abstract-library/tsconfig.json",
+  // Bun resolves an extended tsconfig's paths from that file's folder, not this package's, so the alias stays here.
   "compilerOptions": {
-    // Environment setup & latest features
-    "lib": ["ESNext"],
-    "target": "ESNext",
-    "module": "Preserve",
-    "moduleDetection": "force",
-    "jsx": "react-jsx",
-    "allowJs": true,
-
-    // Bundler mode
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true,
-    "noEmit": true,
-
-    // Best practices
-    "strict": true,
-    "skipLibCheck": true,
-    "noFallthroughCasesInSwitch": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "incremental": true,
-    // `jive init` and `jive load` make a workspace package's node_modules entry a symlink to its checkout; resolving its imports from
-    // the link keeps one copy of a shared peer such as effect, where the checkout's own node_modules would add a second.
-    "preserveSymlinks": true,
-
-    // Some stricter flags (disabled by default)
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "noPropertyAccessFromIndexSignature": false,
-
-    // Path aliases
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    },
-  },
-  "include": ["src/**/*"]
+    "paths": { "@/*": ["./src/*"] }
+  }
 }

@@ -395,7 +395,7 @@ function runInThisTerminal({ command, args, cwd }: {
       return yield* BadPreconditionsError.commandNotFound(command);
     }
     const { exitCode } = yield* e.pipe(
-      e.Effect.gen(() => osPlatform.spawnProcess({ command, args, cwd, stdin: "inherit", stdout: "inherit", stderr: "inherit" })),
+      e.Effect.gen(() => osPlatform.spawnProcess({ command, args, ...(cwd === undefined ? {} : { cwd }), stdin: "inherit", stdout: "inherit", stderr: "inherit" })),
       e.Effect.mapError(message => BadPreconditionsError.withoutFix(`Failed to run ${command}`, message)),
     );
     if (exitCode !== 0) {
